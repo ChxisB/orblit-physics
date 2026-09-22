@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "cast.h"
+
 namespace orblit {
 namespace {
 
@@ -403,6 +405,68 @@ uint32_t World::read(const OrblitPhysicsId *ids, uint32_t count, float *out,
     ++written;
   }
   return written;
+}
+
+bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
+  const Vec3 direction = normalised(vectorOf(query.direction));
+  if (lengthSquared(direction) < kTiny) return false;
+
+  Placed moving;
+  // A ray is a sphere of no size, which is what it is, and means one routine
+  // below rather than two that differ by a radius of zero.
+  moving.shape = query.shape == 0 ? Shape::sphere(0.0f)
+                                  : Shape::fromCommand(query.shape, query.size);
+  moving.at = vectorOf(query.from);
+  moving.rotation = rotationOf(query.rotation);
+  if (moving.shape.kind == ShapeKind::plane) return false;
+
+  const float distance = std::fmax(query.distance, 0.0f);
+  const Vec3 finish = moving.at + direction * distance;
+
+  // Where the cast could possibly reach, as one box: the shape at each end of
+  // its travel and everything between. Grown by a hair so a body it meets
+  // exactly edge on is not filtered out before it is looked at properly.
+  const Bounds begins = moving.shape.boundsAt(moving.at, moving.rotation);
+  const Bounds ends = moving.shape.boundsAt(finish, moving.rotation);
+  const Bounds swept = Bounds{minPerAxis(begins.low, ends.low),
+                              maxPerAxis(begins.high, ends.high)}
+                           .grown(1.0e-3f);
+
+  Impact nearest{};
+  uint32_t hit = Bodies::kNone;
+  const uint32_t count = bodies_.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    if (bodies_.id(row) == query.ignore) continue;
+    if (!interact(query.layerIs, query.layerCares, bodies_.layerIs(row),
+                  bodies_.layerCares(row))) {
+      continue;
+    }
+    // A half-space has no bounds to test against — it is half the world — so
+    // it is always asked properly, the way the broadphase treats it.
+    const bool half = bodies_.shape(row).kind == ShapeKind::plane;
+    if (!half && !swept.overlaps(bodies_.bounds(row))) continue;
+
+    const Placed fixed{bodies_.shape(row), bodies_.at(row),
+                       bodies_.rotation(row)};
+    Impact impact;
+    if (!sweep(moving, direction, distance, fixed, impact)) continue;
+    if (hit != Bodies::kNone && impact.distance >= nearest.distance) continue;
+    nearest = impact;
+    hit = row;
+  }
+  if (hit == Bodies::kNone) return false;
+
+  out = OrblitPhysicsHit{};
+  out.body = bodies_.id(hit);
+  out.at[0] = nearest.at.x;
+  out.at[1] = nearest.at.y;
+  out.at[2] = nearest.at.z;
+  out.normal[0] = nearest.normal.x;
+  out.normal[1] = nearest.normal.y;
+  out.normal[2] = nearest.normal.z;
+  out.distance = nearest.distance;
+  out.started = nearest.started;
+  return true;
 }
 
 } // namespace orblit

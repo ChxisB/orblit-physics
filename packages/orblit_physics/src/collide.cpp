@@ -58,22 +58,38 @@ bool flipped(bool hit, Manifold &out) {
   return hit;
 }
 
+/// The point of a segment nearest `to`, the segment given as a centre and a
+/// half-length vector — which is how every capsule in here carries its axis.
+Vec3 closestOnSegment(const Vec3 &centre, const Vec3 &half, const Vec3 &to) {
+  const float lsq = lengthSquared(half);
+  if (lsq < kTiny) return centre;
+  return centre + half * clamped(dot(to - centre, half) / lsq, -1.0f, 1.0f);
+}
+
+/// One contact from two round surfaces that have been reduced to points: the
+/// sphere\u2013sphere case, and what every capsule pair falls back to.
+///
+/// `onA` and `onB` are the centres of the two round ends, not their surfaces.
+bool roundPair(const Vec3 &onA, float radiusA, const Vec3 &onB, float radiusB,
+               Manifold &out) {
+  const Vec3 d = onA - onB;
+  const float reach = radiusA + radiusB;
+  const float squared = lengthSquared(d);
+  if (squared > reach * reach) return false;
+
+  // Two centres at the same point have no direction to push along. Up is as
+  // arbitrary as any other answer and better than the nan.
+  const float dist = std::sqrt(squared);
+  const Vec3 n = dist > kTiny ? d * (1.0f / dist) : Vec3{0.0f, 1.0f, 0.0f};
+  one(out, n, (onA - n * radiusA + onB + n * radiusB) * 0.5f, reach - dist);
+  return true;
+}
+
 // --- pairs ---------------------------------------------------------------- //
 
 bool sphereSphere(const Shape &a, const Vec3 &pa, const Shape &b,
                   const Vec3 &pb, Manifold &out) {
-  const Vec3 d = pa - pb;
-  const float reach = a.radius() + b.radius();
-  const float squared = lengthSquared(d);
-  if (squared > reach * reach) return false;
-
-  // Two spheres at the same point have no direction to push along. Up is as
-  // arbitrary as any other answer and better than the nan.
-  const float dist = std::sqrt(squared);
-  const Vec3 n = dist > kTiny ? d * (1.0f / dist) : Vec3{0.0f, 1.0f, 0.0f};
-  const Vec3 at = (pa - n * a.radius() + pb + n * b.radius()) * 0.5f;
-  one(out, n, at, reach - dist);
-  return true;
+  return roundPair(pa, a.radius(), pb, b.radius(), out);
 }
 
 bool spherePlane(const Shape &a, const Vec3 &pa, const Shape &b, const Vec3 &pb,
@@ -335,6 +351,201 @@ bool boxBox(const Shape &sa, const Vec3 &pa, const Quat &qa, const Shape &sb,
   return out.count > 0;
 }
 
+// --- capsules ------------------------------------------------------------- //
+//
+// A capsule is a segment with a radius, so every pair below reduces to a
+// question about that segment and then hands two points and two radii to
+// `roundPair`. What the extra code here buys is the second contact: a capsule
+// lying on a surface touches it along a line, and one contact in the middle of
+// that line is a capsule that rolls off its own resting place.
+
+bool capsuleSphere(const Shape &a, const Vec3 &pa, const Quat &qa,
+                   const Shape &b, const Vec3 &pb, Manifold &out) {
+  return roundPair(closestOnSegment(pa, a.axisAt(qa), pb), a.radius(), pb,
+                   b.radius(), out);
+}
+
+bool capsulePlane(const Shape &a, const Vec3 &pa, const Quat &qa,
+                  const Shape &b, const Vec3 &pb, const Quat &qb,
+                  Manifold &out) {
+  Vec3 n;
+  float surface;
+  planeInWorld(b, pb, qb, n, surface);
+
+  const Vec3 half = a.axisAt(qa);
+  const int ends = lengthSquared(half) < kTiny ? 1 : 2;
+
+  out.normal = n;
+  out.count = 0;
+  for (int end = 0; end < ends; ++end) {
+    // One point for a capsule stood on its end, two for one lying down, and
+    // the arithmetic decides which without being asked: the raised end of an
+    // upright capsule is simply not below the surface.
+    const Vec3 at = end == 0 ? pa - half : pa + half;
+    const float depth = a.radius() - (dot(n, at) - surface);
+    if (depth < 0.0f) continue;
+    keepDeepest(out, at - n * (a.radius() - depth * 0.5f), depth);
+  }
+  return out.count > 0;
+}
+
+bool capsuleCapsule(const Shape &a, const Vec3 &pa, const Quat &qa,
+                    const Shape &b, const Vec3 &pb, const Quat &qb,
+                    Manifold &out) {
+  const Vec3 halfA = a.axisAt(qa);
+  const Vec3 halfB = b.axisAt(qb);
+
+  Vec3 onA, onB;
+  closestOnSegments(pa - halfA, halfA * 2.0f, pb - halfB, halfB * 2.0f, onA,
+                    onB);
+  if (!roundPair(onA, a.radius(), onB, b.radius(), out)) return false;
+
+  // Parallel and overlapping is the case a single point handles badly: two
+  // capsules standing side by side would lean into each other about the one
+  // contact holding them apart. Hold both ends of the stretch they share.
+  const Vec3 along = normalised(halfA);
+  if (std::fabs(dot(along, normalised(halfB))) < 0.999f) return true;
+
+  const float reach = length(halfA);
+  const float s0 = dot(pb - halfB - pa, along);
+  const float s1 = dot(pb + halfB - pa, along);
+  const float lo = std::fmax(-reach, std::fmin(s0, s1));
+  const float hi = std::fmin(reach, std::fmax(s0, s1));
+  if (hi - lo < 1.0e-4f) return true;
+
+  // Built beside the single contact rather than over it, so an end that turns
+  // out not to touch leaves the good answer we already have.
+  const Vec3 n = out.normal;
+  const float total = a.radius() + b.radius();
+  Manifold both;
+  both.normal = n;
+  both.count = 0;
+  for (int end = 0; end < 2; ++end) {
+    const Vec3 at = pa + along * (end == 0 ? lo : hi);
+    const Vec3 other = closestOnSegment(pb, halfB, at);
+    const float depth = total - dot(at - other, n);
+    if (depth < 0.0f) continue;
+    keepDeepest(both, (at - n * a.radius() + other + n * b.radius()) * 0.5f,
+                depth);
+  }
+  if (both.count == 2) {
+    out.normal = both.normal;
+    out.points[0] = both.points[0];
+    out.points[1] = both.points[1];
+    out.count = 2;
+  }
+  return true;
+}
+
+/// The nearest point of a box to `to`, both in the box's own frame.
+Vec3 closestInBox(const Vec3 &half, const Vec3 &to) {
+  return {clamped(to.x, -half.x, half.x), clamped(to.y, -half.y, half.y),
+          clamped(to.z, -half.z, half.z)};
+}
+
+bool capsuleBox(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
+                const Vec3 &pb, const Quat &qb, Manifold &out) {
+  // All of this happens in the box's own frame, where a box is an interval on
+  // each axis and the nearest point in it is three clamps.
+  const Vec3 centre = unrotate(qb, pa - pb);
+  const Vec3 half = unrotate(qb, a.axisAt(qa));
+  const Vec3 extent = b.size;
+  const float radius = a.radius();
+
+  // The nearest pair of points between the segment and the box, found by
+  // alternating: clamp the current guess into the box, then slide along the
+  // segment to whatever is nearest that. Each step can only shorten the
+  // distance, so it settles rather than wandering, and it is within rounding
+  // of the answer long before the fourth pass.
+  Vec3 inBox = closestInBox(extent, centre);
+  Vec3 onSegment = centre;
+  for (int i = 0; i < 4; ++i) {
+    onSegment = closestOnSegment(centre, half, inBox);
+    inBox = closestInBox(extent, onSegment);
+  }
+
+  Vec3 n; // Out of the box, towards the capsule, still in the box's frame.
+  Vec3 at;
+  float depth;
+  const float squared = lengthSquared(onSegment - inBox);
+  if (squared > kTiny) {
+    const float dist = std::sqrt(squared);
+    if (dist > radius) return false;
+    n = (onSegment - inBox) * (1.0f / dist);
+    depth = radius - dist;
+    at = inBox;
+  } else {
+    // The segment runs through the box, so there is no nearest surface point
+    // to push away from. Leave through the nearest face, exactly as a sphere
+    // whose centre is inside one does.
+    int axis = 0;
+    float least = extent[0] - std::fabs(onSegment[0]);
+    for (int i = 1; i < 3; ++i) {
+      const float gap = extent[i] - std::fabs(onSegment[i]);
+      if (gap < least) {
+        least = gap;
+        axis = i;
+      }
+    }
+    const float sign = onSegment[axis] < 0.0f ? -1.0f : 1.0f;
+    n = {};
+    n[axis] = sign;
+    depth = radius + least;
+    at = onSegment;
+    at[axis] = sign * extent[axis];
+  }
+
+  one(out, rotate(qb, n), pb + rotate(qb, at), depth);
+
+  // A capsule lying flat on a face is the same problem as two parallel
+  // capsules, and gets the same answer: clip the segment to the face it is
+  // lying on and hold both ends of what survives. The two tests are that the
+  // push is squarely out of a face rather than off an edge, and that the
+  // capsule is lying along that face rather than standing on it.
+  if (lengthSquared(half) < kTiny) return true;
+
+  int face = 0;
+  for (int i = 1; i < 3; ++i) {
+    if (std::fabs(n[i]) > std::fabs(n[face])) face = i;
+  }
+  if (std::fabs(n[face]) < 0.98f) return true;
+  if (std::fabs(dot(normalised(half), n)) > 0.3f) return true;
+
+  float lo = -1.0f;
+  float hi = 1.0f;
+  for (int i = 0; i < 3; ++i) {
+    if (i == face) continue;
+    if (std::fabs(half[i]) < kTiny) {
+      // Parallel to this pair of sides: either the whole segment is between
+      // them or none of it is.
+      if (std::fabs(centre[i]) > extent[i]) return true;
+      continue;
+    }
+    const float t0 = (-extent[i] - centre[i]) / half[i];
+    const float t1 = (extent[i] - centre[i]) / half[i];
+    lo = std::fmax(lo, std::fmin(t0, t1));
+    hi = std::fmin(hi, std::fmax(t0, t1));
+  }
+  if (hi - lo < 1.0e-4f) return true;
+
+  const float surface = std::fabs(n[face]) * extent[face];
+  Manifold both;
+  both.normal = out.normal;
+  both.count = 0;
+  for (int end = 0; end < 2; ++end) {
+    const Vec3 on = centre + half * (end == 0 ? lo : hi);
+    const float apart = dot(n, on) - surface;
+    if (radius - apart < 0.0f) continue;
+    keepDeepest(both, pb + rotate(qb, on - n * apart), radius - apart);
+  }
+  if (both.count == 2) {
+    out.points[0] = both.points[0];
+    out.points[1] = both.points[1];
+    out.count = 2;
+  }
+  return true;
+}
+
 } // namespace
 
 bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
@@ -346,6 +557,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::sphere: return sphereSphere(a, atA, b, atB, out);
         case ShapeKind::box: return sphereBox(a, atA, b, atB, rotB, out);
         case ShapeKind::plane: return spherePlane(a, atA, b, atB, rotB, out);
+        case ShapeKind::capsule:
+          return flipped(capsuleSphere(b, atB, rotB, a, atA, out), out);
       }
       return false;
     case ShapeKind::box:
@@ -355,6 +568,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::box: return boxBox(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::plane:
           return boxPlane(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::capsule:
+          return flipped(capsuleBox(b, atB, rotB, a, atA, rotA, out), out);
       }
       return false;
     case ShapeKind::plane:
@@ -366,6 +581,20 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         // Two half-spaces either miss entirely or overlap in a region with no
         // finite contact to write down. Neither is worth a manifold.
         case ShapeKind::plane: return false;
+        case ShapeKind::capsule:
+          return flipped(capsulePlane(b, atB, rotB, a, atA, rotA, out), out);
+      }
+      return false;
+    case ShapeKind::capsule:
+      switch (b.kind) {
+        case ShapeKind::sphere:
+          return capsuleSphere(a, atA, rotA, b, atB, out);
+        case ShapeKind::box:
+          return capsuleBox(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::plane:
+          return capsulePlane(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::capsule:
+          return capsuleCapsule(a, atA, rotA, b, atB, rotB, out);
       }
       return false;
   }

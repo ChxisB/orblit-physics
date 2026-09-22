@@ -2,10 +2,10 @@
 // spin.
 //
 // A shape here is a few floats and a tag rather than a class with virtuals.
-// There are three of them, every one fits in the same sixteen bytes, and a
-// body store that can memcpy its shapes is a body store that can be handed
-// about as a column. When a convex hull arrives it brings an index alongside
-// the tag, not a base class.
+// There are four of them, every one is the same size, and a body store that
+// can memcpy its shapes is a body store that can be handed about as a column.
+// When a convex hull arrives it brings an index alongside the tag, not a base
+// class.
 
 #ifndef ORBLIT_PHYSICS_SHAPE_H
 #define ORBLIT_PHYSICS_SHAPE_H
@@ -19,12 +19,14 @@ enum class ShapeKind : uint32_t {
   sphere = ORBLIT_PHYSICS_SPHERE,
   box = ORBLIT_PHYSICS_BOX,
   plane = ORBLIT_PHYSICS_PLANE,
+  capsule = ORBLIT_PHYSICS_CAPSULE,
 };
 
 struct Shape {
   ShapeKind kind = ShapeKind::sphere;
 
   /// Sphere: radius in x. Box: half extents. Plane: the outward normal.
+  /// Capsule: radius in x, half the straight part in y.
   Vec3 size;
 
   /// Plane: how far along the normal the surface sits. Unused otherwise.
@@ -42,7 +44,29 @@ struct Shape {
     return {ShapeKind::plane, normalised(normal), offset};
   }
 
+  /// A cylinder of `radius` and `2 * halfHeight`, capped with a hemisphere at
+  /// each end, standing along its own y.
+  ///
+  /// Along y because a capsule is nearly always a character, a character
+  /// stands up, and up is where gravity is not. A capsule that wanted to lie
+  /// down was always going to be rotated anyway.
+  static Shape capsule(float radius, float halfHeight) {
+    return {ShapeKind::capsule, {radius, halfHeight, 0.0f}, 0.0f};
+  }
+
   float radius() const { return size.x; }
+
+  /// Capsule: half the straight part, so the whole thing is
+  /// `2 * (halfHeight() + radius())` tall.
+  float halfHeight() const { return size.y; }
+
+  /// The capsule's axis in the world, as a half-length vector from its centre.
+  /// Zero for anything that is not a capsule, which makes the segment
+  /// degenerate to a point and every routine below fall back to a sphere.
+  Vec3 axisAt(const Quat &rotation) const {
+    if (kind != ShapeKind::capsule) return {};
+    return rotate(rotation, {0.0f, size.y, 0.0f});
+  }
 
   /// The distance from the centre to the furthest point of it.
   ///
@@ -54,6 +78,7 @@ struct Shape {
       case ShapeKind::sphere: return size.x;
       case ShapeKind::box: return length(size);
       case ShapeKind::plane: return 0.0f;
+      case ShapeKind::capsule: return size.x + size.y;
     }
     return 0.0f;
   }
@@ -84,6 +109,14 @@ struct Shape {
         return {at - r, at + r};
       }
       case ShapeKind::plane: return {at, at};
+      case ShapeKind::capsule: {
+        // The segment's two ends, each grown by the radius. A capsule stood
+        // upright is then no wider than it is, which a bounds built from
+        // `reach()` in every direction would not be.
+        const Vec3 half = absPerAxis(axisAt(rotation));
+        const Vec3 r{size.x, size.x, size.x};
+        return {at - half - r, at + half + r};
+      }
     }
     return {at, at};
   }
@@ -110,6 +143,29 @@ struct Shape {
                 i.z > 0.0f ? 1.0f / i.z : 0.0f};
       }
       case ShapeKind::plane: return {};
+      case ShapeKind::capsule: {
+        // A cylinder and two hemispheres, each taking the share of the mass
+        // its volume is worth, and the caps moved out to the ends by the
+        // parallel axis theorem. Doing it by weighted volume rather than
+        // treating the whole thing as a cylinder matters most where capsules
+        // are used most: a character capsule is nearly all cap.
+        const float r = size.x;
+        const float half = size.y;
+        const float h = 2.0f * half;
+        const float cylinder = kPi * r * r * h;
+        const float caps = 4.0f / 3.0f * kPi * r * r * r;
+        const float total = cylinder + caps;
+        if (total <= kTiny) return {};
+
+        const float mc = mass * cylinder / total;
+        const float mh = mass * caps / total;
+        const float along = 0.5f * mc * r * r + 0.4f * mh * r * r;
+        const float across = mc * (h * h / 12.0f + r * r * 0.25f) +
+                             mh * (0.4f * r * r + 0.25f * h * h + 0.375f * r * h);
+        return {across > 0.0f ? 1.0f / across : 0.0f,
+                along > 0.0f ? 1.0f / along : 0.0f,
+                across > 0.0f ? 1.0f / across : 0.0f};
+      }
     }
     return {};
   }
@@ -119,6 +175,7 @@ struct Shape {
     switch (static_cast<ShapeKind>(kind)) {
       case ShapeKind::box: return box({size[0], size[1], size[2]});
       case ShapeKind::plane: return plane({size[0], size[1], size[2]}, size[3]);
+      case ShapeKind::capsule: return capsule(size[0], size[1]);
       case ShapeKind::sphere: break;
     }
     return sphere(size[0]);

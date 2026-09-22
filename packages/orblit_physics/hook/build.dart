@@ -15,6 +15,7 @@ void main(List<String> args) async {
         root.resolve('src/orblit_physics.cpp').toFilePath(),
         root.resolve('src/world.cpp').toFilePath(),
         root.resolve('src/collide.cpp').toFilePath(),
+        root.resolve('src/cast.cpp').toFilePath(),
         root.resolve('src/solver.cpp').toFilePath(),
       ],
       includes: [

@@ -85,6 +85,60 @@ final class OrblitPhysicsEvent extends Struct {
   external double force;
 }
 
+/// `OrblitPhysicsCast`, field for field.
+final class OrblitPhysicsCast extends Struct {
+  @Uint32()
+  external int shape;
+
+  @Uint32()
+  external int layerIs;
+
+  @Uint32()
+  external int layerCares;
+
+  @Uint32()
+  external int pad;
+
+  @Array(4)
+  external Array<Float> size;
+
+  @Array(3)
+  external Array<Float> from;
+
+  @Array(4)
+  external Array<Float> rotation;
+
+  @Array(3)
+  external Array<Float> direction;
+
+  @Float()
+  external double distance;
+
+  @Uint64()
+  external int ignore;
+}
+
+/// `OrblitPhysicsHit`, field for field.
+final class OrblitPhysicsHit extends Struct {
+  @Uint64()
+  external int body;
+
+  @Array(3)
+  external Array<Float> at;
+
+  @Array(3)
+  external Array<Float> normal;
+
+  @Float()
+  external double distance;
+
+  @Bool()
+  external bool started;
+
+  @Array(3)
+  external Array<Uint8> reserved;
+}
+
 /// `OrblitPhysicsSettings`, field for field.
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
@@ -223,4 +277,17 @@ external bool physicsVelocity(
   Pointer<OrblitPhysicsStruct> physics,
   int id,
   Pointer<Float> out,
+);
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsCast>,
+    Pointer<OrblitPhysicsHit>,
+  )
+>(symbol: 'orblit_physics_cast', assetId: kOrblitPhysicsAsset)
+external bool physicsCast(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsCast> cast,
+  Pointer<OrblitPhysicsHit> out,
 );

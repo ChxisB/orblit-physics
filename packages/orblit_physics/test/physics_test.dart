@@ -191,6 +191,122 @@ void main() {
     expect(velocity[5].abs(), lessThan(0.001));
   });
 
+  test('a capsule crosses as a capsule, not as the sphere it resembles', () {
+    floor();
+    // Standing up, 0.3 of radius with 0.5 of straight either side, so it comes
+    // to rest with its middle 0.8 above the floor. A sphere of the same radius
+    // would rest at 0.3 — which is exactly what a half height arriving in the
+    // wrong size slot would look like.
+    physics.add(
+      2,
+      shape: const Shape.capsule(0.3, 0.5),
+      at: const [0.0, 3.0, 0.0],
+    );
+
+    run(3);
+    expect(heightOf(2), closeTo(0.8, 0.05));
+  });
+
+  test('a cast reports what it met, and its structs survive the crossing', () {
+    floor();
+    physics.add(
+      2,
+      shape: const Shape.box(0.5, 0.5, 0.5),
+      motion: PhysicsMotion.fixed,
+      at: const [0.0, 5.0, 0.0],
+    );
+    // A crate off to the side that watches nothing, for the layer cases.
+    physics.add(
+      3,
+      shape: const Shape.box(0.5, 0.5, 0.5),
+      motion: PhysicsMotion.fixed,
+      at: const [3.0, 5.0, 0.0],
+      layers: const Layers(is_: 2, cares: 0),
+    );
+
+    // Not stepped first on purpose: a cast flushes what is waiting, so both
+    // crates are already there to be hit.
+    final down = physics.cast(
+      from: const [0.0, 10.0, 0.0],
+      direction: const [0.0, -1.0, 0.0],
+      distance: 100.0,
+    )!;
+    expect(down.body, 2, reason: 'the crate stands between it and the floor');
+    expect(down.distance, closeTo(4.5, 0.01));
+    expect(down.at[1], closeTo(5.5, 0.01));
+    expect(down.normal[1], closeTo(1.0, 0.01));
+    expect(down.started, isFalse);
+
+    // Each case below reaches a different field of the query struct. Taken
+    // together they are the only way to know every one of them landed where
+    // the C is looking for it, rather than a neighbour's.
+    PhysicsHit? fire({
+      List<double> from = const [0.0, 10.0, 0.0],
+      List<double> direction = const [0.0, -1.0, 0.0],
+      double distance = 100.0,
+      Shape? shape,
+      List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+      Layers layers = Layers.everything,
+      int ignore = 0,
+    }) => physics.cast(
+      from: from,
+      direction: direction,
+      distance: distance,
+      shape: shape,
+      rotation: rotation,
+      layers: layers,
+      ignore: ignore,
+    );
+
+    expect(fire(direction: const [0.0, 1.0, 0.0]), isNull, reason: 'fired up');
+    expect(fire(distance: 1.0), isNull, reason: 'stopped short of the crate');
+    expect(
+      fire(ignore: 2)?.body,
+      ground,
+      reason: 'past the crate to the floor',
+    );
+
+    // A body that cares about nothing is reached only by a cast that cares
+    // about it, which is also what tells the two layer words apart: swap them
+    // and the first of these misses.
+    const beside = [3.0, 10.0, 0.0];
+    final cares = fire(from: beside, layers: const Layers(is_: 4, cares: 2));
+    final passesBy = fire(from: beside, layers: const Layers(is_: 4, cares: 8));
+    expect(cares?.body, 3);
+    expect(passesBy?.body, ground, reason: 'through it, to a floor that cares');
+
+    expect(
+      fire(shape: const Shape.sphere(0.25))!.distance,
+      closeTo(4.25, 0.02),
+      reason: 'a sphere stops its own radius earlier than a point',
+    );
+
+    // Laid along x by a quarter turn about z, so it is 0.2 thick underneath
+    // rather than 0.7. Upright it would stop at 3.8.
+    expect(
+      fire(
+        shape: const Shape.capsule(0.2, 0.5),
+        rotation: const [0.0, 0.0, 0.70710678, 0.70710678],
+      )!.distance,
+      closeTo(4.3, 0.02),
+      reason: 'the rotation reached the solver',
+    );
+
+    final inside = fire(
+      from: const [0.0, 5.0, 0.0],
+      direction: const [1.0, 0.0, 0.0],
+      distance: 10.0,
+    )!;
+    expect(inside.started, isTrue);
+    expect(inside.distance, 0.0);
+
+    expect(
+      fire(shape: const Shape.plane(0.0, 1.0, 0.0)),
+      isNull,
+      reason: 'a half-space reaches everywhere along a line, so it is refused',
+    );
+  });
+
   test('readInto fills a strided buffer and skips what it does not know', () {
     floor();
     physics.add(2, shape: const Shape.sphere(0.5), at: const [1.0, 2.0, 3.0]);

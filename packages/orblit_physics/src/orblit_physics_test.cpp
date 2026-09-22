@@ -53,6 +53,37 @@ OrblitPhysicsCommand boxAt(OrblitPhysicsId id, float half, float x, float y,
   return made;
 }
 
+OrblitPhysicsCommand capsuleAt(OrblitPhysicsId id, float radius,
+                               float halfHeight, float x, float y, float z) {
+  OrblitPhysicsCommand made = sphereAt(id, radius, x, y, z);
+  made.shape = ORBLIT_PHYSICS_CAPSULE;
+  made.size[0] = radius;
+  made.size[1] = halfHeight;
+  return made;
+}
+
+/// Turns a body a quarter circle about z, which lays a capsule along x.
+void layDown(OrblitPhysicsCommand &command) {
+  command.rotation[2] = 0.70710678f;
+  command.rotation[3] = 0.70710678f;
+}
+
+OrblitPhysicsCast rayFrom(float x, float y, float z, float dx, float dy,
+                          float dz, float distance) {
+  OrblitPhysicsCast made{};
+  made.shape = 0;
+  made.layerIs = 1;
+  made.layerCares = 0xFFFFFFFFu;
+  made.from[0] = x;
+  made.from[1] = y;
+  made.from[2] = z;
+  made.direction[0] = dx;
+  made.direction[1] = dy;
+  made.direction[2] = dz;
+  made.distance = distance;
+  return made;
+}
+
 OrblitPhysicsCommand groundPlane(OrblitPhysicsId id) {
   OrblitPhysicsCommand made{};
   made.kind = ORBLIT_PHYSICS_CREATE;
@@ -389,10 +420,195 @@ void refusing() {
   orblit_physics_destroy(physics);
 }
 
+void capsules() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+
+  // Radius 0.3 with half a metre of straight either side: 1.6 tall, stood up.
+  submit(physics, capsuleAt(2, 0.3f, 0.5f, 0.0f, 4.0f, 0.0f));
+
+  OrblitPhysicsCommand lying = capsuleAt(3, 0.3f, 0.5f, 3.0f, 4.0f, 0.0f);
+  layDown(lying);
+  submit(physics, lying);
+
+  run(physics, 3.0f);
+
+  check(near(heightOf(physics, 2), 0.8f, 0.05f),
+        "a capsule dropped upright stands on its cap");
+  check(near(heightOf(physics, 3), 0.3f, 0.05f),
+        "and one laid on its side rests on the cylinder");
+  check(orblit_physics_asleep(physics, 3),
+        "which settles rather than rocking, being held at both ends");
+
+  orblit_physics_destroy(physics);
+
+  // A capsule laid across a box: the other two-point case, and the one that
+  // goes through the face clipping rather than the plane.
+  OrblitPhysics *onABox = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand plinth = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+  plinth.motion = ORBLIT_PHYSICS_STATIC;
+  submit(onABox, plinth);
+
+  OrblitPhysicsCommand across = capsuleAt(2, 0.2f, 0.4f, 0.0f, 2.0f, 0.0f);
+  layDown(across);
+  submit(onABox, across);
+
+  run(onABox, 3.0f);
+  check(near(heightOf(onABox, 2), 0.7f, 0.05f),
+        "a capsule laid across a box rests on its top face");
+  check(orblit_physics_asleep(onABox, 2), "and settles there");
+  orblit_physics_destroy(onABox);
+
+  // Nothing falling, nothing sleeping: just the shapes pushing each other.
+  OrblitPhysicsSettings still;
+  orblit_physics_defaults(&still);
+  still.gravity[1] = 0.0f;
+  still.sleeping = false;
+
+  OrblitPhysics *pair = orblit_physics_create(&still);
+  submit(pair, capsuleAt(1, 0.3f, 0.5f, -0.1f, 0.0f, 0.0f));
+  submit(pair, capsuleAt(2, 0.3f, 0.5f, 0.1f, 0.0f, 0.0f));
+  run(pair, 2.0f);
+
+  float left[7] = {0};
+  float right[7] = {0};
+  orblit_physics_transform(pair, 1, left);
+  orblit_physics_transform(pair, 2, right);
+  check(right[0] - left[0] > 0.55f,
+        "two capsules pushed into each other end up side by side");
+  check(near(left[1], 0.0f, 0.05f) && near(right[1], 0.0f, 0.05f),
+        "and are not squeezed past one another along their length");
+  orblit_physics_destroy(pair);
+
+  // The same torque about each of two axes. A capsule is much easier to spin
+  // about its own length than end over end, and a sphere's inertia tensor
+  // wrongly used here would make the two the same.
+  OrblitPhysics *spun = orblit_physics_create(&still);
+  submit(spun, capsuleAt(1, 0.2f, 0.8f, 0.0f, 0.0f, 0.0f));
+  submit(spun, capsuleAt(2, 0.2f, 0.8f, 5.0f, 0.0f, 0.0f));
+
+  OrblitPhysicsCommand aboutItself{};
+  aboutItself.kind = ORBLIT_PHYSICS_IMPULSE;
+  aboutItself.id = 1;
+  aboutItself.vector[2] = 1.0f;
+  aboutItself.spin[0] = 0.2f;
+  submit(spun, aboutItself);
+
+  OrblitPhysicsCommand endOverEnd{};
+  endOverEnd.kind = ORBLIT_PHYSICS_IMPULSE;
+  endOverEnd.id = 2;
+  endOverEnd.vector[2] = 1.0f;
+  endOverEnd.spin[0] = 5.0f;
+  endOverEnd.spin[1] = 0.2f;
+  submit(spun, endOverEnd);
+
+  orblit_physics_step(spun, 1.0f / 60.0f);
+  float alone[6] = {0};
+  float over[6] = {0};
+  orblit_physics_velocity(spun, 1, alone);
+  orblit_physics_velocity(spun, 2, over);
+  check(std::fabs(alone[4]) > 5.0f * std::fabs(over[3]),
+        "a capsule spins far more freely about its own length than across it");
+  orblit_physics_destroy(spun);
+}
+
+void casting() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  OrblitPhysicsCommand crate = boxAt(2, 0.5f, 0.0f, 5.0f, 0.0f);
+  crate.motion = ORBLIT_PHYSICS_STATIC;
+  submit(physics, crate);
+
+  OrblitPhysicsHit hit{};
+  const OrblitPhysicsCast down = rayFrom(0.0f, 10.0f, 0.0f, 0.0f, -1.0f, 0.0f, 100.0f);
+  check(orblit_physics_cast(physics, &down, &hit), "a ray fired down hits something");
+  check(hit.body == 2, "and it is the crate, not the ground beyond it");
+  check(near(hit.distance, 4.5f, 0.01f), "at the distance to its top face");
+  check(near(hit.normal[1], 1.0f, 0.01f), "with a normal out of the face it met");
+  check(near(hit.at[1], 5.5f, 0.01f), "and a point on that face");
+  check(!hit.started, "and it did not begin inside anything");
+
+  OrblitPhysicsCast unmeasured = down;
+  unmeasured.direction[1] = -10.0f;
+  check(orblit_physics_cast(physics, &unmeasured, &hit) &&
+            near(hit.distance, 4.5f, 0.01f),
+        "a direction that is not a unit vector is still answered in metres");
+
+  const OrblitPhysicsCast up = rayFrom(0.0f, 10.0f, 0.0f, 0.0f, 1.0f, 0.0f, 100.0f);
+  check(!orblit_physics_cast(physics, &up, &hit), "a ray fired away from everything misses");
+
+  OrblitPhysicsCast stops = down;
+  stops.distance = 1.0f;
+  check(!orblit_physics_cast(physics, &stops, &hit), "and so does one that stops short");
+
+  OrblitPhysicsCast ball = down;
+  ball.shape = ORBLIT_PHYSICS_SPHERE;
+  ball.size[0] = 0.25f;
+  check(orblit_physics_cast(physics, &ball, &hit) &&
+            near(hit.distance, 4.25f, 0.02f),
+        "a sphere cast stops its own radius earlier than a ray");
+
+  OrblitPhysicsCast walking{};
+  walking.shape = ORBLIT_PHYSICS_CAPSULE;
+  walking.size[0] = 0.3f;
+  walking.size[1] = 0.6f;
+  walking.from[0] = -5.0f;
+  walking.from[1] = 5.0f;
+  walking.direction[0] = 1.0f;
+  walking.distance = 10.0f;
+  walking.layerIs = 1;
+  walking.layerCares = 0xFFFFFFFFu;
+  check(orblit_physics_cast(physics, &walking, &hit) &&
+            near(hit.distance, 4.2f, 0.02f),
+        "a capsule cast sideways stops a radius short of the face");
+  check(near(hit.normal[0], -1.0f, 0.02f), "against the face it walked into");
+
+  const OrblitPhysicsCast begun = rayFrom(0.0f, 5.0f, 0.0f, 1.0f, 0.0f, 0.0f, 10.0f);
+  check(orblit_physics_cast(physics, &begun, &hit), "a cast that begins inside a body reports it");
+  check(hit.started && hit.distance == 0.0f, "as begun, at no distance at all");
+
+  OrblitPhysicsCast skipping = begun;
+  skipping.ignore = 2;
+  check(!orblit_physics_cast(physics, &skipping, &hit),
+        "and passes clean through the body it was told to ignore");
+
+  const OrblitPhysicsCast beside = rayFrom(3.0f, 2.0f, 0.0f, 0.0f, -1.0f, 0.0f, 10.0f);
+  check(orblit_physics_cast(physics, &beside, &hit) && hit.body == 1 &&
+            near(hit.distance, 2.0f, 0.01f),
+        "a ray beside the crate reaches the ground behind it");
+
+  OrblitPhysicsCast flat = down;
+  flat.shape = ORBLIT_PHYSICS_PLANE;
+  flat.size[1] = 1.0f;
+  check(!orblit_physics_cast(physics, &flat, &hit), "casting a half-space is refused");
+  check(!orblit_physics_cast(nullptr, &down, &hit), "and casting into no world is survivable");
+
+  orblit_physics_destroy(physics);
+
+  // Layers, in a world with one body in it, because a body that cares about
+  // everything would be hit whatever the cast asked for.
+  OrblitPhysics *filtered = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand quiet = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+  quiet.motion = ORBLIT_PHYSICS_STATIC;
+  quiet.layerIs = 2;
+  quiet.layerCares = 0;
+  submit(filtered, quiet);
+
+  OrblitPhysicsCast curious = rayFrom(0.0f, 5.0f, 0.0f, 0.0f, -1.0f, 0.0f, 10.0f);
+  curious.layerIs = 4;
+  curious.layerCares = 2;
+  check(orblit_physics_cast(filtered, &curious, &hit), "a cast meets a body it cares about");
+  curious.layerCares = 8;
+  check(!orblit_physics_cast(filtered, &curious, &hit), "and passes through one it does not");
+  orblit_physics_destroy(filtered);
+}
+
 } // namespace
 
 int main() {
   settling();
+  capsules();
+  casting();
   touching();
   bouncing();
   rubbing();

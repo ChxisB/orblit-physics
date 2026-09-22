@@ -97,6 +97,12 @@ bool orblit_physics_transform(const OrblitPhysics *physics, OrblitPhysicsId id,
   return true;
 }
 
+bool orblit_physics_cast(const OrblitPhysics *physics,
+                         const OrblitPhysicsCast *cast, OrblitPhysicsHit *out) {
+  if (physics == nullptr || cast == nullptr || out == nullptr) return false;
+  return physics->world.cast(*cast, *out);
+}
+
 bool orblit_physics_velocity(const OrblitPhysics *physics, OrblitPhysicsId id,
                              float *out) {
   if (physics == nullptr || out == nullptr) return false;

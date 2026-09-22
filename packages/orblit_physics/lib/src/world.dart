@@ -43,17 +43,25 @@ final class Shape {
   const Shape.box(double halfX, double halfY, double halfZ)
     : this._(2, halfX, halfY, halfZ, 0.0);
 
+  /// A cylinder of `radius` with `halfHeight` metres of straight either side
+  /// of the middle, capped with a hemisphere at each end, standing along the
+  /// body's own y. It is `2 * (halfHeight + radius)` tall in all, and it is
+  /// what a character or a limb is made of, because it has no corner to catch
+  /// on a seam between two floor tiles.
+  const Shape.capsule(double radius, double halfHeight)
+    : this._(4, radius, halfHeight, 0.0, 0.0);
+
   /// An endless flat surface: everything behind the normal `nx, ny, nz` at
   /// `offset` along it is solid. Never dynamic — a half-space has no centre
   /// to spin about.
   const Shape.plane(double nx, double ny, double nz, {double offset = 0.0})
     : this._(3, nx, ny, nz, offset);
 
-  /// Which of the three it is, as the ABI numbers them.
+  /// Which kind it is, as the ABI numbers them.
   final int kind;
 
   /// The ABI's four size floats, read as the kind describes: a radius, three
-  /// half extents, or a normal and an offset.
+  /// half extents, a radius and a half height, or a normal and an offset.
   final double x;
   final double y;
   final double z;
@@ -102,6 +110,33 @@ final class PhysicsEvent {
   /// How hard, in newton-seconds along the normal. The number a collision
   /// sound scales with.
   final double force;
+}
+
+/// What a cast ran into.
+final class PhysicsHit {
+  const PhysicsHit({
+    required this.body,
+    required this.at,
+    required this.normal,
+    required this.distance,
+    required this.started,
+  });
+
+  /// The body it met.
+  final int body;
+
+  /// Where they touched, and which way out of the body towards the cast.
+  final List<double> at;
+  final List<double> normal;
+
+  /// How far along the cast's direction it got, in metres.
+  final double distance;
+
+  /// The cast started inside this body rather than running into it, so
+  /// `distance` is zero and `at` is the deepest point of the overlap. Worth
+  /// telling apart: a character whose capsule begins inside a wall wants to be
+  /// pushed out of it, not stopped where it already is.
+  final bool started;
 }
 
 /// How a world behaves. Anything left null is the engine's own default, so
@@ -374,6 +409,64 @@ class Physics {
         force: it.force,
       );
     });
+  }
+
+  // --- casting -------------------------------------------------------------
+
+  /// Fires `shape` from `from` along `direction` for `distance` metres and
+  /// answers the first body it meets, or null if it meets none. Leaving
+  /// `shape` out fires a point, which is the ray cast everything else is named
+  /// after and the cheapest of them.
+  ///
+  /// `direction` need not be a unit vector — it is normalised here — so
+  /// `distance` is always metres and never multiples of however long the
+  /// direction happened to be. A plane cannot be cast, because a half-space
+  /// reaches everywhere along any line and the answer would be meaningless;
+  /// asking for one gives null.
+  PhysicsHit? cast({
+    required List<double> from,
+    required List<double> direction,
+    required double distance,
+    Shape? shape,
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    Layers layers = Layers.everything,
+    int ignore = 0,
+  }) {
+    _flush();
+    final query = calloc<native.OrblitPhysicsCast>();
+    final found = calloc<native.OrblitPhysicsHit>();
+    try {
+      final it = query.ref;
+      it.shape = shape?.kind ?? 0;
+      if (shape != null) {
+        it.size[0] = shape.x;
+        it.size[1] = shape.y;
+        it.size[2] = shape.z;
+        it.size[3] = shape.w;
+      }
+      _write3(it.from, from);
+      for (var i = 0; i < 4; i++) {
+        it.rotation[i] = rotation[i];
+      }
+      _write3(it.direction, direction);
+      it.distance = distance;
+      it.layerIs = layers.is_;
+      it.layerCares = layers.cares;
+      it.ignore = ignore;
+
+      if (!native.physicsCast(_alive, query, found)) return null;
+      final hit = found.ref;
+      return PhysicsHit(
+        body: hit.body,
+        at: [hit.at[0], hit.at[1], hit.at[2]],
+        normal: [hit.normal[0], hit.normal[1], hit.normal[2]],
+        distance: hit.distance,
+        started: hit.started,
+      );
+    } finally {
+      calloc.free(query);
+      calloc.free(found);
+    }
   }
 
   // --- lifetime ------------------------------------------------------------

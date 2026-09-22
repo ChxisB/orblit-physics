@@ -56,6 +56,16 @@ typedef enum {
   /// how far along it the surface sits. Ground and walls, and never dynamic —
   /// a half-space has no centre to rotate about and no mass to give it.
   ORBLIT_PHYSICS_PLANE = 3,
+
+  /// A cylinder capped with a hemisphere at each end, standing along the
+  /// body's own y. `size[0]` is the radius and `size[1]` half the straight
+  /// part, so the whole thing is `2 * (size[1] + size[0])` tall.
+  ///
+  /// Half the straight part rather than the total height because that is the
+  /// number every routine inside uses — the segment the hemispheres are swept
+  /// along — and a shape whose field means one thing to the caller and
+  /// another inside is a shape somebody eventually gets wrong by a radius.
+  ORBLIT_PHYSICS_CAPSULE = 4,
 } OrblitPhysicsShapeKind;
 
 typedef enum {
@@ -310,6 +320,84 @@ bool orblit_physics_transform(const OrblitPhysics *physics, OrblitPhysicsId id,
 /// unknown.
 bool orblit_physics_velocity(const OrblitPhysics *physics, OrblitPhysicsId id,
                              float *out);
+
+// ---------------------------------------------------------------- casting ---
+
+/// A shape moved through the world in a straight line, to find out what it
+/// would meet first.
+///
+/// This is how a character asks whether it can take a step, how a camera finds
+/// the wall it must not go through, and how a hitscan weapon finds what it
+/// hit. It moves nothing and changes nothing: a world is the same after a cast
+/// as it was before one.
+typedef struct {
+  /// An OrblitPhysicsShapeKind, or zero for a ray.
+  ///
+  /// A ray is a sphere of no size and behaves exactly like one, so a caller
+  /// that wants one does not have to invent a radius small enough not to
+  /// matter — which is a number that does not exist.
+  uint32_t shape;
+
+  /// Which layers the cast is in, and which it wants to hit. The same rule
+  /// bodies follow: it meets a body when either cares about the other.
+  uint32_t layerIs;
+  uint32_t layerCares;
+  uint32_t _pad;
+
+  /// The shape's dimensions, read as its kind describes. Ignored for a ray.
+  /// A plane cannot be cast: an infinite surface is touching everything
+  /// already.
+  float size[4];
+
+  /// Where it starts, and how it is turned. All zeroes is read as identity.
+  float from[3];
+  float rotation[4];
+
+  /// Which way it goes. Normalised here, so a caller may pass a movement
+  /// vector as it stands.
+  float direction[3];
+
+  /// How far along `direction` to look, in metres.
+  float distance;
+
+  /// A body to pass straight through. Zero hits everything.
+  ///
+  /// This is nearly always the body doing the casting, which would otherwise
+  /// hit itself at no distance at all and never see anything else.
+  OrblitPhysicsId ignore;
+} OrblitPhysicsCast;
+
+typedef struct {
+  /// What was hit.
+  OrblitPhysicsId body;
+
+  /// Where they met, and which way out of the body that was hit — the same
+  /// rule a touch event's normal follows.
+  float at[3];
+  float normal[3];
+
+  /// How far along the cast's direction, in metres.
+  float distance;
+
+  /// The cast overlapped that body before it moved at all. `distance` is zero
+  /// and `at` is somewhere inside it rather than where the cast came in,
+  /// because for something already inside there is no such place.
+  ///
+  /// Worth checking rather than ignoring: a character whose capsule starts
+  /// inside a wall wants to be pushed out of it, not stopped at a distance of
+  /// nought and left there.
+  bool started;
+  bool _reserved[3];
+} OrblitPhysicsHit;
+
+/// Finds the nearest thing `cast` would meet, and returns whether it met
+/// anything. `out` is untouched on a miss.
+///
+/// Nearest, not every: a caller that wants the list can cast again past what
+/// it found. Sleeping and static bodies are hit like any other — a query asks
+/// where things are, and a crate that has settled is still in the way.
+bool orblit_physics_cast(const OrblitPhysics *physics,
+                         const OrblitPhysicsCast *cast, OrblitPhysicsHit *out);
 
 #ifdef __cplusplus
 }

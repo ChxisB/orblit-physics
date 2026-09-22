@@ -57,6 +57,10 @@ class World {
   uint32_t read(const OrblitPhysicsId *ids, uint32_t count, float *out,
                 uint32_t stride, uint32_t offset) const;
 
+  /// The nearest body `query` would meet, and whether it met one. Changes
+  /// nothing: a world is the same after a cast as it was before.
+  bool cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const;
+
   const Bodies &bodies() const { return bodies_; }
   const std::vector<OrblitPhysicsEvent> &events() const { return events_; }
 

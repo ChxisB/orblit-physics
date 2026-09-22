@@ -47,11 +47,39 @@ how things are moving, overlap is about where they are — and the position pass
 runs after integration so it is not correcting a gap that integration is about
 to reopen.
 
-Contacts come from a sweep along X and a narrowphase of spheres, boxes and
-planes, with separating-axis box–box and face clipping. Manifolds persist
-between ticks, so each pass starts from the impulse that worked last time
-rather than from zero. Bodies that stop moving go to sleep individually and are
-woken by anything that touches them.
+Contacts come from a sweep along X and a narrowphase of spheres, boxes,
+capsules and planes, with separating-axis box–box and face clipping. Where two
+shapes meet along a line rather than at a point — a capsule lying on the floor,
+or across a crate — the contact is reported at both ends, because one contact in
+the middle of a line is something to roll off. Manifolds persist between ticks,
+so each pass starts from the impulse that worked last time rather than from
+zero. Bodies that stop moving go to sleep individually and are woken by
+anything that touches them.
+
+### Casting
+
+`cast` fires a shape along a direction and answers the first body it meets.
+With no shape it fires a point, which is the ray cast everything else is named
+after and the cheap case; with one it is how a character finds the floor under
+its feet, or a camera the wall behind the player.
+
+```dart
+final ground = physics.cast(
+  from: feet,
+  direction: const [0, -1, 0],
+  distance: 1.5,
+  shape: const Shape.sphere(0.3),
+  ignore: player,
+);
+```
+
+It advances the shape along the line by however far it can prove is safe, over
+and over, until there is no gap left. Every step is a lower bound on the real
+distance between the two shapes, so the loop can stop short of an impact but
+can never step past one. A cast that starts inside a body says so rather than
+reporting a distance of nothing and leaving the caller to guess — a character
+who begins in a wall wants pushing out of it, not stopping where they already
+are.
 
 ## What it does not do
 
@@ -66,7 +94,8 @@ itself; that is a different and much cheaper guarantee, and it is the one on
 offer.
 
 **Continuous collision.** Fast, small things tunnel. A fixed step small enough
-for the speeds in play is the answer for now.
+for the speeds in play is the answer for now, and a cast along where something
+is about to go is the answer for the few cases that cannot afford one.
 
 **The web.** The solver is C++ behind a build hook, so it goes where a native
 toolchain goes. Whether it follows Orblit to the web later is open.
