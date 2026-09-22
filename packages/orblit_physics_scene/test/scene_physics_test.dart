@@ -1,3 +1,4 @@
+import 'package:orblit_physics/orblit_physics.dart';
 import 'package:orblit_physics_scene/orblit_physics_scene.dart';
 import 'package:orblit_scene/orblit_scene.dart';
 import 'package:test/test.dart';
@@ -130,6 +131,55 @@ void main() {
       final y = transformOf(scene.document, 'crate').position.y;
       expect(y, lessThan(3));
       expect(y, greaterThan(2.9));
+    });
+  });
+
+  group('events', () {
+    /// What [scene] heard over [frames] advances of [seconds] each, as
+    /// entity ids so two runs can be compared.
+    List<(PhysicsEventKind, String?, String?)> heard(
+      ScenePhysics scene,
+      int frames,
+      double seconds,
+    ) => [
+      for (var i = 0; i < frames; i++)
+        for (final event in (scene..advance(seconds)).events)
+          (event.kind, scene.entityOf(event.a), scene.entityOf(event.b)),
+    ];
+
+    test('a slow frame hears every step it took, not only its last', () {
+      // A sixty-fourth, so three of them add up exactly and both runs take
+      // the same steps.
+      const step = 1 / 64;
+      final smooth = ScenePhysics(
+        sceneOf([floor(), crate(at: Vector3(0, 1, 0))]),
+        step: step,
+      );
+      scene = ScenePhysics(
+        sceneOf([floor(), crate(at: Vector3(0, 1, 0))]),
+        step: step,
+      );
+
+      final everyStep = heard(smooth, 192, step);
+      final everyThird = heard(scene, 64, 3 * step);
+      smooth.dispose();
+
+      expect(
+        everyStep,
+        contains((PhysicsEventKind.touchBegan, 'floor', 'crate')),
+      );
+      expect(everyThird, everyStep);
+    });
+
+    test('a frame that took no step hears nothing', () {
+      scene = ScenePhysics(sceneOf([floor(), crate(at: Vector3(0, 1, 0))]));
+      for (var i = 0; i < 600 && scene.events.isEmpty; i++) {
+        scene.advance(1 / 60);
+      }
+      expect(scene.events, isNotEmpty);
+
+      scene.advance(0.001);
+      expect(scene.events, isEmpty);
     });
   });
 

@@ -8,3 +8,6 @@
   with its rotation written as the angles nearest the ones it had. `apply`
   takes an edit the other way and rebuilds the bodies it touched, and the ones
   under them, where the document now puts them.
+- `events` is everything that happened in the steps the last `advance` took,
+  so a slow frame that owed several steps hears all of them and a frame that
+  owed none hears nothing.

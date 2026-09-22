@@ -61,7 +61,9 @@ and writes back only the entities whose bodies moved, parents before children.
 That is a teleport: a crate that is dragged mid-fall stops falling. Entities
 are named by strings and bodies by numbers, so the bridge keeps the pairing
 (`bodyOf`, `entityOf`) and never gives a number to a second entity. The world
-itself is `scene.physics`, for pushing, casting and events.
+itself is `scene.physics`, for pushing and casting. What touched what is
+`scene.events`, gathered over every step the last `advance` took; the world's
+own list keeps only its last step.
 
 It depends on `orblit_scene` over git. To work against a checkout of the engine
 beside this one:

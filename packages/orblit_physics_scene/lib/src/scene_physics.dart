@@ -30,9 +30,10 @@ import 'pose.dart';
 /// never names the wrong thing.
 ///
 /// [physics] is the world itself, for everything a document cannot say:
-/// pushing, driving, casting, and finding out what touched what. Numbers from
-/// one upwards are this class's to hand out; a body added to the world
-/// directly wants a negative one, and is simulated but never written back.
+/// pushing, driving and casting. What touched what is [events], gathered over
+/// every step a frame took. Numbers from one upwards are this class's to hand
+/// out; a body added to the world directly wants a negative one, and is
+/// simulated but never written back.
 class ScenePhysics {
   ScenePhysics(
     SceneDocument document, {
@@ -70,9 +71,18 @@ class ScenePhysics {
 
   int _next = 1;
   double _owed = 0;
+  List<PhysicsEvent> _events = const [];
 
   /// The document as the simulation has left it.
   SceneDocument get document => _document;
+
+  /// Everything that happened in the steps the last [advance] took, in the
+  /// order it happened. Empty when that advance took none.
+  ///
+  /// Read this rather than the world's own, which keeps only its last step.
+  /// A slow frame that owed three steps would lose what happened in the first
+  /// two, and a fast one that owed none would hear the last frame's again.
+  List<PhysicsEvent> get events => _events;
 
   /// The body an entity is simulated as, or null when it has none.
   int? bodyOf(String entity) => _bodyOf[entity];
@@ -91,12 +101,15 @@ class ScenePhysics {
   SceneDiff advance(double seconds) {
     if (seconds > 0) _owed += seconds;
     var taken = 0;
+    final events = <PhysicsEvent>[];
     while (_owed >= step && taken < maxSteps) {
       physics.step(step);
+      events.addAll(physics.events);
       _owed -= step;
       taken++;
     }
     if (_owed >= step) _owed = 0;
+    _events = events;
     return taken == 0 ? SceneDiff.none : _writeBack();
   }
 
