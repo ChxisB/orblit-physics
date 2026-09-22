@@ -34,9 +34,41 @@ for (final event in physics.events) {
 ```
 
 Bodies are named by whatever integer the caller already uses for them, usually
-an Orblit entity handle. The solver never looks inside one, which is why this
-package does not depend on `orblit_core` — or on anything else in the engine.
-It is a physics library that Orblit happens to use.
+an Orblit entity handle. The solver never looks inside one, which is why
+`orblit_physics` does not depend on `orblit_core` — or on anything else in the
+engine. It is a physics library that Orblit happens to use.
+
+## In a scene
+
+`orblit_physics_scene` is the one package here that knows about Orblit. It
+simulates the entities in a scene document that have a body component, and
+answers each step with the same kind of diff an edit makes, so whatever already
+draws a document draws the simulation.
+
+```dart
+final scene = ScenePhysics(document);
+
+// Every frame.
+view.apply(scene.advance(elapsed));
+
+// When the author drags a crate.
+scene.apply(edit);
+```
+
+`advance` steps the world at a fixed sixtieth however unevenly it is called,
+and writes back only the entities whose bodies moved, parents before children.
+`apply` rebuilds the bodies an edit touches where the document now puts them.
+That is a teleport: a crate that is dragged mid-fall stops falling. Entities
+are named by strings and bodies by numbers, so the bridge keeps the pairing
+(`bodyOf`, `entityOf`) and never gives a number to a second entity. The world
+itself is `scene.physics`, for pushing, casting and events.
+
+It depends on `orblit_scene` over git. To work against a checkout of the engine
+beside this one:
+
+```sh
+./tool/link_local.sh     # or: ./tool/link_local.sh path/to/orblit
+```
 
 ### Inside
 

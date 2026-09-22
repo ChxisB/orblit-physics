@@ -1,0 +1,26 @@
+name: orblit_physics_scene
+description: >-
+  The bodies in an Orblit scene document, simulated. Builds a physics world from
+  the document's body components and writes where they end up back into it as a
+  scene diff.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  orblit_physics:
+    path: ../orblit_physics
+  # The scene format lives in the engine. tool/link_local.sh points this at a
+  # sibling checkout instead, which is how CI builds it.
+  orblit_scene:
+    git:
+      url: https://github.com/ChxisB/orblit.git
+      path: packages/orblit_scene
+      ref: main
+  vector_math: ^2.1.4
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

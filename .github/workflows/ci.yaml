@@ -10,9 +10,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: orblit-physics
+
+      # The solver depends on nothing, but the scene bridge reads Orblit's
+      # scene documents. CI checks the engine out beside this repository and
+      # points the bridge at it, so a change here is tested against the engine
+      # as it is now rather than whatever a lockfile last saw.
+      - uses: actions/checkout@v4
+        with:
+          # No token: the engine is public, and the default GITHUB_TOKEN
+          # reads it.
+          repository: ChxisB/orblit
+          path: orblit
+
       - uses: dart-lang/setup-dart@v1
         with:
           # Pinned: the formatter changes between releases, and tracking
           # stable turns an unrelated SDK bump into a red build.
           sdk: 3.13.0
-      - run: ./tool/check.sh
+
+      - name: Link the engine
+        working-directory: orblit-physics
+        run: ./tool/link_local.sh ../orblit
+
+      - name: Check
+        working-directory: orblit-physics
+        run: ./tool/check.sh
