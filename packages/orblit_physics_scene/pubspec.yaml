@@ -3,7 +3,7 @@ description: >-
   The bodies in an Orblit scene document, simulated. Builds a physics world from
   the document's body components and writes where they end up back into it as a
   scene diff.
-version: 0.1.0
+version: 0.1.1
 publish_to: none
 
 environment:

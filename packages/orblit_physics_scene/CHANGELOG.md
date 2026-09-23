@@ -1,3 +1,10 @@
+## 0.1.1
+
+- A body whose `centre` is off its entity's origin leaves the entity where it
+  should be once it has turned. The offset was turned the opposite way when
+  the entity was read back from the body, so a turned body moved its entity
+  sideways by up to twice that offset.
+
 ## 0.1.0
 
 - First release. `ScenePhysics` builds a physics world from a scene document's

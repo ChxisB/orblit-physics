@@ -352,7 +352,11 @@ class ScenePhysics {
     // centre is measured from.
     final rotation = Quaternion(pose[3], pose[4], pose[5], pose[6])
       ..normalize();
-    final offset = rotation.rotated(body.centre.clone()..multiply(scale));
+    // Through the matrix, as placing the body did: `Quaternion.rotated` turns
+    // by the inverse, and the entity would jump sideways.
+    final offset = rotation.asRotationMatrix().transformed(
+      body.centre.clone()..multiply(scale),
+    );
     final at = Vector3(pose[0], pose[1], pose[2])..sub(offset);
     final world = Matrix4.compose(at, rotation, scale);
 

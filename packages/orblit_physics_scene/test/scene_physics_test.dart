@@ -239,6 +239,29 @@ void main() {
       },
     );
 
+    test('a body off its centre and turned falls straight down with it', () {
+      // The box's middle is a metre along the entity's own x, and the entity
+      // is turned, so the box starts a metre off to one side. Whichever side
+      // that is, reading the entity back from the box has to undo the same
+      // turn that placed the box, or the entity jumps sideways.
+      scene = ScenePhysics(
+        sceneOf([
+          floor(),
+          crate(
+            at: Vector3(0, 2, 0),
+            rotation: Vector3(0, 90, 0),
+            body: BodyComponent(centre: Vector3(1, 0, 0)),
+          ),
+        ]),
+      );
+      run(scene, 3);
+
+      final rested = transformOf(scene.document, 'crate').position;
+      expect(rested.x, closeTo(0, resting));
+      expect(rested.y, closeTo(0.5, resting));
+      expect(rested.z, closeTo(0, resting));
+    });
+
     test('a raised plane is raised ground', () {
       scene = ScenePhysics(sceneOf([floor(height: 1), crate()]));
       run(scene, 3);
