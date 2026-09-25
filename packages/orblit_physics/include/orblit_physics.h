@@ -91,6 +91,10 @@ typedef enum {
   ORBLIT_PHYSICS_PLACE = 3,
 
   /// Set linear velocity (`vector`) and angular velocity (`spin`) outright.
+  ///
+  /// For a character, `vector` is instead the velocity it asks for, gravity
+  /// included, relative to whatever it stands on, and `spin` is ignored.
+  /// Where it actually goes is up to what is in the way.
   ORBLIT_PHYSICS_VELOCITY = 4,
 
   /// Add an impulse `vector`, applied at world point `spin`. An impulse away
@@ -100,6 +104,27 @@ typedef enum {
 
   /// Wake it, whether or not anything touched it.
   ORBLIT_PHYSICS_WAKE = 6,
+
+  /// Make an existing kinematic body a character, or change one that already
+  /// is. `size[0]` is the tallest step it walks up, in metres; `size[1]` the
+  /// steepest slope it stands on, in radians; `size[2]` the gap it keeps from
+  /// everything, in metres, never less than a millimetre; `size[3]` the most
+  /// it pushes with, in newtons.
+  ///
+  /// A character is a body that walks. It is moved by sweeping its shape
+  /// through the world rather than by the solver, so it slides along walls,
+  /// climbs steps and stands on slopes it could not climb, rather than
+  /// bouncing off them. It stands on whatever is under it and goes where that
+  /// goes, pushes dynamic bodies no harder than it is allowed to, and is
+  /// pushed only by kinematic ones.
+  ///
+  /// It does not fall on its own. Gravity is part of what it is asked for, so
+  /// a game that stops asking has a character that hangs in the air, and a
+  /// game that wants a jump asks for one. Read its footing after each step to
+  /// know what survived of what it asked for.
+  ///
+  /// Ignored for anything but a kinematic body, and for a plane.
+  ORBLIT_PHYSICS_CHARACTER = 7,
 } OrblitPhysicsCommandKind;
 
 /// One thing to do to one body, before the next step.
@@ -118,6 +143,7 @@ typedef struct {
   OrblitPhysicsId id;
 
   /// CREATE: the shape's dimensions, read as that kind describes.
+  /// CHARACTER: step height, steepest slope, skin and strength.
   float size[4];
 
   /// CREATE, PLACE: where.
@@ -127,7 +153,8 @@ typedef struct {
   /// a caller that does not care about rotation can leave it alone.
   float rotation[4];
 
-  /// VELOCITY: metres per second. IMPULSE: the impulse, newton-seconds.
+  /// VELOCITY: metres per second, or for a character what it asks for.
+  /// IMPULSE: the impulse, newton-seconds.
   float vector[3];
 
   /// VELOCITY: radians per second. IMPULSE: the world point it acts at.
@@ -398,6 +425,50 @@ typedef struct {
 /// where things are, and a crate that has settled is still in the way.
 bool orblit_physics_cast(const OrblitPhysics *physics,
                          const OrblitPhysicsCast *cast, OrblitPhysicsHit *out);
+
+// ------------------------------------------------------------- characters ---
+
+/// What a character stood on at the end of a step, and what it was left with.
+///
+/// This is the half of a character the game reads back. It asked for a
+/// velocity; this is what the world made of it, and what the next request
+/// should start from.
+typedef struct {
+  /// What is under it, walkable or not. Zero for nothing within reach.
+  OrblitPhysicsId ground;
+
+  /// Which way that surface faces. For a step's edge this is the top of the
+  /// step rather than the corner it touched, because "which way is the floor"
+  /// is the question a game is asking.
+  float normal[3];
+
+  /// What survived of the velocity it asked for, relative to its ground. A
+  /// wall takes away the part going into it, and a floor takes away the part
+  /// going down, which is why the next request adds gravity to this rather
+  /// than to the last one: a character standing still does not accumulate a
+  /// fall it is not taking.
+  float velocity[3];
+
+  /// How far its ground moved it last step, per second, and how fast its
+  /// ground turned it about up, in radians per second. Kept apart from
+  /// `velocity` so an animation can play the walk it asked for rather than
+  /// the ride it was given, and a camera can turn with a turntable.
+  float carried[3];
+  float turning;
+
+  /// Standing on something it could stand on. False in the air, on a slope
+  /// steeper than it may climb, and on the way up a jump.
+  bool grounded;
+  bool _reserved[7];
+} OrblitPhysicsFooting;
+
+/// Writes the footing of each of `ids` into `out[i]`.
+///
+/// An id that is not a character is skipped and its slot left exactly as it
+/// was, like `orblit_physics_read`. Returns how many were written.
+uint32_t orblit_physics_footing(const OrblitPhysics *physics,
+                                const OrblitPhysicsId *ids, uint32_t count,
+                                OrblitPhysicsFooting *out);
 
 #ifdef __cplusplus
 }

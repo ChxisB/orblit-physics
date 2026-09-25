@@ -528,6 +528,11 @@ void casting() {
   check(near(hit.at[1], 5.5f, 0.01f), "and a point on that face");
   check(!hit.started, "and it did not begin inside anything");
 
+  const OrblitPhysicsCast aside = rayFrom(0.3f, 10.0f, 0.2f, 0.0f, -1.0f, 0.0f, 100.0f);
+  check(orblit_physics_cast(physics, &aside, &hit) &&
+            near(hit.normal[1], 1.0f, 1.0e-4f),
+        "and away from the middle of the face the normal is still straight up");
+
   OrblitPhysicsCast unmeasured = down;
   unmeasured.direction[1] = -10.0f;
   check(orblit_physics_cast(physics, &unmeasured, &hit) &&
@@ -562,6 +567,16 @@ void casting() {
             near(hit.distance, 4.2f, 0.02f),
         "a capsule cast sideways stops a radius short of the face");
   check(near(hit.normal[0], -1.0f, 0.02f), "against the face it walked into");
+
+  // Closer to the face than a cast calls touching, but not in it: exactly
+  // flush is an overlap of nothing, which the narrowphase counts as begun.
+  OrblitPhysicsCast grazing = walking;
+  grazing.from[0] = -0.80005f;
+  grazing.direction[0] = 0.0f;
+  grazing.direction[1] = -1.0f;
+  grazing.distance = 1.0f;
+  check(!orblit_physics_cast(physics, &grazing, &hit),
+        "and one against that face and dropping past it misses");
 
   const OrblitPhysicsCast begun = rayFrom(0.0f, 5.0f, 0.0f, 1.0f, 0.0f, 0.0f, 10.0f);
   check(orblit_physics_cast(physics, &begun, &hit), "a cast that begins inside a body reports it");
@@ -603,6 +618,343 @@ void casting() {
   orblit_physics_destroy(filtered);
 }
 
+// --- the character course -------------------------------------------------- //
+//
+// Stairs, a ledge, two ramps, a lift, a turntable, crates and a moving wall:
+// everything a character is for, walked the way a game would walk it.
+
+constexpr float kStep = 1.0f / 60.0f;
+
+OrblitPhysicsCommand slabAt(OrblitPhysicsId id, float hx, float hy, float hz,
+                            float x, float y, float z) {
+  OrblitPhysicsCommand made = boxAt(id, hx, x, y, z);
+  made.size[1] = hy;
+  made.size[2] = hz;
+  made.motion = ORBLIT_PHYSICS_STATIC;
+  return made;
+}
+
+/// A fixed half-space rising along +x at `angle` from the ground, from x =
+/// `foot` onwards. Below the ground before that, so it and a ground plane
+/// together are a flat floor running into a ramp.
+OrblitPhysicsCommand rampFrom(OrblitPhysicsId id, float foot, float angle) {
+  OrblitPhysicsCommand made = groundPlane(id);
+  made.size[0] = -std::sin(angle);
+  made.size[1] = std::cos(angle);
+  made.size[3] = -foot * std::sin(angle);
+  return made;
+}
+
+/// A person: a capsule 1.8 m tall and 0.6 across, feet a skin above `feet`,
+/// that climbs 0.3 m, walks up 45 degrees and pushes with 500 N.
+void addCharacter(OrblitPhysics *physics, OrblitPhysicsId id, float x, float feet,
+                  float z) {
+  OrblitPhysicsCommand made = capsuleAt(id, 0.3f, 0.6f, x, feet + 0.91f, z);
+  made.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, made);
+
+  OrblitPhysicsCommand character{};
+  character.kind = ORBLIT_PHYSICS_CHARACTER;
+  character.id = id;
+  character.size[0] = 0.3f;
+  character.size[1] = 0.78539816f;
+  character.size[2] = 0.01f;
+  character.size[3] = 500.0f;
+  submit(physics, character);
+}
+
+void drive(OrblitPhysics *physics, OrblitPhysicsId id, float vx, float vy,
+           float vz, float spinY) {
+  OrblitPhysicsCommand made{};
+  made.kind = ORBLIT_PHYSICS_VELOCITY;
+  made.id = id;
+  made.vector[0] = vx;
+  made.vector[1] = vy;
+  made.vector[2] = vz;
+  made.spin[1] = spinY;
+  submit(physics, made);
+}
+
+OrblitPhysicsFooting footingOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  OrblitPhysicsFooting out{};
+  orblit_physics_footing(physics, &id, 1, &out);
+  return out;
+}
+
+float coordinateOf(OrblitPhysics *physics, OrblitPhysicsId id, int axis) {
+  float transform[7] = {0};
+  orblit_physics_transform(physics, id, transform);
+  return transform[axis];
+}
+
+/// Walks a character the way a game does, a fixed step at a time: ask to go
+/// at (vx, vz) across the ground, keep whatever it was falling at, and add a
+/// step of gravity to that. Returns how many steps it was not standing.
+int walk(OrblitPhysics *physics, OrblitPhysicsId id, float vx, float vz,
+         float seconds) {
+  int airborne = 0;
+  const int steps = static_cast<int>(seconds / kStep + 0.5f);
+  for (int i = 0; i < steps; ++i) {
+    const OrblitPhysicsFooting footing = footingOf(physics, id);
+    OrblitPhysicsCommand ask{};
+    ask.kind = ORBLIT_PHYSICS_VELOCITY;
+    ask.id = id;
+    ask.vector[0] = vx;
+    ask.vector[1] = footing.velocity[1] - 9.81f * kStep;
+    ask.vector[2] = vz;
+    submit(physics, ask);
+    orblit_physics_step(physics, kStep);
+    if (!footingOf(physics, id).grounded) airborne++;
+  }
+  return airborne;
+}
+
+/// Five 0.2 m risers with 0.3 m treads from x = 1, up to a landing at 1.0 m
+/// that runs on to x = 8. Ids 10 to 14, the landing last.
+void buildStairs(OrblitPhysics *physics) {
+  for (int i = 0; i < 5; ++i) {
+    const float top = 0.2f * static_cast<float>(i + 1);
+    const float from = 1.0f + 0.3f * static_cast<float>(i);
+    const float to = i == 4 ? 8.0f : from + 0.3f;
+    submit(physics, slabAt(10 + i, (to - from) / 2.0f, top / 2.0f, 1.0f,
+                           (from + to) / 2.0f, top / 2.0f, 0.0f));
+  }
+}
+
+void walking() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+
+  const int airborne = walk(physics, 2, 2.0f, 0.0f, 1.0f);
+  check(near(coordinateOf(physics, 2, 0), 2.0f, 0.05f),
+        "a character walks across flat ground at the speed it asks for");
+  check(airborne == 0, "and never leaves it");
+  check(near(heightOf(physics, 2), 0.91f, 0.002f), "and stands a skin above it");
+
+  const OrblitPhysicsFooting footing = footingOf(physics, 2);
+  check(footing.ground == 1 && near(footing.normal[1], 1.0f, 1.0e-4f),
+        "and says what it is standing on");
+  check(near(footing.velocity[0], 2.0f, 1.0e-4f) &&
+            near(footing.velocity[1], 0.0f, 1.0e-4f),
+        "with the fall taken out of what it asked for and the walk left in");
+  check(near(speedOf(physics, 2), 2.0f, 0.05f),
+        "and its velocity is what it did, for the solver to see");
+
+  orblit_physics_destroy(physics);
+}
+
+void climbing() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  buildStairs(physics);
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+
+  walk(physics, 2, 1.5f, 0.0f, 3.0f);
+  check(coordinateOf(physics, 2, 0) > 3.0f,
+        "a character walks up 0.2 m stairs with a 0.3 m step");
+  check(near(heightOf(physics, 2), 1.91f, 0.005f),
+        "and stands on the landing at the top");
+  check(footingOf(physics, 2).ground == 14, "which is what it says it is on");
+
+  const int airborne = walk(physics, 2, -1.5f, 0.0f, 3.0f);
+  check(coordinateOf(physics, 2, 0) < 0.5f &&
+            near(heightOf(physics, 2), 0.91f, 0.005f),
+        "and back down them to the ground");
+  check(airborne == 0, "without once leaving them on the way down");
+
+  orblit_physics_destroy(physics);
+}
+
+void blocking() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 1.0f, 0.25f, 1.0f, 2.0f, 0.25f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+
+  walk(physics, 2, 1.5f, 0.0f, 2.0f);
+  const float x = coordinateOf(physics, 2, 0);
+  check(x > 0.65f && x < 0.7f, "a 0.5 m ledge stops a character that climbs 0.3 m");
+  check(near(heightOf(physics, 2), 0.91f, 0.002f),
+        "and it stays on the ground in front of it");
+
+  orblit_physics_destroy(physics);
+}
+
+void slopes() {
+  OrblitPhysics *steep = orblit_physics_create(nullptr);
+  submit(steep, groundPlane(1));
+  submit(steep, rampFrom(3, 1.0f, 1.0471976f));
+  addCharacter(steep, 2, 0.0f, 0.0f, 0.0f);
+  walk(steep, 2, 1.5f, 0.0f, 3.0f);
+  check(coordinateOf(steep, 2, 0) < 1.3f && heightOf(steep, 2) < 1.1f,
+        "a 60 degree slope stops a character that climbs 45");
+  orblit_physics_destroy(steep);
+
+  OrblitPhysics *gentle = orblit_physics_create(nullptr);
+  submit(gentle, groundPlane(1));
+  submit(gentle, rampFrom(3, 1.0f, 0.43633231f));
+  addCharacter(gentle, 2, 0.0f, 0.0f, 0.0f);
+  walk(gentle, 2, 1.5f, 0.0f, 3.0f);
+  check(coordinateOf(gentle, 2, 0) > 4.3f && heightOf(gentle, 2) > 2.4f,
+        "and a 25 degree one it walks up at full speed");
+  check(footingOf(gentle, 2).ground == 3 &&
+            near(footingOf(gentle, 2).normal[0], -0.42261826f, 1.0e-3f),
+        "and says it is on the ramp, and which way the ramp faces");
+
+  const float x = coordinateOf(gentle, 2, 0);
+  const float y = heightOf(gentle, 2);
+  walk(gentle, 2, 0.0f, 0.0f, 1.0f);
+  check(near(coordinateOf(gentle, 2, 0), x, 1.0e-3f) &&
+            near(heightOf(gentle, 2), y, 1.0e-3f),
+        "and stands still on it without sliding back down");
+  orblit_physics_destroy(gentle);
+}
+
+void riding() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand lift = slabAt(1, 1.0f, 0.1f, 1.0f, 0.0f, 0.0f, 0.0f);
+  lift.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, lift);
+  addCharacter(physics, 2, 0.0f, 0.1f, 0.0f);
+
+  drive(physics, 1, 0.0f, 1.0f, 0.0f, 0.0f);
+  int airborne = walk(physics, 2, 0.0f, 0.0f, 1.0f);
+  check(heightOf(physics, 1) > 0.95f &&
+            near(heightOf(physics, 2) - heightOf(physics, 1), 1.01f, 0.005f),
+        "a character rides a lift up");
+  check(footingOf(physics, 2).ground == 1 &&
+            near(footingOf(physics, 2).carried[1], 1.0f, 0.01f),
+        "and says what carried it and how fast");
+
+  drive(physics, 1, 0.0f, -1.0f, 0.0f, 0.0f);
+  airborne += walk(physics, 2, 0.0f, 0.0f, 1.0f);
+  check(near(heightOf(physics, 2) - heightOf(physics, 1), 1.01f, 0.005f),
+        "and back down again");
+  check(airborne == 0, "standing on it the whole way");
+
+  orblit_physics_destroy(physics);
+}
+
+void turning() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand table = slabAt(1, 3.0f, 0.1f, 3.0f, 0.0f, 0.0f, 0.0f);
+  table.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, table);
+  addCharacter(physics, 2, 1.0f, 0.1f, 0.0f);
+  drive(physics, 1, 0.0f, 0.0f, 0.0f, 1.0f);
+
+  // A quarter turn, which takes (1, 0) round to (0, -1) about +y.
+  walk(physics, 2, 0.0f, 0.0f, 1.5707963f);
+  check(near(coordinateOf(physics, 2, 0), 0.0f, 0.05f) &&
+            near(coordinateOf(physics, 2, 2), -1.0f, 0.05f),
+        "a character on a turntable goes round with it");
+  check(near(footingOf(physics, 2).turning, 1.0f, 0.01f),
+        "and says how fast it is being turned");
+
+  orblit_physics_destroy(physics);
+}
+
+void pushing() {
+  OrblitPhysics *open = orblit_physics_create(nullptr);
+  submit(open, groundPlane(1));
+  OrblitPhysicsCommand crate = boxAt(3, 0.4f, 1.5f, 0.4f, 0.0f);
+  crate.mass = 10.0f;
+  submit(open, crate);
+  addCharacter(open, 2, 0.0f, 0.0f, 0.0f);
+
+  walk(open, 2, 1.5f, 0.0f, 2.0f);
+  check(coordinateOf(open, 3, 0) > 2.3f, "a character pushes a crate it walks into");
+  check(coordinateOf(open, 2, 0) < coordinateOf(open, 3, 0) - 0.69f,
+        "without walking into it");
+  orblit_physics_destroy(open);
+
+  OrblitPhysics *walled = orblit_physics_create(nullptr);
+  submit(walled, groundPlane(1));
+  submit(walled, slabAt(4, 0.25f, 1.0f, 2.0f, 3.25f, 1.0f, 0.0f));
+  crate.at[0] = 2.6f;
+  submit(walled, crate);
+  addCharacter(walled, 2, 0.0f, 0.0f, 0.0f);
+
+  walk(walled, 2, 1.5f, 0.0f, 3.0f);
+  check(coordinateOf(walled, 3, 0) < 2.62f, "and cannot push one through a wall");
+  check(coordinateOf(walled, 2, 0) < 1.91f, "or walk through it either");
+  orblit_physics_destroy(walled);
+}
+
+void crowding() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  OrblitPhysicsCommand wall = slabAt(3, 0.25f, 1.0f, 2.0f, 2.0f, 1.0f, 0.0f);
+  wall.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, wall);
+  drive(physics, 3, -1.0f, 0.0f, 0.0f, 0.0f);
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+
+  const int airborne = walk(physics, 2, 0.0f, 0.0f, 2.0f);
+  check(coordinateOf(physics, 2, 0) < coordinateOf(physics, 3, 0) - 0.55f,
+        "a driven wall pushes a character out of its way");
+  check(airborne == 0 && near(heightOf(physics, 2), 0.91f, 0.002f),
+        "along the ground, rather than up or through it");
+
+  orblit_physics_destroy(physics);
+}
+
+void footings() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(3, 0.5f, 3.0f, 0.5f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  orblit_physics_step(physics, kStep);
+
+  const OrblitPhysicsId ids[3] = {99, 2, 3};
+  OrblitPhysicsFooting out[3] = {};
+  out[0].ground = 12345;
+  out[2].ground = 12345;
+  check(orblit_physics_footing(physics, ids, 3, out) == 1,
+        "reading footing counts only the characters");
+  check(out[1].grounded && out[1].ground == 1, "and fills in the one it found");
+  check(out[0].ground == 12345 && out[2].ground == 12345,
+        "and leaves every other slot alone");
+
+  OrblitPhysicsCommand up{};
+  up.kind = ORBLIT_PHYSICS_PLACE;
+  up.id = 2;
+  up.at[1] = 5.0f;
+  up.rotation[3] = 1.0f;
+  submit(physics, up);
+  check(!footingOf(physics, 2).grounded && footingOf(physics, 2).ground == 0,
+        "placing a character forgets what it stood on");
+
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 5.0f, 1.0e-4f),
+        "and it does not fall by itself");
+
+  const int airborne = walk(physics, 2, 0.0f, 0.0f, 2.0f);
+  check(airborne > 0 && footingOf(physics, 2).grounded &&
+            near(heightOf(physics, 2), 0.91f, 0.002f),
+        "but does when the game adds gravity, and lands");
+
+  OrblitPhysicsCommand gone{};
+  gone.kind = ORBLIT_PHYSICS_DESTROY;
+  gone.id = 2;
+  submit(physics, gone);
+  OrblitPhysicsFooting none{};
+  const OrblitPhysicsId two = 2;
+  check(orblit_physics_footing(physics, &two, 1, &none) == 0,
+        "destroying a character forgets it");
+
+  OrblitPhysicsCommand refused{};
+  refused.kind = ORBLIT_PHYSICS_CHARACTER;
+  refused.id = 3;
+  submit(physics, refused);
+  const OrblitPhysicsId three = 3;
+  check(orblit_physics_footing(physics, &three, 1, &none) == 0,
+        "and only a kinematic body can become one");
+
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -618,6 +970,15 @@ int main() {
   driving();
   reading();
   refusing();
+  walking();
+  climbing();
+  blocking();
+  slopes();
+  riding();
+  turning();
+  pushing();
+  crowding();
+  footings();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

@@ -8,6 +8,7 @@
 // a command still takes effect the moment it is given.
 
 import 'dart:ffi';
+import 'dart:math' show pi;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -20,7 +21,9 @@ enum PhysicsMotion {
   fixed(0),
 
   /// Moves exactly where it is put, and pushes anything in the way without
-  /// being pushed back. Lifts, doors, a character controller.
+  /// being pushed back. Lifts, doors, turntables. Something that walks wants
+  /// `Physics.addCharacter` instead, which is a driven body that looks where
+  /// it is going.
   driven(1),
 
   /// Falls, is pushed, and pushes back.
@@ -139,6 +142,49 @@ final class PhysicsHit {
   final bool started;
 }
 
+/// What a character stood on at the end of the last step, and what survived
+/// of what it asked for.
+///
+/// This is the half of a character a game reads back. It asked for a
+/// velocity; this is what the world made of it, and the next request starts
+/// from here rather than from the last one — a character standing still does
+/// not pile up a fall it is not taking.
+final class PhysicsFooting {
+  const PhysicsFooting({
+    required this.ground,
+    required this.normal,
+    required this.velocity,
+    required this.carried,
+    required this.turning,
+    required this.grounded,
+  });
+
+  /// What is under it, walkable or not, within a step's reach. Zero for
+  /// nothing at all.
+  final int ground;
+
+  /// Which way that surface faces. On the edge of a step this is the top of
+  /// the step rather than the corner it is touching, because "which way is
+  /// the floor" is the question being asked.
+  final List<double> normal;
+
+  /// What is left of the velocity it asked for, relative to its ground. A wall
+  /// takes away the part going into it, and a floor takes away everything up
+  /// and down, so a character walking up a ramp reads back a flat speed.
+  final List<double> velocity;
+
+  /// How far its ground moved it last step, per second, and how fast its
+  /// ground turned it about up, in radians per second. Apart from `velocity`
+  /// so an animation plays the walk it asked for rather than the ride it was
+  /// given, and a camera can turn with a turntable.
+  final List<double> carried;
+  final double turning;
+
+  /// Standing on something it may stand on. False in the air, on a slope
+  /// steeper than it may climb, and on the way up a jump.
+  final bool grounded;
+}
+
 /// How a world behaves. Anything left null is the engine's own default, so
 /// there is one place the numbers live and it is not this file.
 final class PhysicsSettings {
@@ -255,6 +301,53 @@ class Physics {
     command.asleep = asleep;
   }
 
+  /// Adds a character: a body that walks.
+  ///
+  /// It is moved by sweeping its shape through the world rather than by the
+  /// solver, so it slides along walls instead of bouncing off them, climbs
+  /// anything up to `stepHeight` metres tall, stands on slopes up to
+  /// `steepest` radians and slides down steeper ones, and rides whatever it is
+  /// standing on. It pushes free bodies it walks into with at most `strength`
+  /// newtons, and is pushed by nothing but driven ones: a door closing on it
+  /// shoves it aside, a crate rolling into it stops. It keeps `skin` metres
+  /// from everything, which is what stops it snagging on a seam between two
+  /// floor tiles.
+  ///
+  /// `at` is its centre, as it is for every body. The default capsule is 1.8
+  /// metres tall, so it stands with its centre 0.9 above its feet, and a skin
+  /// above that.
+  ///
+  /// Tell it where to go with [drive], every step, and read what came of it
+  /// with [footingOf]. It does not fall on its own: gravity is part of what it
+  /// asks for, which is what lets a game decide what a jump is.
+  void addCharacter(
+    int id, {
+    Shape shape = const Shape.capsule(0.3, 0.6),
+    List<double> at = const [0.0, 0.0, 0.0],
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    double stepHeight = 0.3,
+    double steepest = pi / 4,
+    double skin = 0.01,
+    double strength = 500.0,
+    double friction = 0.5,
+    Layers layers = Layers.everything,
+  }) {
+    add(
+      id,
+      shape: shape,
+      motion: PhysicsMotion.driven,
+      at: at,
+      rotation: rotation,
+      friction: friction,
+      layers: layers,
+    );
+    final command = _next(7, id);
+    command.size[0] = stepHeight;
+    command.size[1] = steepest;
+    command.size[2] = skin;
+    command.size[3] = strength;
+  }
+
   /// Takes a body out of the world. Anything that was touching it is told the
   /// touch has ended on the next step.
   void remove(int id) => _next(2, id);
@@ -275,6 +368,12 @@ class Physics {
 
   /// Sets how a body is moving, outright. This is how a driven body is told
   /// where to go.
+  ///
+  /// For a character it is a request rather than an order: `velocity` is
+  /// where it would like to go, relative to whatever it is standing on and
+  /// with gravity in it, and the world decides how much of that it gets.
+  /// `spin` is ignored: which way a character faces is the game's to keep,
+  /// since a standing capsule is the same shape whichever way it looks.
   void drive(
     int id, {
     List<double> velocity = const [0.0, 0.0, 0.0],
@@ -466,6 +565,50 @@ class Physics {
     } finally {
       calloc.free(query);
       calloc.free(found);
+    }
+  }
+
+  // --- characters ----------------------------------------------------------
+
+  /// What character `id` stood on at the end of the last step, or null if it
+  /// is not a character.
+  PhysicsFooting? footingOf(int id) => footingsOf([id]).single;
+
+  /// The footing of each of `ids`, in the same order, in one crossing. A slot
+  /// is null where that id is not a character, so a game with a crowd reads
+  /// all of them at once without keeping its characters in a list of their
+  /// own.
+  List<PhysicsFooting?> footingsOf(List<int> ids) {
+    _flush();
+    if (ids.isEmpty) return const [];
+
+    final keys = calloc<Uint64>(ids.length);
+    final into = calloc<native.OrblitPhysicsFooting>(ids.length);
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        keys[i] = ids[i];
+        // The engine writes every field of a character's slot and none of
+        // anyone else's, so a slot still holding NaN afterwards is one it
+        // passed over. `turning` is a number for every character there is.
+        into[i].turning = double.nan;
+      }
+      native.physicsFooting(_alive, keys, ids.length, into);
+
+      return List<PhysicsFooting?>.generate(ids.length, (index) {
+        final it = into[index];
+        if (it.turning.isNaN) return null;
+        return PhysicsFooting(
+          ground: it.ground,
+          normal: [it.normal[0], it.normal[1], it.normal[2]],
+          velocity: [it.velocity[0], it.velocity[1], it.velocity[2]],
+          carried: [it.carried[0], it.carried[1], it.carried[2]],
+          turning: it.turning,
+          grounded: it.grounded,
+        );
+      });
+    } finally {
+      calloc.free(keys);
+      calloc.free(into);
     }
   }
 

@@ -27,12 +27,6 @@ Motion motionOf(uint32_t motion) {
   }
 }
 
-/// Orblit's `Layers` rule, unchanged: a pair interacts when either cares about
-/// the other, not when both do.
-bool interact(uint32_t isA, uint32_t caresA, uint32_t isB, uint32_t caresB) {
-  return (caresA & isB) != 0 || (caresB & isA) != 0;
-}
-
 PairKey keyOf(OrblitPhysicsId a, OrblitPhysicsId b) {
   return a < b ? PairKey{a, b} : PairKey{b, a};
 }
@@ -42,6 +36,17 @@ PairKey keyOf(OrblitPhysicsId a, OrblitPhysicsId b) {
 float damped(float damping, float delta) {
   return 1.0f / (1.0f + std::fmax(damping, 0.0f) * delta);
 }
+
+/// The steepest slope a character may be told it can stand on, in radians:
+/// about 87 degrees. Short of vertical, because a character that may stand
+/// on a wall stands on every wall, and short of it by enough that "is this a
+/// floor" never turns on the last bit of a float.
+constexpr float kSteepest = 1.52f;
+
+/// The thinnest gap a character may keep, in metres. Casts stop a tenth of a
+/// millimetre short of what they meet, so a skin thinner than a few of those
+/// is a character that is always touching something.
+constexpr float kThinnest = 1.0e-3f;
 
 } // namespace
 
@@ -108,37 +113,97 @@ void World::apply(const OrblitPhysicsCommand &command) {
   switch (command.kind) {
     case ORBLIT_PHYSICS_DESTROY:
       bodies_.remove(command.id);
+      // Erased in place rather than swapped out, because the list's order is
+      // the order characters move in, and two characters that swap turns
+      // swap which of them gets to a doorway first.
+      characters_.erase(std::remove_if(characters_.begin(), characters_.end(),
+                                       [&](const Character &c) {
+                                         return c.id == command.id;
+                                       }),
+                        characters_.end());
       return;
 
     case ORBLIT_PHYSICS_PLACE:
       bodies_.place(row, vectorOf(command.at), rotationOf(command.rotation));
+      if (Character *character = characterOf(command.id)) character->forget();
       wake(row);
       return;
 
     case ORBLIT_PHYSICS_VELOCITY:
+      // A character's velocity is a request, not a fact. The column keeps
+      // what it actually did last step, which is what the solver needs to
+      // know about it when a crate is up against it.
+      if (Character *character = characterOf(command.id)) {
+        character->wanted = vectorOf(command.vector);
+        return;
+      }
       bodies_.velocity(row) = vectorOf(command.vector);
       bodies_.spin(row) = vectorOf(command.spin);
       bodies_.refresh(row);
       wake(row);
       return;
 
-    case ORBLIT_PHYSICS_IMPULSE: {
-      if (!bodies_.movable(row)) return;
-      wake(row);
-      const Vec3 impulse = vectorOf(command.vector);
-      const Vec3 lever = vectorOf(command.spin) - bodies_.at(row);
-      bodies_.velocity(row) += impulse * bodies_.inverseMass(row);
-      bodies_.spin(row) += bodies_.inverseInertia(row) * cross(lever, impulse);
+    case ORBLIT_PHYSICS_IMPULSE:
+      push(row, vectorOf(command.vector), vectorOf(command.spin));
       return;
-    }
 
     case ORBLIT_PHYSICS_WAKE:
       wake(row);
       return;
 
+    case ORBLIT_PHYSICS_CHARACTER: {
+      const Motion motion = bodies_.motion(row);
+      if (motion != Motion::driven && motion != Motion::character) return;
+      if (bodies_.shape(row).kind == ShapeKind::plane) return;
+
+      Character *character = characterOf(command.id);
+      if (character == nullptr) {
+        characters_.emplace_back();
+        character = &characters_.back();
+        character->id = command.id;
+        // Whatever it was being driven at, it now asks for, so turning a
+        // moving platform into a character does not stop it dead.
+        character->wanted = bodies_.velocity(row);
+      }
+      // fmax and fmin rather than a comparison, so a NaN from the caller
+      // becomes the edge of the range rather than a character that is never
+      // on any floor at all.
+      character->stepHeight = std::fmax(command.size[0], 0.0f);
+      character->slopeCos =
+          std::cos(std::fmin(std::fmax(command.size[1], 0.0f), kSteepest));
+      character->skin = std::fmax(command.size[2], kThinnest);
+      character->strength = std::fmax(command.size[3], 0.0f);
+
+      bodies_.steer(row, Motion::character);
+      bodies_.spin(row) = {};
+      return;
+    }
+
     default:
       return;
   }
+}
+
+void World::push(uint32_t row, const Vec3 &impulse, const Vec3 &point) {
+  if (!bodies_.movable(row)) return;
+  wake(row);
+  const Vec3 lever = point - bodies_.at(row);
+  bodies_.velocity(row) += impulse * bodies_.inverseMass(row);
+  bodies_.spin(row) += bodies_.inverseInertia(row) * cross(lever, impulse);
+}
+
+Character *World::characterOf(OrblitPhysicsId id) {
+  for (Character &character : characters_) {
+    if (character.id == id) return &character;
+  }
+  return nullptr;
+}
+
+const Character *World::characterOf(OrblitPhysicsId id) const {
+  for (const Character &character : characters_) {
+    if (character.id == id) return &character;
+  }
+  return nullptr;
 }
 
 void World::wake(uint32_t row) {
@@ -168,6 +233,7 @@ void World::step(float delta) {
   solver_.solvePositions(bodies_, manifolds_.data(), solving_);
 
   bodies_.refreshAll();
+  moveCharacters(delta);
   reportTouches();
   updateSleep(delta);
 
@@ -297,8 +363,10 @@ void World::integratePositions(float delta) {
   const uint32_t count = bodies_.count();
   for (uint32_t row = 0; row < count; ++row) {
     // A kinematic body moves too: it is driven rather than solved, and a
-    // platform that never went anywhere would not be much of a platform.
+    // platform that never went anywhere would not be much of a platform. A
+    // character is moved later, by looking before it goes.
     if (bodies_.motion(row) == Motion::fixed) continue;
+    if (bodies_.motion(row) == Motion::character) continue;
     if (bodies_.movable(row) && bodies_.asleep(row)) continue;
     bodies_.at(row) += bodies_.velocity(row) * delta;
     bodies_.rotation(row) =
@@ -418,55 +486,56 @@ bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
                                   : Shape::fromCommand(query.shape, query.size);
   moving.at = vectorOf(query.from);
   moving.rotation = rotationOf(query.rotation);
-  if (moving.shape.kind == ShapeKind::plane) return false;
 
-  const float distance = std::fmax(query.distance, 0.0f);
-  const Vec3 finish = moving.at + direction * distance;
+  Sieve sieve;
+  sieve.layerIs = query.layerIs;
+  sieve.layerCares = query.layerCares;
+  sieve.ignore = query.ignore;
 
-  // Where the cast could possibly reach, as one box: the shape at each end of
-  // its travel and everything between. Grown by a hair so a body it meets
-  // exactly edge on is not filtered out before it is looked at properly.
-  const Bounds begins = moving.shape.boundsAt(moving.at, moving.rotation);
-  const Bounds ends = moving.shape.boundsAt(finish, moving.rotation);
-  const Bounds swept = Bounds{minPerAxis(begins.low, ends.low),
-                              maxPerAxis(begins.high, ends.high)}
-                           .grown(1.0e-3f);
-
-  Impact nearest{};
-  uint32_t hit = Bodies::kNone;
-  const uint32_t count = bodies_.count();
-  for (uint32_t row = 0; row < count; ++row) {
-    if (bodies_.id(row) == query.ignore) continue;
-    if (!interact(query.layerIs, query.layerCares, bodies_.layerIs(row),
-                  bodies_.layerCares(row))) {
-      continue;
-    }
-    // A half-space has no bounds to test against — it is half the world — so
-    // it is always asked properly, the way the broadphase treats it.
-    const bool half = bodies_.shape(row).kind == ShapeKind::plane;
-    if (!half && !swept.overlaps(bodies_.bounds(row))) continue;
-
-    const Placed fixed{bodies_.shape(row), bodies_.at(row),
-                       bodies_.rotation(row)};
-    Impact impact;
-    if (!sweep(moving, direction, distance, fixed, impact)) continue;
-    if (hit != Bodies::kNone && impact.distance >= nearest.distance) continue;
-    nearest = impact;
-    hit = row;
-  }
+  Impact impact;
+  const uint32_t hit = nearest(bodies_, moving, direction,
+                               std::fmax(query.distance, 0.0f), sieve, impact);
   if (hit == Bodies::kNone) return false;
 
   out = OrblitPhysicsHit{};
   out.body = bodies_.id(hit);
-  out.at[0] = nearest.at.x;
-  out.at[1] = nearest.at.y;
-  out.at[2] = nearest.at.z;
-  out.normal[0] = nearest.normal.x;
-  out.normal[1] = nearest.normal.y;
-  out.normal[2] = nearest.normal.z;
-  out.distance = nearest.distance;
-  out.started = nearest.started;
+  out.at[0] = impact.at.x;
+  out.at[1] = impact.at.y;
+  out.at[2] = impact.at.z;
+  out.normal[0] = impact.normal.x;
+  out.normal[1] = impact.normal.y;
+  out.normal[2] = impact.normal.z;
+  out.distance = impact.distance;
+  out.started = impact.started;
   return true;
+}
+
+uint32_t World::footing(const OrblitPhysicsId *ids, uint32_t count,
+                        OrblitPhysicsFooting *out) const {
+  if (ids == nullptr || out == nullptr) return 0;
+
+  uint32_t written = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const Character *character = characterOf(ids[i]);
+    if (character == nullptr) continue;
+
+    OrblitPhysicsFooting &into = out[i];
+    into = OrblitPhysicsFooting{};
+    into.ground = character->ground;
+    into.normal[0] = character->normal.x;
+    into.normal[1] = character->normal.y;
+    into.normal[2] = character->normal.z;
+    into.velocity[0] = character->wanted.x;
+    into.velocity[1] = character->wanted.y;
+    into.velocity[2] = character->wanted.z;
+    into.carried[0] = character->carried.x;
+    into.carried[1] = character->carried.y;
+    into.carried[2] = character->carried.z;
+    into.turning = character->turning;
+    into.grounded = character->grounded;
+    ++written;
+  }
+  return written;
 }
 
 } // namespace orblit

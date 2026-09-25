@@ -75,7 +75,7 @@ beside this one:
 ### Inside
 
 A step is: find contacts, integrate velocity, solve velocity, integrate
-position, solve position, sleep. Velocity and position are solved separately
+position, solve position, move characters, sleep. Velocity and position are solved separately
 because they answer different questions — restitution and friction are about
 how things are moving, overlap is about where they are — and the position pass
 runs after integration so it is not correcting a gap that integration is about
@@ -94,8 +94,8 @@ anything that touches them.
 
 `cast` fires a shape along a direction and answers the first body it meets.
 With no shape it fires a point, which is the ray cast everything else is named
-after and the cheap case; with one it is how a character finds the floor under
-its feet, or a camera the wall behind the player.
+after and the cheap case; with one it is how a camera finds the wall behind the
+player, or a thrown thing where it will land.
 
 ```dart
 final ground = physics.cast(
@@ -114,6 +114,41 @@ can never step past one. A cast that starts inside a body says so rather than
 reporting a distance of nothing and leaving the caller to guess — a character
 who begins in a wall wants pushing out of it, not stopping where they already
 are.
+
+### Characters
+
+A character is a body that walks. The solver would bounce it off walls, catch
+its feet on every step and slide it down every slope, so it is not solved: it
+is swept through the world along what it asks for, and slides along whatever it
+meets.
+
+```dart
+physics.addCharacter(player, at: [0, 0.91, 0]);
+
+// Every step.
+final left = physics.footingOf(player)!.velocity;
+physics.drive(player, velocity: [walkX, left[1] - 9.81 / 60, walkZ]);
+physics.step(1 / 60);
+```
+
+It climbs anything up to `stepHeight`, stands on slopes up to `steepest` and
+slides down steeper ones, and rides what it stands on: a lift carries it up, a
+turntable turns it, and `footingOf` says by how much, apart from the walk it
+asked for, so an animation plays the walk and not the ride. It pushes free
+bodies it walks into, no harder than `strength`, and is pushed by nothing but
+driven ones. A crate cannot shove a player off a ledge; a closing door can.
+
+It does not fall on its own. Gravity is part of what it asks for, which is what
+leaves a game to decide what a jump is, how long a player hangs at the top of
+one and whether they can steer in the air. The footing is what survived of the
+last request — a floor takes away the fall, a wall takes away the part going
+into it — so each step asks for that plus a step of gravity, and a character
+standing still does not pile up a fall it is not taking.
+
+Standing is decided by looking down, not by what it bumped into. A rounded base
+touching the corner of a step leans by however far round its curve the corner
+is, which says nothing about whether the step is a floor, so a contact that
+leans too far to stand on is looked past, to the top of whatever it touched.
 
 ## What it does not do
 

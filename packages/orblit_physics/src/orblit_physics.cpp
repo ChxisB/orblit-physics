@@ -120,3 +120,10 @@ bool orblit_physics_velocity(const OrblitPhysics *physics, OrblitPhysicsId id,
   out[5] = spin.z;
   return true;
 }
+
+uint32_t orblit_physics_footing(const OrblitPhysics *physics,
+                                const OrblitPhysicsId *ids, uint32_t count,
+                                OrblitPhysicsFooting *out) {
+  if (physics == nullptr || ids == nullptr || out == nullptr) return 0;
+  return physics->world.footing(ids, count, out);
+}

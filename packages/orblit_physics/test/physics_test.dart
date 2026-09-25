@@ -28,6 +28,20 @@ void main() {
     }
   }
 
+  /// Walks character `id` at `vx, vz` for `seconds`, asking each step for
+  /// what it was left with plus a step of gravity: the loop every game with a
+  /// character runs. Answers how many steps it spent off the ground.
+  int walk(int id, double vx, double vz, double seconds) {
+    var airborne = 0;
+    for (var i = 0; i < (seconds * 60).round(); i++) {
+      final left = physics.footingOf(id)!.velocity;
+      physics.drive(id, velocity: [vx, left[1] - 9.81 / 60, vz]);
+      physics.step(1 / 60);
+      if (!physics.footingOf(id)!.grounded) airborne++;
+    }
+    return airborne;
+  }
+
   double heightOf(int id) => physics.transformOf(id)![1];
 
   double fallSpeedOf(int id) => physics.velocityOf(id)![1];
@@ -305,6 +319,99 @@ void main() {
       isNull,
       reason: 'a half-space reaches everywhere along a line, so it is refused',
     );
+  });
+
+  test('a character walks up a step and reads back what it stands on', () {
+    // Ids past 32 bits on both sides, so a footing whose ground came back
+    // through the wrong width of field fails here rather than in a game.
+    const walker = 0x100000002;
+    const step = 0x700000005;
+    floor();
+    physics.add(
+      step,
+      shape: const Shape.box(2.0, 0.1, 1.0),
+      motion: PhysicsMotion.fixed,
+      at: const [3.0, 0.1, 0.0],
+    );
+    physics.addCharacter(walker, at: const [0.0, 0.91, 0.0]);
+
+    expect(walk(walker, 1.5, 0.0, 2.0), 0, reason: 'never left the ground');
+
+    expect(physics.transformOf(walker)![0], closeTo(3.0, 0.05));
+    expect(heightOf(walker), closeTo(1.11, 0.005), reason: 'up the step');
+    final footing = physics.footingOf(walker)!;
+    expect(footing.grounded, isTrue);
+    expect(footing.ground, step);
+    expect(footing.normal, [closeTo(0.0, 1e-4), closeTo(1.0, 1e-4), 0.0]);
+    expect(footing.velocity, [closeTo(1.5, 1e-4), 0.0, 0.0]);
+    expect(footing.carried, [0.0, 0.0, 0.0]);
+    expect(footing.turning, 0.0);
+  });
+
+  test('a character stops at a wall, and so does what it asked for', () {
+    floor();
+    physics.add(
+      3,
+      shape: const Shape.box(0.25, 1.0, 2.0),
+      motion: PhysicsMotion.fixed,
+      at: const [2.0, 1.0, 0.0],
+    );
+    physics.addCharacter(2, at: const [0.0, 0.91, 0.0]);
+
+    walk(2, 1.0, 0.0, 3.0);
+
+    // The face is at 1.75; a radius and a skin short of it is 1.44.
+    expect(physics.transformOf(2)![0], closeTo(1.44, 0.005));
+    expect(physics.footingOf(2)!.velocity[0], closeTo(0.0, 1e-4));
+  });
+
+  test('a character rides a platform and is told how far it was carried', () {
+    physics.add(
+      3,
+      shape: const Shape.box(2.0, 0.1, 2.0),
+      motion: PhysicsMotion.driven,
+      at: const [0.0, 1.0, 0.0],
+    );
+    physics.addCharacter(2, at: const [0.0, 2.01, 0.0]);
+    physics.drive(3, velocity: const [1.0, 0.0, 0.0]);
+
+    expect(walk(2, 0.0, 0.0, 1.0), 0);
+
+    expect(physics.transformOf(2)![0], closeTo(1.0, 0.02));
+    expect(heightOf(2), closeTo(2.01, 0.005));
+    final footing = physics.footingOf(2)!;
+    expect(footing.ground, 3);
+    expect(footing.carried[0], closeTo(1.0, 0.01));
+    expect(
+      footing.velocity[0],
+      closeTo(0.0, 1e-4),
+      reason: 'the ride is not a walk',
+    );
+  });
+
+  test('footings are read together, and only characters have one', () {
+    floor();
+    physics.addCharacter(2, at: const [0.0, 0.91, 0.0]);
+    physics.addCharacter(3, at: const [2.0, 5.0, 0.0]);
+    physics.add(4, shape: const Shape.sphere(0.5), at: const [4.0, 0.5, 0.0]);
+    physics.step(1 / 60);
+
+    final footings = physics.footingsOf([4, 2, 99, 3]);
+    expect(footings.length, 4);
+    expect(footings[0], isNull, reason: 'a ball is not a character');
+    expect(footings[2], isNull, reason: 'nor is nothing');
+    expect(footings[1]!.grounded, isTrue);
+    expect(footings[1]!.ground, ground);
+    expect(footings[3]!.grounded, isFalse, reason: 'in the air');
+    expect(footings[3]!.ground, 0);
+    expect(physics.footingsOf(const []), isEmpty);
+
+    // A half-space has no underneath to stand on anything with.
+    physics.addCharacter(5, shape: const Shape.plane(1.0, 0.0, 0.0));
+    expect(physics.footingOf(5), isNull);
+
+    physics.remove(2);
+    expect(physics.footingOf(2), isNull, reason: 'gone with its body');
   });
 
   test('readInto fills a strided buffer and skips what it does not know', () {

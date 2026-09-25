@@ -4,7 +4,8 @@
 // from it. One step is:
 //
 //   find contacts -> integrate velocity -> solve velocity
-//                 -> integrate position -> solve position -> sleep
+//                 -> integrate position -> solve position
+//                 -> move characters -> sleep
 //
 // Contacts are found on the positions the last step left, so a caller reading
 // transforms and a caller reading events are looking at the same instant.
@@ -12,6 +13,12 @@
 // collision in it rather than needing to be undone. Position is solved last,
 // on the overlap that survived, so the correction is never spent on overlap
 // that integration was about to remove anyway.
+//
+// Characters move after everything else has, because they are the one kind
+// of body that looks at the world before moving through it. A lift has
+// already risen and a crate already settled by the time a character asks
+// where it can go, so it stands on the lift where the lift now is rather than
+// where it was.
 
 #ifndef ORBLIT_PHYSICS_WORLD_H
 #define ORBLIT_PHYSICS_WORLD_H
@@ -21,6 +28,7 @@
 #include <vector>
 
 #include "body.h"
+#include "character.h"
 #include "collide.h"
 #include "orblit_physics.h"
 #include "solver.h"
@@ -64,6 +72,11 @@ class World {
   const Bodies &bodies() const { return bodies_; }
   const std::vector<OrblitPhysicsEvent> &events() const { return events_; }
 
+  /// What each character in `ids` stood on at the end of the last step.
+  /// Anything that is not a character is skipped and its slot left alone.
+  uint32_t footing(const OrblitPhysicsId *ids, uint32_t count,
+                   OrblitPhysicsFooting *out) const;
+
   /// Wakes a body and says so, if it was asleep.
   void wake(uint32_t row);
 
@@ -72,9 +85,19 @@ class World {
   void findContacts();
   void integrateVelocities(float delta);
   void integratePositions(float delta);
+  void moveCharacters(float delta);
+  void moveCharacter(Character &character, uint32_t row, const Vec3 &up,
+                     float delta);
   void updateSleep(float delta);
   void reportTouches();
   void note(uint32_t kind, uint32_t row);
+
+  /// Adds an impulse to a free body at a world point, waking it. Anything
+  /// else is left alone: only the solver's bodies have a mass to divide by.
+  void push(uint32_t row, const Vec3 &impulse, const Vec3 &point);
+
+  Character *characterOf(OrblitPhysicsId id);
+  const Character *characterOf(OrblitPhysicsId id) const;
 
   OrblitPhysicsSettings settings_;
   SolverSettings solving_;
@@ -93,6 +116,16 @@ class World {
   std::unordered_map<PairKey, Manifold, PairKeyHash> wasTouching_;
 
   std::vector<OrblitPhysicsEvent> events_;
+
+  /// In the order they were made, which is the order they move in. A list
+  /// rather than a column of the bodies because there are a handful of them
+  /// among thousands of bodies, and every column pays for every row.
+  std::vector<Character> characters_;
+
+  /// The pushes a character's move gave, and the ones a second try at it
+  /// gave, so the try that is thrown away pushes nothing.
+  std::vector<Shove> shoves_;
+  std::vector<Shove> trial_;
 
   /// Scratch for the broadphase, kept so a step does not allocate.
   std::vector<uint32_t> sorted_;

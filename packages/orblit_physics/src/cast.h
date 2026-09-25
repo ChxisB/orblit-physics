@@ -24,6 +24,7 @@
 #ifndef ORBLIT_PHYSICS_CAST_H
 #define ORBLIT_PHYSICS_CAST_H
 
+#include "body.h"
 #include "maths.h"
 #include "shape.h"
 
@@ -67,6 +68,37 @@ Vec3 support(const Placed &of, const Vec3 &direction);
 /// already beside.
 bool sweep(const Placed &moving, const Vec3 &direction, float distance,
            const Placed &fixed, Impact &out);
+
+/// Which bodies a cast through the world may meet.
+struct Sieve {
+  /// The cast's own layers, read by the same rule bodies follow.
+  uint32_t layerIs = 0;
+  uint32_t layerCares = 0;
+
+  /// Passed straight through. The first is nearly always whoever is casting;
+  /// the second is for a character being carried, which must not meet what
+  /// it is standing on while that thing is what moves it.
+  OrblitPhysicsId ignore = 0;
+  OrblitPhysicsId alsoIgnore = 0;
+
+  /// Lets a cast that starts inside something leave it.
+  ///
+  /// An overlap is an impact at no distance, which is right for a query that
+  /// asks what is here and wrong for a character that was pushed half into a
+  /// wall and is trying to walk back out of it: every sweep it made would stop
+  /// dead where it stands. With this set, an overlap the cast is moving away
+  /// from is not an impact, and one it is moving further into still is.
+  bool leaving = false;
+};
+
+/// The nearest body `moving` meets going `distance` along `direction`, which
+/// must be a unit vector, and where. The row, or Bodies::kNone for nothing.
+///
+/// Every body is asked, whatever it is and whether or not it is asleep: this
+/// is a question about where things are, and a crate that has settled is still
+/// in the way.
+uint32_t nearest(const Bodies &bodies, const Placed &moving, const Vec3 &direction,
+                 float distance, const Sieve &sieve, Impact &out);
 
 } // namespace orblit
 

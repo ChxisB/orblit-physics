@@ -139,6 +139,30 @@ final class OrblitPhysicsHit extends Struct {
   external Array<Uint8> reserved;
 }
 
+/// `OrblitPhysicsFooting`, field for field.
+final class OrblitPhysicsFooting extends Struct {
+  @Uint64()
+  external int ground;
+
+  @Array(3)
+  external Array<Float> normal;
+
+  @Array(3)
+  external Array<Float> velocity;
+
+  @Array(3)
+  external Array<Float> carried;
+
+  @Float()
+  external double turning;
+
+  @Bool()
+  external bool grounded;
+
+  @Array(7)
+  external Array<Uint8> reserved;
+}
+
 /// `OrblitPhysicsSettings`, field for field.
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
@@ -290,4 +314,19 @@ external bool physicsCast(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsCast> cast,
   Pointer<OrblitPhysicsHit> out,
+);
+
+@Native<
+  Uint32 Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<Uint64>,
+    Uint32,
+    Pointer<OrblitPhysicsFooting>,
+  )
+>(symbol: 'orblit_physics_footing', assetId: kOrblitPhysicsAsset)
+external int physicsFooting(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<Uint64> ids,
+  int count,
+  Pointer<OrblitPhysicsFooting> out,
 );

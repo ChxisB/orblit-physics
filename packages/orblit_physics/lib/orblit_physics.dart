@@ -14,6 +14,7 @@ export 'src/world.dart'
         Physics,
         PhysicsEvent,
         PhysicsEventKind,
+        PhysicsFooting,
         PhysicsHit,
         PhysicsMotion,
         PhysicsSettings,

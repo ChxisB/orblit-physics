@@ -53,14 +53,15 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
   return of.at;
 }
 
-/// A direction from `a` towards `b` worth measuring the gap along.
+/// A direction from `a` towards `b` worth measuring the gap along, or
+/// `otherwise` when the cores are too close together to give one.
 ///
 /// Found by stepping between the two cores: nearest point on one to the
 /// other, then back again. Each step can only shorten what is between them,
 /// so it settles rather than wanders. Six is well past where it stops moving
 /// for shapes of the size a game uses, and a seventh would not make the
 /// answer below any more correct — only the bound slightly tighter.
-Vec3 between(const Placed &a, const Placed &b) {
+Vec3 between(const Placed &a, const Placed &b, const Vec3 &otherwise) {
   // Started from a's centre, because the loop asks b first and so never reads
   // an onB it has not written.
   Vec3 onA = a.at;
@@ -70,12 +71,19 @@ Vec3 between(const Placed &a, const Placed &b) {
     onA = nearestInCore(a, onB);
   }
 
+  // Closer than touching, the two points are the same point give or take the
+  // last bits of a float, and the line between them points anywhere. That is
+  // every ray at the moment it lands, since a ray is all core: a direction
+  // read off it there would tilt the normal of a flat face by however the
+  // rounding fell. The caller's last good direction is the better answer.
   const Vec3 apart = onB - onA;
-  if (lengthSquared(apart) > kTiny * kTiny) return normalised(apart);
+  if (lengthSquared(apart) > kTouching * kTouching) return normalised(apart);
+  return otherwise;
+}
 
-  // The cores meet, which happens whenever one shape is inside the other and
-  // also whenever two rounded shapes touch core to core. Centre to centre is
-  // the next best question to ask.
+/// Centre to centre: the direction to ask along when nothing better is known
+/// yet. Rarely right, never unsafe, and only ever the first guess.
+Vec3 centreToCentre(const Placed &a, const Placed &b) {
   return normalised(b.at - a.at);
 }
 
@@ -177,10 +185,22 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
   }
 
   float when = 0.0f;
+  Vec3 v = centreToCentre(moving, fixed);
   for (uint32_t step = 0; step < kMostSteps; ++step) {
     const Placed now = movedTo(moving, moving.at + direction * when);
-    const Vec3 v = between(now, fixed);
+    v = between(now, fixed, v);
     if (lengthSquared(v) < kTiny) break; // Concentric, and therefore inside.
+
+    // How fast the gap is closing along the direction it was measured in.
+    // Nought or less and it never will: this is what makes a shape beside
+    // something it is moving away from a miss rather than a hit at infinity.
+    // Asked before whether they touch, because touching and not closing is a
+    // miss too — a capsule standing against a wall and dropping onto the
+    // floor slides down the wall's face without ever getting any closer to
+    // it. The gap between two convex shapes as one of them moves in a line
+    // only ever bends upwards, so if it is not shrinking now it never will.
+    const float closing = dot(v, direction);
+    if (closing <= kTiny) return false;
 
     const float gap = gapAlong(now, fixed, v);
     if (gap <= kTouching) {
@@ -193,12 +213,6 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
       return true;
     }
 
-    // How fast the gap is closing along the direction it was measured in.
-    // Nought or less and it never will: this is what makes a shape beside
-    // something it is moving away from a miss rather than a hit at infinity.
-    const float closing = dot(v, direction);
-    if (closing <= kTiny) return false;
-
     when += gap / closing;
     if (when > distance) return false;
   }
@@ -207,12 +221,56 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
   // reporting a touch there is the conservative answer rather than a wrong
   // one: it stops the caller slightly early, never slightly late.
   const Placed now = movedTo(moving, moving.at + direction * when);
-  const Vec3 v = between(now, fixed);
+  v = between(now, fixed, v);
   out.started = false;
   out.distance = when;
   out.normal = lengthSquared(v) < kTiny ? -normalised(direction) : -v;
   out.at = support(now, v);
   return true;
+}
+
+uint32_t nearest(const Bodies &bodies, const Placed &moving, const Vec3 &direction,
+                 float distance, const Sieve &sieve, Impact &out) {
+  if (moving.shape.kind == ShapeKind::plane) return Bodies::kNone;
+  if (!(distance > 0.0f)) distance = 0.0f;
+
+  // Where the cast could possibly reach, as one box: the shape at each end of
+  // its travel and everything between. Grown by a hair so a body it meets
+  // exactly edge on is not filtered out before it is looked at properly.
+  const Bounds begins = moving.shape.boundsAt(moving.at, moving.rotation);
+  const Bounds ends =
+      moving.shape.boundsAt(moving.at + direction * distance, moving.rotation);
+  const Bounds swept = Bounds{minPerAxis(begins.low, ends.low),
+                              maxPerAxis(begins.high, ends.high)}
+                           .grown(1.0e-3f);
+
+  uint32_t hit = Bodies::kNone;
+  const uint32_t count = bodies.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    const OrblitPhysicsId id = bodies.id(row);
+    if (id == sieve.ignore || (sieve.alsoIgnore != 0 && id == sieve.alsoIgnore)) {
+      continue;
+    }
+    if (!interact(sieve.layerIs, sieve.layerCares, bodies.layerIs(row),
+                  bodies.layerCares(row))) {
+      continue;
+    }
+    // A half-space has no bounds to test against — it is half the world — so
+    // it is always asked properly, the way the broadphase treats it.
+    const bool half = bodies.shape(row).kind == ShapeKind::plane;
+    if (!half && !swept.overlaps(bodies.bounds(row))) continue;
+
+    const Placed fixed{bodies.shape(row), bodies.at(row), bodies.rotation(row)};
+    Impact impact;
+    if (!sweep(moving, direction, distance, fixed, impact)) continue;
+    if (sieve.leaving && impact.started && dot(direction, impact.normal) >= 0.0f) {
+      continue;
+    }
+    if (hit != Bodies::kNone && impact.distance >= out.distance) continue;
+    out = impact;
+    hit = row;
+  }
+  return hit;
 }
 
 } // namespace orblit

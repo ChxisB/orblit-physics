@@ -28,7 +28,19 @@ enum class Motion : uint8_t {
   fixed = ORBLIT_PHYSICS_STATIC,
   driven = ORBLIT_PHYSICS_KINEMATIC,
   free = ORBLIT_PHYSICS_DYNAMIC,
+
+  /// A driven body the character pass moves by sweeping, rather than the
+  /// integrator by velocity. Not in the header: a caller makes one by turning
+  /// a driven body into a character, never by creating one, so there is no
+  /// such thing as a character without its step height and slope.
+  character = 3,
 };
+
+/// Orblit's `Layers` rule, unchanged: a pair interacts when either cares about
+/// the other, not when both do.
+inline bool interact(uint32_t isA, uint32_t caresA, uint32_t isB, uint32_t caresB) {
+  return (caresA & isB) != 0 || (caresB & isA) != 0;
+}
 
 /// How a body was made. Everything that does not change after a create.
 struct BodyDescription {
@@ -123,6 +135,10 @@ class Bodies {
     asleep_[row] = 0;
     still_[row] = 0.0f;
   }
+
+  /// Changes how it moves after it was made. Only ever driven to character
+  /// and back: neither has mass, so nothing derived from mass goes stale.
+  void steer(uint32_t row, Motion motion) { motion_[row] = motion; }
 
   void place(uint32_t row, const Vec3 &at, const Quat &rotation) {
     at_[row] = at;
