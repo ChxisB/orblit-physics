@@ -66,6 +66,12 @@ typedef enum {
   /// along — and a shape whose field means one thing to the caller and
   /// another inside is a shape somebody eventually gets wrong by a radius.
   ORBLIT_PHYSICS_CAPSULE = 4,
+
+  /// Ground, as heights on a grid. Not made with CREATE, which has nowhere to
+  /// put a grid's worth of heights: laid with `orblit_physics_ground`, and
+  /// after that a body like any other, destroyed the same way. Never dynamic,
+  /// and never cast.
+  ORBLIT_PHYSICS_HEIGHT_FIELD = 5,
 } OrblitPhysicsShapeKind;
 
 typedef enum {
@@ -425,6 +431,76 @@ typedef struct {
 /// where things are, and a crate that has settled is still in the way.
 bool orblit_physics_cast(const OrblitPhysics *physics,
                          const OrblitPhysicsCast *cast, OrblitPhysicsHit *out);
+
+// ----------------------------------------------------------------- ground ---
+
+/// Ground as heights on a grid, laid as one static body.
+///
+/// Sample (c, r) is `heights[r * columns + c]` and sits at
+/// `at + (c * spacing, height, r * spacing)`. Each square of four samples is
+/// two triangles, split along the diagonal from (c, r) to (c + 1, r + 1).
+///
+/// Everything under the surface is ground, however far down: something that
+/// has sunk in is pushed up and out, never down through, so ground can be
+/// raised under a crate that has gone to sleep on it.
+///
+/// A height that is not a finite number is a hole, and every triangle with
+/// that sample as a corner is missing. Things fall through a hole, and roll
+/// off its rim.
+typedef struct {
+  OrblitPhysicsId id;
+
+  /// `columns * rows` heights in metres, row after row. Copied, not kept.
+  const float *heights;
+  uint32_t columns;
+  uint32_t rows;
+
+  /// Metres between neighbouring samples, the same both ways.
+  float spacing;
+
+  /// The outermost ring of samples is the neighbours' ground, not this
+  /// field's. It is never stood on; it only says how the ground carries on
+  /// past this field's edge.
+  ///
+  /// Ground streamed in pieces is laid one field per piece, side by side, and
+  /// those have to behave as one ground. A ball on the ridge of a hill whose
+  /// top runs along the line between two pieces is held up by whichever way
+  /// both slopes agree on, and without a margin neither piece knows which way
+  /// the other slopes. Without one, the edge of a grid is taken to carry on
+  /// as it was going, which is right everywhere but along a ridge or a
+  /// valley.
+  ///
+  /// A hole in the margin is no ground past the edge: the edge is a rim.
+  bool margin;
+  bool _reserved[3];
+
+  /// Where sample (0, 0) is, margin included. Ground is never turned.
+  float at[3];
+
+  float friction;    ///< As for CREATE.
+  float restitution; ///< As for CREATE.
+
+  /// As for CREATE.
+  uint32_t layerIs;
+  uint32_t layerCares;
+  uint32_t _pad;
+} OrblitPhysicsGround;
+
+/// Lays ground, and returns whether it was laid.
+///
+/// Laying it again under the same id replaces it, which is how an edit to
+/// the heights reaches the world: lay the piece again. Anything already under
+/// that id is replaced, ground or not. Everything over the field is woken, so
+/// a crate on a hill that was just lowered falls with it rather than hanging
+/// asleep where the hill was. Destroying it, as destroying any body, wakes
+/// nothing: a crate asleep on ground streamed out from under it stays put
+/// until something wakes it.
+///
+/// False, and nothing changed, for a zero id, no heights, a spacing that is
+/// not a positive number, or a grid with no square of its own: at least two
+/// samples each way, four with a margin.
+bool orblit_physics_ground(OrblitPhysics *physics,
+                           const OrblitPhysicsGround *ground);
 
 // ------------------------------------------------------------- characters ---
 

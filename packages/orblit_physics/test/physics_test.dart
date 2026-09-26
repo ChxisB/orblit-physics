@@ -414,6 +414,197 @@ void main() {
     expect(physics.footingOf(2), isNull, reason: 'gone with its body');
   });
 
+  /// A square of ground `samples` wide, at `height` everywhere unless
+  /// `heightAt` says otherwise.
+  Float32List heightsOf(
+    int samples, {
+    double height = 0.0,
+    double Function(int c, int r)? heightAt,
+  }) {
+    final heights = Float32List(samples * samples);
+    for (var r = 0; r < samples; r++) {
+      for (var c = 0; c < samples; c++) {
+        heights[r * samples + c] = heightAt?.call(c, r) ?? height;
+      }
+    }
+    return heights;
+  }
+
+  test(
+    'ground holds up what lands on it, and its struct survives the crossing',
+    () {
+      // Each body below lands somewhere only one field of the struct puts
+      // ground: take any field from its neighbour's slot and one of them falls.
+      const field = 0x300000007;
+      expect(
+        physics.layGround(
+          field,
+          heights: heightsOf(5, height: 1.0),
+          columns: 5,
+          rows: 5,
+          spacing: 2.0,
+          at: const [-4.0, 0.5, -4.0],
+          friction: 0.0,
+          restitution: 0.8,
+          layers: const Layers(is_: 2, cares: 2),
+        ),
+        isTrue,
+      );
+      expect(physics.alive(field), isTrue);
+
+      // Past x = 2 only because the spacing is two, and at 1.5 only because
+      // the field is raised half a metre.
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [3.0, 4.0, 3.5]);
+      // Off the edge of it, where there is nothing.
+      physics.add(3, shape: const Shape.sphere(0.5), at: const [4.5, 4.0, 0.0]);
+      // Watching nothing the ground is in, and nothing watching it.
+      physics.add(
+        4,
+        shape: const Shape.sphere(0.5),
+        at: const [0.0, 4.0, 0.0],
+        layers: const Layers(is_: 4, cares: 4),
+      );
+      physics.add(
+        5,
+        shape: const Shape.sphere(0.5),
+        at: const [-2.0, 4.0, 0.0],
+        restitution: 0.0,
+      );
+
+      var highest = 0.0;
+      for (var i = 0; i < 180; i++) {
+        physics.step(1 / 60);
+        if (i > 60 && heightOf(5) > highest) highest = heightOf(5);
+      }
+      // Bouncing takes the ground's restitution, which is only there if it
+      // landed in its own slot and not in friction's.
+      expect(highest, greaterThan(2.0), reason: 'the ground is springy');
+      expect(heightOf(3), lessThan(0.0), reason: 'past the edge');
+      expect(heightOf(4), lessThan(0.0), reason: 'on a layer it ignores');
+
+      physics.remove(5);
+      run(3);
+      expect(heightOf(2), closeTo(2.0, 0.05));
+
+      final down = physics.cast(
+        from: const [1.0, 9.0, 1.0],
+        direction: const [0.0, -1.0, 0.0],
+        distance: 20.0,
+      )!;
+      expect(down.body, field);
+      expect(down.distance, closeTo(7.5, 0.01));
+      expect(down.normal[1], closeTo(1.0, 0.001));
+    },
+  );
+
+  test(
+    'ground with a hole lets things through, and relaying it moves them',
+    () {
+      const field = 7;
+      final holed = heightsOf(
+        9,
+        heightAt: (c, r) => c == 4 && r == 4 ? double.nan : 0.0,
+      );
+      expect(
+        physics.layGround(
+          field,
+          heights: holed,
+          columns: 9,
+          rows: 9,
+          at: const [-4.0, 0.0, -4.0],
+        ),
+        isTrue,
+      );
+      physics.add(2, shape: const Shape.sphere(0.3), at: const [0.0, 2.0, 0.0]);
+      physics.add(
+        3,
+        shape: const Shape.box(0.3, 0.3, 0.3),
+        at: const [2.5, 1.0, 2.5],
+      );
+      run(3);
+      expect(heightOf(2), lessThan(-1.0), reason: 'down the hole');
+      expect(heightOf(3), closeTo(0.3, 0.03));
+      expect(physics.asleep(3), isTrue);
+
+      // Laid again half a metre down, whole: the sleeping crate is woken and
+      // follows it rather than hanging where the ground was.
+      physics.layGround(
+        field,
+        heights: heightsOf(9, height: -0.5),
+        columns: 9,
+        rows: 9,
+        at: const [-4.0, 0.0, -4.0],
+      );
+      expect(physics.count, 3, reason: 'replaced, not added');
+      run(2);
+      expect(heightOf(3), closeTo(-0.2, 0.03));
+
+      // Taken away, it wakes nothing: ground streamed out from under a
+      // sleeping crate far off leaves it where it was for when it comes back.
+      run(2);
+      expect(physics.asleep(3), isTrue);
+      physics.remove(field);
+      run(1);
+      expect(heightOf(3), closeTo(-0.2, 0.03), reason: 'asleep, so left be');
+      physics.wake(3);
+      run(1);
+      expect(heightOf(3), lessThan(-1.0), reason: 'the ground is gone');
+    },
+  );
+
+  test('a margin is the neighbours\' ground, never stood on', () {
+    // Six by six with a margin is four by four of its own, from one to four.
+    // The margin is a wall of heights that would stop anything if it were
+    // ground; as a margin it only says which way the ground carries on.
+    final walled = heightsOf(
+      6,
+      heightAt: (c, r) => c == 0 || r == 0 || c == 5 || r == 5 ? 3.0 : 0.0,
+    );
+    expect(
+      physics.layGround(10, heights: walled, columns: 6, rows: 6, margin: true),
+      isTrue,
+    );
+    physics.add(2, shape: const Shape.sphere(0.2), at: const [2.5, 1.0, 2.5]);
+    physics.add(3, shape: const Shape.sphere(0.2), at: const [0.5, 4.0, 2.5]);
+    run(2);
+    expect(heightOf(2), closeTo(0.2, 0.02));
+    expect(heightOf(3), lessThan(0.0), reason: 'over the margin, so nothing');
+  });
+
+  test('ground refuses a grid it cannot lay', () {
+    final four = heightsOf(4);
+    bool lay({
+      int id = 9,
+      int columns = 4,
+      int rows = 4,
+      double spacing = 1.0,
+      bool margin = false,
+      List<double>? heights,
+    }) => physics.layGround(
+      id,
+      heights: heights ?? four,
+      columns: columns,
+      rows: rows,
+      spacing: spacing,
+      margin: margin,
+    );
+
+    expect(lay(id: 0), isFalse, reason: 'nameless');
+    expect(lay(columns: 1), isFalse, reason: 'no square to stand on');
+    expect(lay(spacing: 0.0), isFalse);
+    expect(lay(spacing: double.nan), isFalse);
+    expect(lay(heights: heightsOf(3)), isFalse, reason: 'too few heights');
+    expect(
+      lay(columns: 3, rows: 3, margin: true),
+      isFalse,
+      reason: 'all margin',
+    );
+    expect(physics.count, 0);
+    expect(lay(margin: true), isTrue, reason: 'four is enough with a margin');
+    expect(lay(columns: 2, rows: 2, id: 10), isTrue, reason: 'two without');
+    expect(physics.count, 2);
+  });
+
   test('readInto fills a strided buffer and skips what it does not know', () {
     floor();
     physics.add(2, shape: const Shape.sphere(0.5), at: const [1.0, 2.0, 3.0]);

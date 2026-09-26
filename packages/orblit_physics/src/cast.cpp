@@ -48,26 +48,30 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
                         clamped(local.z, -e.z, e.z)};
       return of.at + rotate(of.rotation, inside);
     }
-    case ShapeKind::plane: return to;
+    case ShapeKind::plane:
+    case ShapeKind::heightField: return to;
   }
   return of.at;
 }
 
-/// A direction from `a` towards `b` worth measuring the gap along, or
-/// `otherwise` when the cores are too close together to give one.
+/// A direction from `a` towards the thing `nearestOfB` describes worth
+/// measuring the gap along, or `otherwise` when the cores are too close
+/// together to give one. `nearestOfB` gives the nearest point of that thing's
+/// core to a point.
 ///
 /// Found by stepping between the two cores: nearest point on one to the
 /// other, then back again. Each step can only shorten what is between them,
 /// so it settles rather than wanders. Six is well past where it stops moving
 /// for shapes of the size a game uses, and a seventh would not make the
 /// answer below any more correct — only the bound slightly tighter.
-Vec3 between(const Placed &a, const Placed &b, const Vec3 &otherwise) {
+template <typename Near>
+Vec3 between(const Placed &a, const Near &nearestOfB, const Vec3 &otherwise) {
   // Started from a's centre, because the loop asks b first and so never reads
   // an onB it has not written.
   Vec3 onA = a.at;
   Vec3 onB;
   for (int i = 0; i < 6; ++i) {
-    onB = nearestInCore(b, onA);
+    onB = nearestOfB(onA);
     onA = nearestInCore(a, onB);
   }
 
@@ -87,13 +91,16 @@ Vec3 centreToCentre(const Placed &a, const Placed &b) {
   return normalised(b.at - a.at);
 }
 
-/// How far apart two shapes are along `v`, at least.
+/// How far apart a shape and the thing `furthestOfB` describes are along
+/// `v`, at least. `furthestOfB` gives that thing's furthest point along a
+/// direction.
 ///
 /// The true distance is never smaller than this, whatever `v` is, which is
 /// what makes it safe to advance by. Negative means they overlap along `v`
 /// and says nothing about whether they overlap at all.
-float gapAlong(const Placed &a, const Placed &b, const Vec3 &v) {
-  return dot(v, support(b, -v)) - dot(v, support(a, v));
+template <typename Far>
+float gapAlong(const Placed &a, const Far &furthestOfB, const Vec3 &v) {
+  return dot(v, furthestOfB(-v)) - dot(v, support(a, v));
 }
 
 bool sweepPlane(const Placed &moving, const Vec3 &direction, float distance,
@@ -127,6 +134,135 @@ bool sweepPlane(const Placed &moving, const Vec3 &direction, float distance,
   return true;
 }
 
+/// Conservative advancement of `moving` towards one convex thing, known only
+/// by the nearest point of its core to a point and its furthest point along
+/// a direction. `v` is the first direction to measure along.
+template <typename Near, typename Far>
+bool advance(const Placed &moving, const Vec3 &direction, float distance, Vec3 v,
+             const Near &nearestOfB, const Far &furthestOfB, Impact &out) {
+  float when = 0.0f;
+  for (uint32_t step = 0; step < kMostSteps; ++step) {
+    const Placed now = movedTo(moving, moving.at + direction * when);
+    v = between(now, nearestOfB, v);
+    if (lengthSquared(v) < kTiny) break; // Concentric, and therefore inside.
+
+    // How fast the gap is closing along the direction it was measured in.
+    // Nought or less and it never will: this is what makes a shape beside
+    // something it is moving away from a miss rather than a hit at infinity.
+    // Asked before whether they touch, because touching and not closing is a
+    // miss too — a capsule standing against a wall and dropping onto the
+    // floor slides down the wall's face without ever getting any closer to
+    // it. The gap between two convex shapes as one of them moves in a line
+    // only ever bends upwards, so if it is not shrinking now it never will.
+    const float closing = dot(v, direction);
+    if (closing <= kTiny) return false;
+
+    const float gap = gapAlong(now, furthestOfB, v);
+    if (gap <= kTouching) {
+      out.started = false;
+      out.distance = when;
+      // Out of the fixed shape towards the moving one, which is the opposite
+      // of the direction the gap was measured in.
+      out.normal = -v;
+      out.at = support(now, v);
+      return true;
+    }
+
+    when += gap / closing;
+    if (when > distance) return false;
+  }
+
+  // Out of turns. Whatever `when` reached is still short of the impact, so
+  // reporting a touch there is the conservative answer rather than a wrong
+  // one: it stops the caller slightly early, never slightly late.
+  const Placed now = movedTo(moving, moving.at + direction * when);
+  v = between(now, nearestOfB, v);
+  out.started = false;
+  out.distance = when;
+  out.normal = lengthSquared(v) < kTiny ? -normalised(direction) : -v;
+  out.at = support(now, v);
+  return true;
+}
+
+/// A shape moving towards ground, which is not one convex thing but a pool of
+/// triangles: each it could reach is advanced towards on its own, and the
+/// earliest touch is kept among those the triangle would push along.
+///
+/// A touch a triangle would not push along is a seam — a ball sliding over
+/// flat ground reaching the edge of the triangle ahead — and is no touch at
+/// all, for the same reason the narrowphase gives it no contact.
+bool sweepGround(const Placed &moving, const Vec3 &direction, float distance,
+                 const Placed &fixed, Impact &out) {
+  const HeightField *field = fixed.shape.field;
+  if (field == nullptr || field->empty()) return false;
+
+  // In the field's own frame, where its triangles are.
+  const Quat back = conjugate(fixed.rotation);
+  const Placed local{moving.shape, rotate(back, moving.at - fixed.at),
+                     back * moving.rotation};
+  const Vec3 way = rotate(back, direction);
+
+  const Bounds begins = local.shape.boundsAt(local.at, local.rotation);
+  const Bounds ends =
+      local.shape.boundsAt(local.at + way * distance, local.rotation);
+  const Bounds swept = Bounds{minPerAxis(begins.low, ends.low),
+                              maxPerAxis(begins.high, ends.high)}
+                           .grown(kTouching);
+
+  int64_t c0, r0, c1, r1;
+  if (!field->cellsUnder(swept, c0, r0, c1, r1)) return false;
+
+  bool hit = false;
+  Impact first;
+  Facet f;
+  for (int64_t r = r0; r <= r1; ++r) {
+    for (int64_t c = c0; c <= c1; ++c) {
+      float low, high;
+      if (!field->cellHeights(c, r, low, high)) continue;
+      if (swept.low.y > high) continue;
+      for (int which = 0; which < 2; ++which) {
+        if (!field->facet(c, r, which, f)) continue;
+        // Only as far as the nearest touch so far: anything past it is no
+        // answer, and a triangle it cannot reach in time is given up early.
+        Impact impact;
+        if (!advance(
+                local, way, hit ? first.distance : distance, -f.normal,
+                [&](const Vec3 &to) { return f.nearest(to); },
+                [&](const Vec3 &along) { return f.furthest(along); }, impact)) {
+          continue;
+        }
+        // A ray, or a box, that lands within a touch of a face has no
+        // direction left to measure along, and the advance reports the last
+        // one it had — which, near an edge, leans out over it, and the
+        // triangle refuses it as its neighbour's. But a core that has come
+        // down over the face has met the face.
+        const Placed there = movedTo(local, local.at + way * impact.distance);
+        Vec3 onCore = there.at;
+        for (int i = 0; i < 6; ++i) {
+          onCore = nearestInCore(there, f.nearest(onCore));
+        }
+        if (f.over(onCore, kTouching)) impact.normal = f.normal;
+        if (!f.admits(impact.normal)) continue;
+        // A ball skimming flat ground within a touch of it meets the edge of
+        // the triangle ahead leaning back by a hair. The ground there is the
+        // face it is skimming, and moving along a face is not meeting it.
+        impact.normal = f.straightened(impact.normal);
+        if (dot(way, impact.normal) > -kTiny) continue;
+        if (hit && impact.distance >= first.distance) continue;
+        first = impact;
+        hit = true;
+      }
+    }
+  }
+  if (!hit) return false;
+
+  out.started = false;
+  out.distance = first.distance;
+  out.normal = rotate(fixed.rotation, first.normal);
+  out.at = fixed.at + rotate(fixed.rotation, first.at);
+  return true;
+}
+
 } // namespace
 
 Vec3 support(const Placed &of, const Vec3 &direction) {
@@ -149,7 +285,8 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
       }
       return furthest;
     }
-    case ShapeKind::plane: return of.at;
+    case ShapeKind::plane:
+    case ShapeKind::heightField: return of.at;
   }
   return of.at;
 }
@@ -157,8 +294,9 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
 bool sweep(const Placed &moving, const Vec3 &direction, float distance,
            const Placed &fixed, Impact &out) {
   // Casting a half-space is asking where an infinite flat thing first touches
-  // something, which has no answer worth giving.
+  // something, which has no answer worth giving, and ground is no better.
   if (moving.shape.kind == ShapeKind::plane) return false;
+  if (moving.shape.kind == ShapeKind::heightField) return false;
   if (fixed.shape.kind == ShapeKind::plane) {
     return sweepPlane(moving, direction, distance, fixed, out);
   }
@@ -184,54 +322,19 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
     return true;
   }
 
-  float when = 0.0f;
-  Vec3 v = centreToCentre(moving, fixed);
-  for (uint32_t step = 0; step < kMostSteps; ++step) {
-    const Placed now = movedTo(moving, moving.at + direction * when);
-    v = between(now, fixed, v);
-    if (lengthSquared(v) < kTiny) break; // Concentric, and therefore inside.
-
-    // How fast the gap is closing along the direction it was measured in.
-    // Nought or less and it never will: this is what makes a shape beside
-    // something it is moving away from a miss rather than a hit at infinity.
-    // Asked before whether they touch, because touching and not closing is a
-    // miss too — a capsule standing against a wall and dropping onto the
-    // floor slides down the wall's face without ever getting any closer to
-    // it. The gap between two convex shapes as one of them moves in a line
-    // only ever bends upwards, so if it is not shrinking now it never will.
-    const float closing = dot(v, direction);
-    if (closing <= kTiny) return false;
-
-    const float gap = gapAlong(now, fixed, v);
-    if (gap <= kTouching) {
-      out.started = false;
-      out.distance = when;
-      // Out of the fixed shape towards the moving one, which is the opposite
-      // of the direction the gap was measured in.
-      out.normal = -v;
-      out.at = support(now, v);
-      return true;
-    }
-
-    when += gap / closing;
-    if (when > distance) return false;
+  if (fixed.shape.kind == ShapeKind::heightField) {
+    return sweepGround(moving, direction, distance, fixed, out);
   }
-
-  // Out of turns. Whatever `when` reached is still short of the impact, so
-  // reporting a touch there is the conservative answer rather than a wrong
-  // one: it stops the caller slightly early, never slightly late.
-  const Placed now = movedTo(moving, moving.at + direction * when);
-  v = between(now, fixed, v);
-  out.started = false;
-  out.distance = when;
-  out.normal = lengthSquared(v) < kTiny ? -normalised(direction) : -v;
-  out.at = support(now, v);
-  return true;
+  return advance(
+      moving, direction, distance, centreToCentre(moving, fixed),
+      [&](const Vec3 &to) { return nearestInCore(fixed, to); },
+      [&](const Vec3 &along) { return support(fixed, along); }, out);
 }
 
 uint32_t nearest(const Bodies &bodies, const Placed &moving, const Vec3 &direction,
                  float distance, const Sieve &sieve, Impact &out) {
   if (moving.shape.kind == ShapeKind::plane) return Bodies::kNone;
+  if (moving.shape.kind == ShapeKind::heightField) return Bodies::kNone;
   if (!(distance > 0.0f)) distance = 0.0f;
 
   // Where the cast could possibly reach, as one box: the shape at each end of

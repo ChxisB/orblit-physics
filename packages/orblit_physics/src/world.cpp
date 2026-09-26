@@ -1,6 +1,7 @@
 #include "world.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "cast.h"
 
@@ -48,6 +49,12 @@ constexpr float kSteepest = 1.52f;
 /// is a character that is always touching something.
 constexpr float kThinnest = 1.0e-3f;
 
+/// How nearly two contact normals must agree, as a cosine, for last step's
+/// push along one to be a fair start for this step's along the other: about
+/// 25 degrees. Loose enough that a crate rocking on a slope keeps its warm
+/// start, tight enough that a corner that has slid across a crease does not.
+constexpr float kSameWay = 0.9f;
+
 } // namespace
 
 // --------------------------------------------------------------------------
@@ -88,6 +95,8 @@ void World::submit(const OrblitPhysicsCommand *commands, uint32_t count) {
 
 void World::apply(const OrblitPhysicsCommand &command) {
   if (command.kind == ORBLIT_PHYSICS_CREATE) {
+    // Ground has its own call, because a command has nowhere to put a grid.
+    if (command.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return;
     BodyDescription made;
     made.shape = Shape::fromCommand(command.shape, command.size);
     made.motion = motionOf(command.motion);
@@ -112,15 +121,7 @@ void World::apply(const OrblitPhysicsCommand &command) {
 
   switch (command.kind) {
     case ORBLIT_PHYSICS_DESTROY:
-      bodies_.remove(command.id);
-      // Erased in place rather than swapped out, because the list's order is
-      // the order characters move in, and two characters that swap turns
-      // swap which of them gets to a doorway first.
-      characters_.erase(std::remove_if(characters_.begin(), characters_.end(),
-                                       [&](const Character &c) {
-                                         return c.id == command.id;
-                                       }),
-                        characters_.end());
+      destroy(command.id);
       return;
 
     case ORBLIT_PHYSICS_PLACE:
@@ -182,6 +183,63 @@ void World::apply(const OrblitPhysicsCommand &command) {
     default:
       return;
   }
+}
+
+void World::destroy(OrblitPhysicsId id) {
+  bodies_.remove(id);
+  // Erased in place rather than swapped out, because the list's order is the
+  // order characters move in, and two characters that swap turns swap which
+  // of them gets to a doorway first.
+  characters_.erase(std::remove_if(characters_.begin(), characters_.end(),
+                                   [&](const Character &c) { return c.id == id; }),
+                    characters_.end());
+  // After the body, which points into it.
+  fields_.erase(id);
+}
+
+bool World::ground(const OrblitPhysicsGround &from) {
+  const uint32_t least = from.margin ? 4u : 2u;
+  if (from.id == 0 || from.heights == nullptr) return false;
+  if (from.columns < least || from.rows < least) return false;
+  if (!(from.spacing > 0.0f) || !std::isfinite(from.spacing)) return false;
+
+  auto field = std::make_unique<HeightField>();
+  field->lay(from.columns, from.rows, from.spacing, from.heights, from.margin);
+
+  // Replaced rather than changed in place: a body's shape is fixed once it is
+  // made, and the pair it was in is keyed by id, so what was touching it
+  // before is still warm started against the new one. Where it was is kept,
+  // because what was on it may be above where it is now.
+  const uint32_t was = bodies_.rowOf(from.id);
+  const bool replacing = was != Bodies::kNone;
+  const Bounds before = replacing ? bodies_.bounds(was) : Bounds{};
+  destroy(from.id);
+
+  BodyDescription made;
+  made.shape = Shape::ground(field.get());
+  made.motion = Motion::fixed;
+  made.at = vectorOf(from.at);
+  made.rotation = Quat{};
+  made.friction = std::fmax(from.friction, 0.0f);
+  made.restitution = clamped(from.restitution, 0.0f, 1.0f);
+  made.layerIs = from.layerIs;
+  made.layerCares = from.layerCares;
+  const uint32_t row = bodies_.add(from.id, made);
+  if (row == Bodies::kNone) return false;
+  fields_[from.id] = std::move(field);
+
+  // Ground that has moved under a sleeper must wake it, or a crate on a hill
+  // that was just lowered hangs in the air where the hill was.
+  const Bounds &after = bodies_.bounds(row);
+  const Bounds area =
+      replacing ? Bounds{minPerAxis(before.low, after.low),
+                         maxPerAxis(before.high, after.high)}
+                : after;
+  const uint32_t count = bodies_.count();
+  for (uint32_t other = 0; other < count; ++other) {
+    if (bodies_.bounds(other).overlaps(area)) wake(other);
+  }
+  return true;
 }
 
 void World::push(uint32_t row, const Vec3 &impulse, const Vec3 &point) {
@@ -318,24 +376,32 @@ void World::findContacts() {
     // only exists because the pair was already touching, so the worst a bad
     // match can do is start a pass from a number that is merely close, and
     // the passes then correct it within the same step.
+    //
+    // A limit on direction, though. Against ground the points of one pair
+    // can face different ways, and the push that held a corner against one
+    // slope is no start at all for a corner now against the other.
     const PairKey key = keyOf(bodies_.id(a), bodies_.id(b));
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
       const Manifold &old = before->second;
-      const bool flipped = old.a != a;
+      // The rows a manifold names can swap between steps; the impulse is
+      // along a normal that flips with them.
+      const float sign = old.a != a ? -1.0f : 1.0f;
       for (uint32_t c = 0; c < manifold.count; ++c) {
-        uint32_t nearest = 0;
+        uint32_t nearest = Bodies::kNone;
         float best = 3.0e38f;
         for (uint32_t o = 0; o < old.count; ++o) {
+          if (dot(old.points[o].normal, manifold.points[c].normal) * sign <
+              kSameWay) {
+            continue;
+          }
           const float away = lengthSquared(old.points[o].at - manifold.points[c].at);
           if (away < best) {
             best = away;
             nearest = o;
           }
         }
-        // The rows a manifold names can swap between steps; the impulse is
-        // along a normal that flips with them.
-        const float sign = flipped ? -1.0f : 1.0f;
+        if (nearest == Bodies::kNone) continue;
         manifold.points[c].normalImpulse = old.points[nearest].normalImpulse;
         manifold.points[c].frictionImpulse[0] =
             old.points[nearest].frictionImpulse[0] * sign;
@@ -476,6 +542,7 @@ uint32_t World::read(const OrblitPhysicsId *ids, uint32_t count, float *out,
 }
 
 bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
+  if (query.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return false;
   const Vec3 direction = normalised(vectorOf(query.direction));
   if (lengthSquared(direction) < kTiny) return false;
 

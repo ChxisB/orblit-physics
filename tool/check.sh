@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 PACKAGES=(
   packages/orblit_physics
   packages/orblit_physics_scene
+  packages/orblit_physics_terrain
 )
 failures=0
 

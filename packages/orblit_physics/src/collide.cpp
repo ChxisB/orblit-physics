@@ -27,17 +27,15 @@ void clearImpulses(Contact &c) {
 void one(Manifold &out, const Vec3 &normal, const Vec3 &at, float depth) {
   out.normal = normal;
   out.points[0].at = at;
+  out.points[0].normal = normal;
   out.points[0].depth = depth;
   clearImpulses(out.points[0]);
   out.count = 1;
 }
 
-/// Adds a point, or takes the place of the shallowest one already there.
-///
-/// Four is the budget, and which four matters: the deepest are the ones the
-/// solver has the most work to do on, and dropping one of them for a point
-/// that is barely touching is how a corner sinks through a floor.
-void keepDeepest(Manifold &out, const Vec3 &at, float depth) {
+} // namespace
+
+void keepDeepest(Manifold &out, const Vec3 &normal, const Vec3 &at, float depth) {
   uint32_t slot = out.count;
   if (out.count == kMaxContacts) {
     slot = 0;
@@ -49,22 +47,78 @@ void keepDeepest(Manifold &out, const Vec3 &at, float depth) {
     ++out.count;
   }
   out.points[slot].at = at;
+  out.points[slot].normal = normal;
   out.points[slot].depth = depth;
   clearImpulses(out.points[slot]);
 }
 
-bool flipped(bool hit, Manifold &out) {
-  if (hit) out.normal = -out.normal;
-  return hit;
-}
-
-/// The point of a segment nearest `to`, the segment given as a centre and a
-/// half-length vector — which is how every capsule in here carries its axis.
 Vec3 closestOnSegment(const Vec3 &centre, const Vec3 &half, const Vec3 &to) {
   const float lsq = lengthSquared(half);
   if (lsq < kTiny) return centre;
   return centre + half * clamped(dot(to - centre, half) / lsq, -1.0f, 1.0f);
 }
+
+Poly faceOf(const Vec3 &centre, const Vec3 axis[3], const Vec3 &half, int i,
+            float sign) {
+  const int j = (i + 1) % 3;
+  const int k = (i + 2) % 3;
+  const Vec3 middle = centre + axis[i] * (sign * half[i]);
+  const Vec3 u = axis[j] * half[j];
+  const Vec3 w = axis[k] * half[k];
+
+  Poly p;
+  p.v[0] = middle + u + w;
+  p.v[1] = middle - u + w;
+  p.v[2] = middle - u - w;
+  p.v[3] = middle + u - w;
+  p.n = 4;
+  return p;
+}
+
+Poly clipTo(const Poly &in, const Vec3 &n, float surface) {
+  Poly out;
+  for (uint32_t i = 0; i < in.n && out.n < 8; ++i) {
+    const Vec3 &p = in.v[i];
+    const Vec3 &q = in.v[(i + 1) % in.n];
+    const float dp = dot(n, p) - surface;
+    const float dq = dot(n, q) - surface;
+    if (dp <= 0.0f) out.v[out.n++] = p;
+    if (dp * dq < 0.0f && out.n < 8) {
+      out.v[out.n++] = p + (q - p) * (dp / (dp - dq));
+    }
+  }
+  return out;
+}
+
+void closestOnSegments(const Vec3 &p1, const Vec3 &d1, const Vec3 &p2,
+                       const Vec3 &d2, Vec3 &c1, Vec3 &c2) {
+  const Vec3 r = p1 - p2;
+  const float a = dot(d1, d1);
+  const float e = dot(d2, d2);
+  const float b = dot(d1, d2);
+  const float c = dot(d1, r);
+  const float f = dot(d2, r);
+
+  const float denom = a * e - b * b;
+  float s = denom > kTiny ? clamped((b * f - c * e) / denom, 0.0f, 1.0f) : 0.0f;
+  const float t = e > kTiny ? clamped((b * s + f) / e, 0.0f, 1.0f) : 0.0f;
+  s = a > kTiny ? clamped((b * t - c) / a, 0.0f, 1.0f) : 0.0f;
+
+  c1 = p1 + d1 * s;
+  c2 = p2 + d2 * t;
+}
+
+namespace {
+
+bool flipped(bool hit, Manifold &out) {
+  if (!hit) return false;
+  out.normal = -out.normal;
+  for (uint32_t i = 0; i < out.count; ++i) {
+    out.points[i].normal = -out.points[i].normal;
+  }
+  return true;
+}
+
 
 /// One contact from two round surfaces that have been reduced to points: the
 /// sphere\u2013sphere case, and what every capsule pair falls back to.
@@ -163,72 +217,12 @@ bool boxPlane(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
                         axis[2] * ((i & 4) ? a.size.z : -a.size.z);
     const float depth = surface - dot(n, corner);
     if (depth < 0.0f) continue;
-    keepDeepest(out, corner + n * (depth * 0.5f), depth);
+    keepDeepest(out, n, corner + n * (depth * 0.5f), depth);
   }
   return out.count > 0;
 }
 
 // --- box against box ------------------------------------------------------ //
-
-/// A face being clipped. Eight is the most a quad can have after four cuts.
-struct Poly {
-  Vec3 v[8];
-  uint32_t n = 0;
-};
-
-/// One face of a box, wound so consecutive corners share an edge.
-Poly faceOf(const Vec3 &centre, const Vec3 axis[3], const Vec3 &half, int i,
-            float sign) {
-  const int j = (i + 1) % 3;
-  const int k = (i + 2) % 3;
-  const Vec3 middle = centre + axis[i] * (sign * half[i]);
-  const Vec3 u = axis[j] * half[j];
-  const Vec3 w = axis[k] * half[k];
-
-  Poly p;
-  p.v[0] = middle + u + w;
-  p.v[1] = middle - u + w;
-  p.v[2] = middle - u - w;
-  p.v[3] = middle + u - w;
-  p.n = 4;
-  return p;
-}
-
-/// The part of `in` on the near side of a plane, cut where it crosses.
-Poly clipTo(const Poly &in, const Vec3 &n, float surface) {
-  Poly out;
-  for (uint32_t i = 0; i < in.n && out.n < 8; ++i) {
-    const Vec3 &p = in.v[i];
-    const Vec3 &q = in.v[(i + 1) % in.n];
-    const float dp = dot(n, p) - surface;
-    const float dq = dot(n, q) - surface;
-    if (dp <= 0.0f) out.v[out.n++] = p;
-    if (dp * dq < 0.0f && out.n < 8) {
-      out.v[out.n++] = p + (q - p) * (dp / (dp - dq));
-    }
-  }
-  return out;
-}
-
-/// The nearest pair of points on two segments, each given as a start and a
-/// full direction.
-void closestOnSegments(const Vec3 &p1, const Vec3 &d1, const Vec3 &p2,
-                       const Vec3 &d2, Vec3 &c1, Vec3 &c2) {
-  const Vec3 r = p1 - p2;
-  const float a = dot(d1, d1);
-  const float e = dot(d2, d2);
-  const float b = dot(d1, d2);
-  const float c = dot(d1, r);
-  const float f = dot(d2, r);
-
-  const float denom = a * e - b * b;
-  float s = denom > kTiny ? clamped((b * f - c * e) / denom, 0.0f, 1.0f) : 0.0f;
-  const float t = e > kTiny ? clamped((b * s + f) / e, 0.0f, 1.0f) : 0.0f;
-  s = a > kTiny ? clamped((b * t - c) / a, 0.0f, 1.0f) : 0.0f;
-
-  c1 = p1 + d1 * s;
-  c2 = p2 + d2 * t;
-}
 
 bool boxBox(const Shape &sa, const Vec3 &pa, const Quat &qa, const Shape &sb,
             const Vec3 &pb, const Quat &qb, Manifold &out) {
@@ -346,7 +340,7 @@ bool boxBox(const Shape &sa, const Vec3 &pa, const Quat &qa, const Shape &sb,
   for (uint32_t i = 0; i < poly.n; ++i) {
     const float depth = surface - dot(poly.v[i], outward);
     if (depth < 0.0f) continue;
-    keepDeepest(out, poly.v[i] + outward * (depth * 0.5f), depth);
+    keepDeepest(out, out.normal, poly.v[i] + outward * (depth * 0.5f), depth);
   }
   return out.count > 0;
 }
@@ -384,7 +378,7 @@ bool capsulePlane(const Shape &a, const Vec3 &pa, const Quat &qa,
     const Vec3 at = end == 0 ? pa - half : pa + half;
     const float depth = a.radius() - (dot(n, at) - surface);
     if (depth < 0.0f) continue;
-    keepDeepest(out, at - n * (a.radius() - depth * 0.5f), depth);
+    keepDeepest(out, n, at - n * (a.radius() - depth * 0.5f), depth);
   }
   return out.count > 0;
 }
@@ -425,7 +419,7 @@ bool capsuleCapsule(const Shape &a, const Vec3 &pa, const Quat &qa,
     const Vec3 other = closestOnSegment(pb, halfB, at);
     const float depth = total - dot(at - other, n);
     if (depth < 0.0f) continue;
-    keepDeepest(both, (at - n * a.radius() + other + n * b.radius()) * 0.5f,
+    keepDeepest(both, n, (at - n * a.radius() + other + n * b.radius()) * 0.5f,
                 depth);
   }
   if (both.count == 2) {
@@ -536,7 +530,8 @@ bool capsuleBox(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
     const Vec3 on = centre + half * (end == 0 ? lo : hi);
     const float apart = dot(n, on) - surface;
     if (radius - apart < 0.0f) continue;
-    keepDeepest(both, pb + rotate(qb, on - n * apart), radius - apart);
+    keepDeepest(both, both.normal, pb + rotate(qb, on - n * apart),
+                  radius - apart);
   }
   if (both.count == 2) {
     out.points[0] = both.points[0];
@@ -559,6 +554,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::plane: return spherePlane(a, atA, b, atB, rotB, out);
         case ShapeKind::capsule:
           return flipped(capsuleSphere(b, atB, rotB, a, atA, out), out);
+        case ShapeKind::heightField:
+          return collideGround(a, atA, rotA, b, atB, rotB, out);
       }
       return false;
     case ShapeKind::box:
@@ -570,6 +567,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return boxPlane(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::capsule:
           return flipped(capsuleBox(b, atB, rotB, a, atA, rotA, out), out);
+        case ShapeKind::heightField:
+          return collideGround(a, atA, rotA, b, atB, rotB, out);
       }
       return false;
     case ShapeKind::plane:
@@ -583,6 +582,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::plane: return false;
         case ShapeKind::capsule:
           return flipped(capsulePlane(b, atB, rotB, a, atA, rotA, out), out);
+        case ShapeKind::heightField: return false;
       }
       return false;
     case ShapeKind::capsule:
@@ -595,6 +595,18 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return capsulePlane(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::capsule:
           return capsuleCapsule(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::heightField:
+          return collideGround(a, atA, rotA, b, atB, rotB, out);
+      }
+      return false;
+    case ShapeKind::heightField:
+      switch (b.kind) {
+        case ShapeKind::sphere:
+        case ShapeKind::box:
+        case ShapeKind::capsule:
+          return flipped(collideGround(b, atB, rotB, a, atA, rotA, out), out);
+        case ShapeKind::plane:
+        case ShapeKind::heightField: return false;
       }
       return false;
   }

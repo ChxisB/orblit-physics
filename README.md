@@ -40,10 +40,11 @@ engine. It is a physics library that Orblit happens to use.
 
 ## In a scene
 
-`orblit_physics_scene` is the one package here that knows about Orblit. It
-simulates the entities in a scene document that have a body component, and
-answers each step with the same kind of diff an edit makes, so whatever already
-draws a document draws the simulation.
+`orblit_physics_scene` is one of the two packages here that know about Orblit;
+the other lays its terrain, [below](#on-terrain). This one simulates the
+entities in a scene document that have a body component, and answers each step
+with the same kind of diff an edit makes, so whatever already draws a document
+draws the simulation.
 
 ```dart
 final scene = ScenePhysics(document);
@@ -82,7 +83,7 @@ runs after integration so it is not correcting a gap that integration is about
 to reopen.
 
 Contacts come from a sweep along X and a narrowphase of spheres, boxes,
-capsules and planes, with separating-axis box–box and face clipping. Where two
+capsules, planes and ground, with separating-axis box–box and face clipping. Where two
 shapes meet along a line rather than at a point — a capsule lying on the floor,
 or across a crate — the contact is reported at both ends, because one contact in
 the middle of a line is something to roll off. Manifolds persist between ticks,
@@ -149,6 +150,61 @@ Standing is decided by looking down, not by what it bumped into. A rounded base
 touching the corner of a step leans by however far round its curve the corner
 is, which says nothing about whether the step is a floor, so a contact that
 leans too far to stand on is looked past, to the top of whatever it touched.
+
+### Ground
+
+Ground is heights on a grid, laid as one fixed body. Each square of four
+samples is two triangles, and everything under the surface is solid: a crate
+that has sunk in, or had the ground raised under it while it slept, is pushed
+up and out rather than through. A height that is not a number is a hole.
+
+```dart
+physics.layGround(
+  hill,
+  heights: heights, // columns * rows of them, row after row
+  columns: 65,
+  rows: 65,
+  spacing: 0.5,
+  at: [-16, 0, -16],
+);
+```
+
+Laying it again under the same id replaces it and wakes whatever was over the
+old ground or the new, which is how an edit reaches the world. Taking it away
+wakes nothing, as taking any body away does, so a crate asleep on ground that
+has streamed out stays put until the ground comes back.
+
+A line between two triangles is a seam, not an edge: a ball rolls across flat
+ground without hopping at every cell, and a box sits in a crease between two
+slopes without being shoved off either. The edge of the grid is a seam too,
+because ground big enough to stream is laid in pieces, side by side. Laid with
+a `margin`, a piece's outer ring of samples is its neighbours', never stood on,
+and a ridge along the line between two pieces holds a ball up the way one
+piece would.
+
+## On terrain
+
+`orblit_physics_terrain` lays an Orblit terrain as ground, a region to a piece,
+and only the regions near a point.
+
+```dart
+final ground = TerrainPhysics(physics, terrain);
+
+// Every frame, or whenever the camera moves.
+ground.sync(x: camera.x, z: camera.z, radius: 64);
+```
+
+`sync` lays the regions within the radius, takes up the ones a region's width
+beyond it, and lays a region again when its heights, holes or any neighbour's
+have changed. The ground it lays is the ground the renderer draws, triangle for
+triangle, holes included. An editor passes `refresh: false` while a stroke is
+being drawn and syncs normally once it is done, so a brush does not relay the
+ground under it every frame. Its bodies are numbered far below zero, out of the
+way of entity handles and of the small negative numbers a game gives its own
+bodies; `regionOf` turns one back into the region it is.
+
+Like the scene bridge, it depends on the engine over git, and
+`./tool/link_local.sh` points it at a checkout instead.
 
 ## What it does not do
 

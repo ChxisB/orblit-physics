@@ -18,6 +18,7 @@ void main(List<String> args) async {
         root.resolve('src/cast.cpp').toFilePath(),
         root.resolve('src/solver.cpp').toFilePath(),
         root.resolve('src/character.cpp').toFilePath(),
+        root.resolve('src/heightfield.cpp').toFilePath(),
       ],
       includes: [
         root.resolve('include/').toFilePath(),

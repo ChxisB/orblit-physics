@@ -348,6 +348,76 @@ class Physics {
     command.size[3] = strength;
   }
 
+  /// Lays ground as heights on a grid, as one fixed body named `id`, and
+  /// answers whether it was laid.
+  ///
+  /// Sample (c, r) is `heights[r * columns + c]` and sits at
+  /// `at + (c * spacing, height, r * spacing)`; each square of four samples is
+  /// two triangles, split from (c, r) to (c + 1, r + 1). Everything under the
+  /// surface is ground, so something that has sunk in comes up and out rather
+  /// than through. A height that is not a finite number is a hole: things fall
+  /// through it and roll off its rim.
+  ///
+  /// Laying it again under the same id replaces it — whatever was there,
+  /// ground or not — and wakes everything over it, so an edit reaches the
+  /// world by laying the piece again, and a crate on a hill that was lowered
+  /// falls with it. It is taken away with [remove], which, as for any body,
+  /// wakes nothing: a crate asleep on ground streamed out from under it stays
+  /// where it was until something wakes it, and is still there when the
+  /// ground comes back.
+  ///
+  /// Ground streamed in pieces is laid one field per piece, side by side.
+  /// With `margin` the outermost ring of `heights` is the neighbouring
+  /// pieces' samples, never stood on, which is how a ridge running along the
+  /// line between two pieces holds a ball up the way one field would. `at`
+  /// is then where the margin's corner is, a spacing out from the field's own.
+  ///
+  /// False, and nothing changed, for a zero id, a spacing that is not a
+  /// positive number, fewer heights than `columns * rows`, or a grid with no
+  /// square of its own: at least two samples each way, four with a margin.
+  bool layGround(
+    int id, {
+    required List<double> heights,
+    required int columns,
+    required int rows,
+    double spacing = 1.0,
+    bool margin = false,
+    List<double> at = const [0.0, 0.0, 0.0],
+    double friction = 0.5,
+    double restitution = 0.0,
+    Layers layers = Layers.everything,
+  }) {
+    _requireAlive();
+    // Sent now rather than queued, so it lands after whatever was queued
+    // before it: a body added under this id a moment ago is the one replaced.
+    _flush();
+    if (columns < 0 || rows < 0 || heights.length < columns * rows) {
+      return false;
+    }
+    final count = columns * rows;
+    final samples = calloc<Float>(count == 0 ? 1 : count);
+    final ground = calloc<native.OrblitPhysicsGround>();
+    try {
+      samples.asTypedList(count).setAll(0, heights.take(count));
+      final it = ground.ref;
+      it.id = id;
+      it.heights = samples;
+      it.columns = columns;
+      it.rows = rows;
+      it.spacing = spacing;
+      it.margin = margin;
+      _write3(it.at, at);
+      it.friction = friction;
+      it.restitution = restitution;
+      it.layerIs = layers.is_;
+      it.layerCares = layers.cares;
+      return native.physicsGround(_alive, ground);
+    } finally {
+      calloc.free(samples);
+      calloc.free(ground);
+    }
+  }
+
   /// Takes a body out of the world. Anything that was touching it is told the
   /// touch has ended on the next step.
   void remove(int id) => _next(2, id);

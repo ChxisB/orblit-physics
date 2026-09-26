@@ -40,6 +40,12 @@ void orblit_physics_submit(OrblitPhysics *physics,
   physics->world.submit(commands, count);
 }
 
+bool orblit_physics_ground(OrblitPhysics *physics,
+                           const OrblitPhysicsGround *ground) {
+  if (physics == nullptr || ground == nullptr) return false;
+  return physics->world.ground(*ground);
+}
+
 void orblit_physics_step(OrblitPhysics *physics, float delta) {
   if (physics == nullptr) return;
   physics->world.step(delta);

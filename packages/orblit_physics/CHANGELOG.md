@@ -1,3 +1,22 @@
+## 0.4.0
+
+- Ground: `Physics.layGround` lays heights on a grid as one fixed body. Each
+  square is two triangles, everything under the surface is solid, so ground
+  can be raised under a sleeping crate and push it up and out, and a height
+  that is not a number is a hole. Laying it again under the same id replaces
+  it and wakes whatever is over the old ground or the new.
+- Ground streamed in pieces behaves as one ground. The edge of a field is a
+  seam, not a cliff, and a field laid with a `margin` knows its neighbours'
+  samples, so a ridge or a valley along the line between two pieces holds a
+  ball the way one field would.
+- A seam between two triangles is not an edge: a ball rolls across flat ground
+  without hopping at the line between cells, and a box sits in a crease
+  between two slopes without being shoved off it. Every contact point now
+  carries its own normal, which is what lets one pair touch two slopes at
+  once.
+- Casts, characters and the solver all meet ground: a character walks over
+  it, climbs it and slides down what is too steep, and a cast stops on it.
+
 ## 0.3.0
 
 - Characters: `Physics.addCharacter` makes a body that walks. It is swept

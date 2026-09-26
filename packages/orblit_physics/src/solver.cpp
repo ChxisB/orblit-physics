@@ -67,7 +67,6 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
     pair.manifold = m;
     pair.a = manifold.a;
     pair.b = manifold.b;
-    pair.normal = manifold.normal;
     // Two slippery things together are slipperier than either against
     // something grippy, which a geometric mean gives and an average does not.
     pair.friction =
@@ -85,8 +84,6 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
 
     const float bounciness =
         std::fmax(bodies.restitution(pair.a), bodies.restitution(pair.b));
-    Vec3 across[2];
-    perpendiculars(pair.normal, across[0], across[1]);
 
     const uint32_t index = static_cast<uint32_t>(pairs_.size());
     for (uint32_t c = 0; c < manifold.count; ++c) {
@@ -98,15 +95,15 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
       row.leverB = contact.at - bodies.at(pair.b);
       row.localA = unrotate(bodies.rotation(pair.a), row.leverA);
       row.localB = unrotate(bodies.rotation(pair.b), row.leverB);
-      row.tangent[0] = across[0];
-      row.tangent[1] = across[1];
+      row.normal = contact.normal;
+      perpendiculars(row.normal, row.tangent[0], row.tangent[1]);
       row.depth = contact.depth;
       row.normalImpulse = contact.normalImpulse;
       row.frictionImpulse[0] = contact.frictionImpulse[0];
       row.frictionImpulse[1] = contact.frictionImpulse[1];
       row.normalMass =
           effectiveMass(pair.inverseMassA, pair.inverseMassB, pair.inertiaA,
-                        pair.inertiaB, row.leverA, row.leverB, pair.normal);
+                        pair.inertiaB, row.leverA, row.leverB, row.normal);
       for (int t = 0; t < 2; ++t) {
         row.tangentMass[t] =
             effectiveMass(pair.inverseMassA, pair.inverseMassB, pair.inertiaA,
@@ -120,7 +117,7 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
                             cross(bodies.spin(pair.a), row.leverA) -
                             bodies.velocity(pair.b) -
                             cross(bodies.spin(pair.b), row.leverB);
-      const float closing = dot(relative, pair.normal);
+      const float closing = dot(relative, row.normal);
       row.bounce = closing < -settings.bounceThreshold ? -bounciness * closing : 0.0f;
 
       rows_.push_back(row);
@@ -134,7 +131,7 @@ void Solver::warmStart(Bodies &bodies) {
   for (const Row &row : rows_) {
     const Pair &pair = pairs_[row.pair];
     apply(bodies, pair, row,
-          pair.normal * row.normalImpulse +
+          row.normal * row.normalImpulse +
               row.tangent[0] * row.frictionImpulse[0] +
               row.tangent[1] * row.frictionImpulse[1]);
   }
@@ -158,11 +155,11 @@ void Solver::correctVelocities(Bodies &bodies) {
 
     // Then the normal, which may push and never pull: a contact that would
     // need to hold the bodies together is a contact that has ended.
-    const float closing = dot(relative(bodies, pair, row), pair.normal);
+    const float closing = dot(relative(bodies, pair, row), row.normal);
     const float was = row.normalImpulse;
     row.normalImpulse =
         std::fmax(was - row.normalMass * (closing - row.bounce), 0.0f);
-    apply(bodies, pair, row, pair.normal * (row.normalImpulse - was));
+    apply(bodies, pair, row, row.normal * (row.normalImpulse - was));
   }
 }
 
@@ -175,7 +172,7 @@ void Solver::correctPositions(Bodies &bodies, const SolverSettings &settings) {
     // the small corrections a pass makes and it costs two rotations.
     const Vec3 worldA = bodies.at(pair.a) + rotate(bodies.rotation(pair.a), row.localA);
     const Vec3 worldB = bodies.at(pair.b) + rotate(bodies.rotation(pair.b), row.localB);
-    const float depth = row.depth - dot(worldA - worldB, pair.normal);
+    const float depth = row.depth - dot(worldA - worldB, row.normal);
 
     const float over = depth - settings.slop;
     if (over <= 0.0f) continue;
@@ -183,7 +180,7 @@ void Solver::correctPositions(Bodies &bodies, const SolverSettings &settings) {
     const Vec3 leverA = worldA - bodies.at(pair.a);
     const Vec3 leverB = worldB - bodies.at(pair.b);
     const float push = clamped(over * settings.stiffness, 0.0f, kMaxPush);
-    const Vec3 impulse = pair.normal * (row.normalMass * push);
+    const Vec3 impulse = row.normal * (row.normalMass * push);
 
     bodies.at(pair.a) += impulse * pair.inverseMassA;
     bodies.rotation(pair.a) = integrate(

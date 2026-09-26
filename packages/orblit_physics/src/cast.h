@@ -20,6 +20,11 @@
 //
 // Half-spaces are not done this way. A plane has no bounds and no support
 // point to speak of, and the answer for one is exact in three lines.
+//
+// Ground is done this way, a triangle at a time. It is not convex, but each
+// of its triangles is, and the earliest touch among the triangles a shape
+// could reach is the earliest touch with the ground — once touches at a seam
+// between two triangles are thrown away, as the narrowphase throws them away.
 
 #ifndef ORBLIT_PHYSICS_CAST_H
 #define ORBLIT_PHYSICS_CAST_H

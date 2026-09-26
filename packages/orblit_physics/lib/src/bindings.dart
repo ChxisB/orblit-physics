@@ -139,6 +139,47 @@ final class OrblitPhysicsHit extends Struct {
   external Array<Uint8> reserved;
 }
 
+/// `OrblitPhysicsGround`, field for field.
+final class OrblitPhysicsGround extends Struct {
+  @Uint64()
+  external int id;
+
+  external Pointer<Float> heights;
+
+  @Uint32()
+  external int columns;
+
+  @Uint32()
+  external int rows;
+
+  @Float()
+  external double spacing;
+
+  @Bool()
+  external bool margin;
+
+  @Array(3)
+  external Array<Uint8> reserved;
+
+  @Array(3)
+  external Array<Float> at;
+
+  @Float()
+  external double friction;
+
+  @Float()
+  external double restitution;
+
+  @Uint32()
+  external int layerIs;
+
+  @Uint32()
+  external int layerCares;
+
+  @Uint32()
+  external int pad;
+}
+
 /// `OrblitPhysicsFooting`, field for field.
 final class OrblitPhysicsFooting extends Struct {
   @Uint64()
@@ -314,6 +355,14 @@ external bool physicsCast(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsCast> cast,
   Pointer<OrblitPhysicsHit> out,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsGround>)
+>(symbol: 'orblit_physics_ground', assetId: kOrblitPhysicsAsset)
+external bool physicsGround(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsGround> ground,
 );
 
 @Native<

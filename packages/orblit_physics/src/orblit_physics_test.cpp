@@ -955,6 +955,410 @@ void footings() {
   orblit_physics_destroy(physics);
 }
 
+// --- ground ---------------------------------------------------------------- //
+
+float flat(float, float) { return 0.0f; }
+
+/// Two slopes of one in two, meeting in a crease along x = 0.
+float valley(float x, float) { return 0.5f * std::fabs(x); }
+
+/// A ridge along x = 0, falling away three in ten either side.
+float ridge(float x, float) { return 1.0f - 0.3f * std::fabs(x); }
+
+/// About 17 degrees, rising towards +x.
+float incline(float x, float) { return 0.3f * x; }
+
+/// Lumpy, and the same along no line.
+float bumps(float x, float z) {
+  return std::sin(x * 1.3f) + 0.6f * std::cos(z * 1.7f + 0.4f) + 0.05f * x;
+}
+
+/// `columns` by `rows` heights read off `surface`, `spacing` apart, with
+/// sample (0, 0) at (x, z).
+std::vector<float> sampled(uint32_t columns, uint32_t rows, float spacing,
+                           float x, float z, float (*surface)(float, float)) {
+  std::vector<float> heights(static_cast<size_t>(columns) * rows);
+  for (uint32_t r = 0; r < rows; ++r) {
+    for (uint32_t c = 0; c < columns; ++c) {
+      heights[r * columns + c] = surface(x + c * spacing, z + r * spacing);
+    }
+  }
+  return heights;
+}
+
+OrblitPhysicsGround groundOf(OrblitPhysicsId id, const std::vector<float> &heights,
+                             uint32_t columns, uint32_t rows, float x, float z) {
+  OrblitPhysicsGround made{};
+  made.id = id;
+  made.heights = heights.data();
+  made.columns = columns;
+  made.rows = rows;
+  made.spacing = 1.0f;
+  made.at[0] = x;
+  made.at[2] = z;
+  made.friction = 0.5f;
+  made.layerIs = 1;
+  made.layerCares = 0xFFFFFFFFu;
+  return made;
+}
+
+/// Eight metres square of `surface` in 1 m cells, centred on the origin.
+bool lay(OrblitPhysics *physics, OrblitPhysicsId id,
+         float (*surface)(float, float)) {
+  const std::vector<float> heights = sampled(9, 9, 1.0f, -4.0f, -4.0f, surface);
+  const OrblitPhysicsGround ground = groundOf(id, heights, 9, 9, -4.0f, -4.0f);
+  return orblit_physics_ground(physics, &ground);
+}
+
+/// How far a body's own up has tipped away from the world's, as the cosine
+/// between them.
+float levelOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float t[7] = {0};
+  orblit_physics_transform(physics, id, t);
+  return 1.0f - 2.0f * (t[3] * t[3] + t[5] * t[5]);
+}
+
+void resting() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  check(lay(physics, 1, flat), "ground is laid");
+  check(orblit_physics_alive(physics, 1) && orblit_physics_count(physics) == 1,
+        "and is a body like any other");
+
+  submit(physics, sphereAt(2, 0.5f, 0.3f, 3.0f, 0.2f));
+  // Its bottom face spans four cells and the corner sample between them.
+  submit(physics, boxAt(3, 0.5f, 2.0f, 3.0f, 2.0f));
+  OrblitPhysicsCommand lying = capsuleAt(4, 0.3f, 0.6f, -2.0f, 3.0f, 1.5f);
+  layDown(lying);
+  submit(physics, lying);
+  run(physics, 3.0f);
+
+  check(near(heightOf(physics, 2), 0.5f, 0.03f),
+        "a sphere dropped on flat ground rests on it");
+  check(near(heightOf(physics, 3), 0.5f, 0.03f) && levelOf(physics, 3) > 0.999f,
+        "and a box across four of its cells rests on it level");
+  check(near(heightOf(physics, 4), 0.3f, 0.03f),
+        "and a capsule lying across several");
+  check(orblit_physics_asleep(physics, 2) && orblit_physics_asleep(physics, 3) &&
+            orblit_physics_asleep(physics, 4),
+        "and all three settle enough to sleep");
+
+  orblit_physics_destroy(physics);
+}
+
+void rolling() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  // Two fields side by side, meeting along x = 0.
+  const std::vector<float> west = sampled(5, 9, 1.0f, -4.0f, -4.0f, flat);
+  const std::vector<float> east = sampled(5, 9, 1.0f, 0.0f, -4.0f, flat);
+  const OrblitPhysicsGround a = groundOf(1, west, 5, 9, -4.0f, -4.0f);
+  const OrblitPhysicsGround b = groundOf(2, east, 5, 9, 0.0f, -4.0f);
+  orblit_physics_ground(physics, &a);
+  orblit_physics_ground(physics, &b);
+
+  submit(physics, sphereAt(3, 0.5f, -3.0f, 0.5f, 0.37f));
+  submit(physics, boxAt(4, 0.5f, -2.0f, 0.5f, -2.3f));
+  run(physics, 0.5f);
+  drive(physics, 3, 4.0f, 0.0f, 0.5f, 0.0f);
+  drive(physics, 4, 5.0f, 0.0f, 0.0f, 0.0f);
+
+  float ball = 0.0f;
+  float box = 0.0f;
+  float tipped = 1.0f;
+  for (int i = 0; i < 90; ++i) {
+    orblit_physics_step(physics, kStep);
+    ball = std::fmax(ball, heightOf(physics, 3));
+    box = std::fmax(box, heightOf(physics, 4));
+    tipped = std::fmin(tipped, levelOf(physics, 4));
+  }
+
+  check(ball < 0.51f, "a ball rolling over ground never hops at a seam");
+  check(coordinateOf(physics, 3, 0) > 1.0f,
+        "not even the one between two fields, which it crossed");
+  check(box < 0.51f && tipped > 0.999f,
+        "and a box sliding over it neither hops nor trips");
+  check(coordinateOf(physics, 4, 0) > 0.0f, "into the next field as well");
+
+  orblit_physics_destroy(physics);
+}
+
+void creases() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  lay(physics, 1, valley);
+  submit(physics, boxAt(2, 0.5f, 0.0f, 3.0f, -1.7f));
+  submit(physics, sphereAt(3, 0.5f, 0.0f, 3.0f, 1.8f));
+  run(physics, 4.0f);
+
+  // Its bottom corners on the slopes either side, a quarter of a metre up.
+  check(near(coordinateOf(physics, 2, 0), 0.0f, 0.03f) &&
+            near(heightOf(physics, 2), 0.75f, 0.03f) &&
+            levelOf(physics, 2) > 0.999f,
+        "a box in a valley sits level across the crease");
+  check(speedOf(physics, 2) < 0.05f,
+        "and stays there, not shoved along either slope");
+  // Touching both slopes, its centre is its radius over the cosine up.
+  check(near(coordinateOf(physics, 3, 0), 0.0f, 0.03f) &&
+            near(heightOf(physics, 3), 0.559f, 0.03f),
+        "and a ball settles into the bottom of it");
+
+  orblit_physics_destroy(physics);
+}
+
+void holes() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  std::vector<float> heights = sampled(9, 9, 1.0f, -4.0f, -4.0f, flat);
+  // Nine samples gone, and with them every triangle touching one: a hole
+  // from x = -2 to 2 and z = -2 to 2.
+  for (int r = 3; r <= 5; ++r) {
+    for (int c = 3; c <= 5; ++c) heights[r * 9 + c] = std::nanf("");
+  }
+  const OrblitPhysicsGround ground = groundOf(1, heights, 9, 9, -4.0f, -4.0f);
+  orblit_physics_ground(physics, &ground);
+
+  submit(physics, sphereAt(2, 0.3f, 0.2f, 3.0f, 0.1f));
+  submit(physics, sphereAt(3, 0.3f, 3.2f, 3.0f, 3.1f));
+  submit(physics, sphereAt(4, 0.3f, -3.4f, 0.3f, 0.0f));
+  run(physics, 0.25f);
+  drive(physics, 4, 3.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 2.0f);
+
+  check(heightOf(physics, 2) < -2.0f, "a ball dropped over a hole falls through");
+  check(near(heightOf(physics, 3), 0.3f, 0.03f), "and one beside it does not");
+  check(heightOf(physics, 4) < -1.0f, "and one rolled towards it goes over the rim");
+
+  OrblitPhysicsHit hit{};
+  const OrblitPhysicsCast down = rayFrom(0.5f, 5.0f, 0.5f, 0.0f, -1.0f, 0.0f, 20.0f);
+  check(!orblit_physics_cast(physics, &down, &hit), "a ray down the hole meets nothing");
+
+  orblit_physics_destroy(physics);
+}
+
+void castingGround() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  lay(physics, 1, incline);
+  const float tilt = 1.0f / std::sqrt(1.09f);
+
+  OrblitPhysicsHit hit{};
+  const OrblitPhysicsCast ray = rayFrom(0.3f, 10.0f, 0.7f, 0.0f, -1.0f, 0.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && hit.body == 1 &&
+            near(hit.at[1], 0.09f, 1.0e-3f) && near(hit.distance, 9.91f, 1.0e-3f),
+        "a ray down onto ground hits it where it is");
+  check(near(hit.normal[0], -0.3f * tilt, 1.0e-3f) &&
+            near(hit.normal[1], tilt, 1.0e-3f) && !hit.started,
+        "and says which way the slope faces");
+
+  OrblitPhysicsCast ball = ray;
+  ball.shape = ORBLIT_PHYSICS_SPHERE;
+  ball.size[0] = 0.5f;
+  // Its centre ends up a radius off the slope, measured along the slope's
+  // normal: more than a radius straight up.
+  check(orblit_physics_cast(physics, &ball, &hit) &&
+            near(hit.distance, 10.0f - 0.09f - 0.5f / tilt, 5.0e-3f),
+        "and a ball cast down lands a radius off the slope");
+
+  OrblitPhysicsCast across = rayFrom(-3.5f, 0.3f, 0.0f, 1.0f, 0.0f, 0.0f, 10.0f);
+  across.shape = ORBLIT_PHYSICS_SPHERE;
+  across.size[0] = 0.25f;
+  check(orblit_physics_cast(physics, &across, &hit) &&
+            near(hit.distance, 3.5f + (0.3f - 0.25f / tilt) / 0.3f, 5.0e-3f) &&
+            near(hit.normal[1], tilt, 1.0e-3f),
+        "a ball cast along the ground meets the hill in front of it");
+
+  const OrblitPhysicsCast under = rayFrom(0.0f, -2.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f);
+  check(orblit_physics_cast(physics, &under, &hit) && hit.started,
+        "a cast from underground starts inside it");
+
+  OrblitPhysicsCast refused = ray;
+  refused.shape = ORBLIT_PHYSICS_HEIGHT_FIELD;
+  check(!orblit_physics_cast(physics, &refused, &hit), "and ground cannot be cast");
+
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  lay(physics, 1, flat);
+  // Skimming the ground, one a hair above it and one a centimetre above.
+  bool met = false;
+  const float gaps[2] = {5.0e-5f, 0.01f};
+  for (const float gap : gaps) {
+    for (int i = 0; i < 8; ++i) {
+      OrblitPhysicsCast skim =
+          rayFrom(-3.3f, 0.5f + gap, -2.9f + 0.7f * i, 1.0f, 0.0f, 0.37f * (i % 3), 6.0f);
+      skim.shape = ORBLIT_PHYSICS_SPHERE;
+      skim.size[0] = 0.5f;
+      met = met || orblit_physics_cast(physics, &skim, &hit);
+    }
+  }
+  check(!met, "a ball skimming flat ground is not stopped by the seams in it");
+
+  orblit_physics_destroy(physics);
+
+  // Straight down a hair either side of every edge and diagonal, where the
+  // triangle nearest is only just the one underneath.
+  physics = orblit_physics_create(nullptr);
+  lay(physics, 1, bumps);
+  int missed = 0;
+  const float hairs[4] = {-1.0e-3f, -1.0e-5f, 1.0e-5f, 1.0e-3f};
+  for (int r = -3; r < 3; ++r) {
+    for (int c = -3; c < 3; ++c) {
+      for (const float d : hairs) {
+        const float points[3][2] = {{c + d, r + 0.37f},
+                                    {c + 0.37f, r + d},
+                                    {c + 0.61f + d, r + 0.61f}};
+        for (const auto &p : points) {
+          const float x = p[0], z = p[1];
+          const float cx = std::floor(x), cz = std::floor(z);
+          const float u = x - cx, v = z - cz;
+          const float h00 = bumps(cx, cz), h10 = bumps(cx + 1, cz);
+          const float h01 = bumps(cx, cz + 1), h11 = bumps(cx + 1, cz + 1);
+          const float drawn = u >= v ? h00 + u * (h10 - h00) + v * (h11 - h10)
+                                     : h00 + v * (h01 - h00) + u * (h11 - h01);
+          const OrblitPhysicsCast down =
+              rayFrom(x, 5.0f, z, 0.0f, -1.0f, 0.0f, 10.0f);
+          if (!orblit_physics_cast(physics, &down, &hit) ||
+              !near(hit.at[1], drawn, 1.0e-3f)) {
+            missed++;
+          }
+        }
+      }
+    }
+  }
+  check(missed == 0, "a ray down beside an edge meets the ground under it");
+
+  orblit_physics_destroy(physics);
+}
+
+void reshaping() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  lay(physics, 1, flat);
+  submit(physics, boxAt(2, 0.5f, 0.5f, 0.5f, 0.5f));
+  run(physics, 3.0f);
+  check(orblit_physics_asleep(physics, 2), "a crate on ground falls asleep on it");
+
+  const std::vector<float> raised = sampled(9, 9, 1.0f, -4.0f, -4.0f, flat);
+  std::vector<float> higher(raised.size(), 0.3f);
+  OrblitPhysicsGround ground = groundOf(1, higher, 9, 9, -4.0f, -4.0f);
+  check(orblit_physics_ground(physics, &ground) && orblit_physics_count(physics) == 2,
+        "laying ground again replaces it");
+  check(!orblit_physics_asleep(physics, 2), "and wakes what was asleep on it");
+  run(physics, 2.0f);
+  check(near(heightOf(physics, 2), 0.8f, 0.03f),
+        "which ends up on the raised ground, not in it");
+
+  std::vector<float> lower(raised.size(), -1.0f);
+  ground.heights = lower.data();
+  orblit_physics_ground(physics, &ground);
+  run(physics, 2.0f);
+  check(near(heightOf(physics, 2), -0.5f, 0.03f),
+        "and falls with it when it is lowered");
+
+  OrblitPhysicsCommand gone{};
+  gone.kind = ORBLIT_PHYSICS_DESTROY;
+  gone.id = 1;
+  submit(physics, gone);
+  check(!orblit_physics_alive(physics, 1) && orblit_physics_count(physics) == 1,
+        "and ground is destroyed like any other body");
+
+  orblit_physics_destroy(physics);
+}
+
+void hiking() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const std::vector<float> west = sampled(5, 9, 1.0f, -4.0f, -4.0f, flat);
+  const std::vector<float> east = sampled(5, 9, 1.0f, 0.0f, -4.0f, flat);
+  const OrblitPhysicsGround a = groundOf(1, west, 5, 9, -4.0f, -4.0f);
+  const OrblitPhysicsGround b = groundOf(2, east, 5, 9, 0.0f, -4.0f);
+  orblit_physics_ground(physics, &a);
+  orblit_physics_ground(physics, &b);
+  addCharacter(physics, 3, -3.0f, 0.0f, 0.4f);
+
+  const int airborne = walk(physics, 3, 2.0f, 0.0f, 3.0f);
+  check(near(coordinateOf(physics, 3, 0), 3.0f, 0.1f) && airborne == 0,
+        "a character walks over ground and from one field onto the next");
+  check(near(heightOf(physics, 3), 0.91f, 0.005f) &&
+            footingOf(physics, 3).ground == 2,
+        "a skin above it, and says which field it is on");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  lay(physics, 1, incline);
+  addCharacter(physics, 2, -3.0f, -0.9f + 0.2f, 0.3f);
+  walk(physics, 2, 2.0f, 0.0f, 2.5f);
+  const OrblitPhysicsFooting footing = footingOf(physics, 2);
+  check(coordinateOf(physics, 2, 0) > 1.0f && footing.grounded &&
+            footing.ground == 1,
+        "and up a 17 degree hill");
+  orblit_physics_destroy(physics);
+}
+
+void ridges() {
+  // A ridge along the line between two fields, each laid with a ring of the
+  // other's samples round it.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const std::vector<float> west = sampled(7, 11, 1.0f, -5.0f, -5.0f, ridge);
+  const std::vector<float> east = sampled(7, 11, 1.0f, -1.0f, -5.0f, ridge);
+  OrblitPhysicsGround a = groundOf(1, west, 7, 11, -5.0f, -5.0f);
+  OrblitPhysicsGround b = groundOf(2, east, 7, 11, -1.0f, -5.0f);
+  a.margin = true;
+  b.margin = true;
+  check(orblit_physics_ground(physics, &a) && orblit_physics_ground(physics, &b),
+        "ground is laid with a margin");
+
+  submit(physics, sphereAt(3, 0.5f, 0.0f, 2.0f, 0.3f));
+  float deepest = 0.0f;
+  for (int i = 0; i < 150; ++i) {
+    orblit_physics_step(physics, kStep);
+    const float x = coordinateOf(physics, 3, 0);
+    deepest = std::fmax(deepest, 0.5f - (heightOf(physics, 3) - ridge(x, 0.0f)));
+  }
+  check(deepest < 0.05f,
+        "a ball on a ridge between two fields laid with margins is held up by it");
+
+  // The margin is never stood on: past the west field's own edge at x = 0
+  // there is only the east field.
+  const OrblitPhysicsCast down = rayFrom(0.5f, 5.0f, 0.0f, 0.0f, -1.0f, 0.0f, 10.0f);
+  OrblitPhysicsHit hit{};
+  check(orblit_physics_cast(physics, &down, &hit) && hit.body == 2,
+        "and the margin is never stood on");
+
+  orblit_physics_destroy(physics);
+}
+
+void refusingGround() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const std::vector<float> heights = sampled(9, 9, 1.0f, 0.0f, 0.0f, flat);
+  const OrblitPhysicsGround good = groundOf(1, heights, 9, 9, 0.0f, 0.0f);
+
+  OrblitPhysicsGround bad = good;
+  bad.id = 0;
+  bool laid = orblit_physics_ground(physics, &bad);
+  bad = good;
+  bad.heights = nullptr;
+  laid = laid || orblit_physics_ground(physics, &bad);
+  bad = good;
+  bad.columns = 1;
+  laid = laid || orblit_physics_ground(physics, &bad);
+  bad = good;
+  bad.spacing = 0.0f;
+  laid = laid || orblit_physics_ground(physics, &bad);
+  bad = good;
+  bad.spacing = std::nanf("");
+  laid = laid || orblit_physics_ground(physics, &bad);
+  bad = good;
+  bad.columns = 3;
+  bad.margin = true;
+  laid = laid || orblit_physics_ground(physics, &bad);
+  laid = laid || orblit_physics_ground(physics, nullptr);
+  laid = laid || orblit_physics_ground(nullptr, &good);
+  check(!laid && orblit_physics_count(physics) == 0,
+        "ground with nothing to stand on is refused");
+
+  OrblitPhysicsCommand made = groundPlane(5);
+  made.shape = ORBLIT_PHYSICS_HEIGHT_FIELD;
+  submit(physics, made);
+  check(!orblit_physics_alive(physics, 5), "and cannot be made by a command");
+
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -979,6 +1383,15 @@ int main() {
   pushing();
   crowding();
   footings();
+  resting();
+  rolling();
+  creases();
+  holes();
+  castingGround();
+  reshaping();
+  hiking();
+  ridges();
+  refusingGround();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

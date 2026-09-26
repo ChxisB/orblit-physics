@@ -2,14 +2,16 @@
 // spin.
 //
 // A shape here is a few floats and a tag rather than a class with virtuals.
-// There are four of them, every one is the same size, and a body store that
+// There are five of them, every one is the same size, and a body store that
 // can memcpy its shapes is a body store that can be handed about as a column.
-// When a convex hull arrives it brings an index alongside the tag, not a base
-// class.
+// Ground, the one shape too big for a few floats, is a pointer to heights the
+// world owns, not a base class — and a convex hull, when one arrives, will be
+// the same.
 
 #ifndef ORBLIT_PHYSICS_SHAPE_H
 #define ORBLIT_PHYSICS_SHAPE_H
 
+#include "heightfield.h"
 #include "maths.h"
 #include "orblit_physics.h"
 
@@ -20,6 +22,7 @@ enum class ShapeKind : uint32_t {
   box = ORBLIT_PHYSICS_BOX,
   plane = ORBLIT_PHYSICS_PLANE,
   capsule = ORBLIT_PHYSICS_CAPSULE,
+  heightField = ORBLIT_PHYSICS_HEIGHT_FIELD,
 };
 
 struct Shape {
@@ -31,6 +34,9 @@ struct Shape {
 
   /// Plane: how far along the normal the surface sits. Unused otherwise.
   float offset = 0.0f;
+
+  /// Height field: the heights, owned by the world. Unused otherwise.
+  const HeightField *field = nullptr;
 
   static Shape sphere(float radius) {
     return {ShapeKind::sphere, {radius, radius, radius}, 0.0f};
@@ -52,6 +58,10 @@ struct Shape {
   /// down was always going to be rotated anyway.
   static Shape capsule(float radius, float halfHeight) {
     return {ShapeKind::capsule, {radius, halfHeight, 0.0f}, 0.0f};
+  }
+
+  static Shape ground(const HeightField *field) {
+    return {ShapeKind::heightField, {}, 0.0f, field};
   }
 
   float radius() const { return size.x; }
@@ -79,6 +89,8 @@ struct Shape {
       case ShapeKind::box: return length(size);
       case ShapeKind::plane: return 0.0f;
       case ShapeKind::capsule: return size.x + size.y;
+      // Never solved, so never asked how fast its edge is going.
+      case ShapeKind::heightField: return 0.0f;
     }
     return 0.0f;
   }
@@ -117,6 +129,22 @@ struct Shape {
         const Vec3 r{size.x, size.x, size.x};
         return {at - half - r, at + half + r};
       }
+      case ShapeKind::heightField: {
+        if (field == nullptr) return {at, at};
+        // The field's own box turned into the world: each world axis reaches
+        // as far as the corners that go furthest along it.
+        const Bounds own = field->bounds();
+        Bounds out{{3.0e38f, 3.0e38f, 3.0e38f}, {-3.0e38f, -3.0e38f, -3.0e38f}};
+        for (int i = 0; i < 8; ++i) {
+          const Vec3 corner{(i & 1) ? own.high.x : own.low.x,
+                            (i & 2) ? own.high.y : own.low.y,
+                            (i & 4) ? own.high.z : own.low.z};
+          const Vec3 p = at + rotate(rotation, corner);
+          out.low = minPerAxis(out.low, p);
+          out.high = maxPerAxis(out.high, p);
+        }
+        return out;
+      }
     }
     return {at, at};
   }
@@ -143,6 +171,7 @@ struct Shape {
                 i.z > 0.0f ? 1.0f / i.z : 0.0f};
       }
       case ShapeKind::plane: return {};
+      case ShapeKind::heightField: return {};
       case ShapeKind::capsule: {
         // A cylinder and two hemispheres, each taking the share of the mass
         // its volume is worth, and the caps moved out to the ends by the
@@ -171,12 +200,16 @@ struct Shape {
   }
 
   /// Reads one out of a command's four floats, as the header describes them.
+  ///
+  /// Ground cannot be read out of four floats. A command naming it is read as
+  /// a sphere, and whoever sent one refuses it before it gets here.
   static Shape fromCommand(uint32_t kind, const float size[4]) {
     switch (static_cast<ShapeKind>(kind)) {
       case ShapeKind::box: return box({size[0], size[1], size[2]});
       case ShapeKind::plane: return plane({size[0], size[1], size[2]}, size[3]);
       case ShapeKind::capsule: return capsule(size[0], size[1]);
-      case ShapeKind::sphere: break;
+      case ShapeKind::sphere:
+      case ShapeKind::heightField: break;
     }
     return sphere(size[0]);
   }

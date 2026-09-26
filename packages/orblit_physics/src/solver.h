@@ -64,7 +64,6 @@ class Solver {
     uint32_t manifold = 0;
     uint32_t a = 0;
     uint32_t b = 0;
-    Vec3 normal;
     float friction = 0.0f;
     float inverseMassA = 0.0f;
     float inverseMassB = 0.0f;
@@ -83,6 +82,9 @@ class Solver {
     /// find where they have moved to without running the narrowphase again.
     Vec3 localA;
     Vec3 localB;
+    /// Per point rather than per pair, because a pair touching ground can
+    /// be pushed out of two slopes at once.
+    Vec3 normal;
     Vec3 tangent[2];
     float normalMass = 0.0f;
     float tangentMass[2] = {0.0f, 0.0f};

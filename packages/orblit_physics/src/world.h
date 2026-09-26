@@ -23,6 +23,7 @@
 #ifndef ORBLIT_PHYSICS_WORLD_H
 #define ORBLIT_PHYSICS_WORLD_H
 
+#include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -30,6 +31,7 @@
 #include "body.h"
 #include "character.h"
 #include "collide.h"
+#include "heightfield.h"
 #include "orblit_physics.h"
 #include "solver.h"
 
@@ -62,6 +64,10 @@ class World {
   void submit(const OrblitPhysicsCommand *commands, uint32_t count);
   void step(float delta);
 
+  /// Lays ground as a static body, replacing whatever had its id, and wakes
+  /// everything over it. False, and nothing changed, if it cannot be laid.
+  bool ground(const OrblitPhysicsGround &from);
+
   uint32_t read(const OrblitPhysicsId *ids, uint32_t count, float *out,
                 uint32_t stride, uint32_t offset) const;
 
@@ -82,6 +88,9 @@ class World {
 
  private:
   void apply(const OrblitPhysicsCommand &command);
+
+  /// Removes a body and everything this world keeps beside it.
+  void destroy(OrblitPhysicsId id);
   void findContacts();
   void integrateVelocities(float delta);
   void integratePositions(float delta);
@@ -105,6 +114,10 @@ class World {
 
   Bodies bodies_;
   Solver solver_;
+
+  /// The heights of every ground body, by its id. A body's shape points into
+  /// one of these, so one is only ever let go of after its body is.
+  std::unordered_map<OrblitPhysicsId, std::unique_ptr<HeightField>> fields_;
 
   std::vector<Manifold> manifolds_;
   std::vector<PairKey> keys_;
