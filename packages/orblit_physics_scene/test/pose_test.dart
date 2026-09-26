@@ -164,7 +164,7 @@ void main() {
       final document = SceneDocument(
         name: 'Scene',
         entities: [
-          SceneEntity(id: 'folder', name: 'Folder'),
+          const SceneEntity(id: 'folder', name: 'Folder'),
           SceneEntity(
             id: 'crate',
             name: 'Crate',

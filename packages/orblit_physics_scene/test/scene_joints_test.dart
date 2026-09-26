@@ -413,7 +413,7 @@ void main() {
 
       // Editing the weld is, and it holds where the crate now is.
       scene.apply(
-        SceneDiff([
+        const SceneDiff([
           SetField(
             'weld',
             SceneComponents.joint,
