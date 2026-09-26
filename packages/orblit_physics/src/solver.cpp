@@ -28,17 +28,24 @@ float effectiveMass(float inverseMassA, float inverseMassB, const Mat3 &inertiaA
 } // namespace
 
 void Solver::solveVelocities(Bodies &bodies, const Manifold *manifolds,
-                             uint32_t count, const SolverSettings &settings) {
+                             uint32_t count, Joints &joints, float delta,
+                             const SolverSettings &settings) {
   prepare(bodies, manifolds, count, settings);
-  if (rows_.empty()) return;
+  joints.prepare(bodies, delta);
+  if (rows_.empty() && joints.idle()) return;
 
+  joints.warmStart(bodies);
   warmStart(bodies);
-  for (uint32_t i = 0; i < settings.velocitySteps; ++i) correctVelocities(bodies);
+  for (uint32_t i = 0; i < settings.velocitySteps; ++i) {
+    joints.correctVelocities(bodies);
+    correctVelocities(bodies);
+  }
 }
 
-void Solver::solvePositions(Bodies &bodies, Manifold *manifolds,
+void Solver::solvePositions(Bodies &bodies, Manifold *manifolds, Joints &joints,
                             const SolverSettings &settings) {
   for (uint32_t i = 0; i < settings.positionSteps; ++i) {
+    joints.correctPositions(bodies);
     correctPositions(bodies, settings);
   }
 

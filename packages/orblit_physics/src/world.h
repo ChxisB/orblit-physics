@@ -4,7 +4,7 @@
 // from it. One step is:
 //
 //   find contacts -> integrate velocity -> solve velocity
-//                 -> integrate position -> solve position
+//                 -> integrate position -> solve position -> break joints
 //                 -> move characters -> sleep
 //
 // Contacts are found on the positions the last step left, so a caller reading
@@ -19,6 +19,11 @@
 // already risen and a crate already settled by the time a character asks
 // where it can go, so it stands on the lift where the lift now is rather than
 // where it was.
+//
+// Joints break after the position passes, on what they held with in the
+// velocity passes. A joint that gave way this step still held for all of it,
+// so what it held moves off from where it was held rather than from a pose
+// half-corrected by a joint that had already gone.
 
 #ifndef ORBLIT_PHYSICS_WORLD_H
 #define ORBLIT_PHYSICS_WORLD_H
@@ -32,27 +37,11 @@
 #include "character.h"
 #include "collide.h"
 #include "heightfield.h"
+#include "joint.h"
 #include "orblit_physics.h"
 #include "solver.h"
 
 namespace orblit {
-
-/// Two bodies, by the caller's ids, smaller first.
-struct PairKey {
-  OrblitPhysicsId a = 0;
-  OrblitPhysicsId b = 0;
-
-  bool operator==(const PairKey &o) const { return a == o.a && b == o.b; }
-};
-
-struct PairKeyHash {
-  size_t operator()(const PairKey &k) const {
-    // Two ids into one hash. The shift stops a pair and its reverse landing
-    // on the same bucket, which an xor alone would do.
-    const uint64_t mixed = k.a * 0x9E3779B97F4A7C15ull ^ (k.b + 0x165667B1ull);
-    return static_cast<size_t>(mixed ^ (mixed >> 29));
-  }
-};
 
 class World {
  public:
@@ -83,14 +72,34 @@ class World {
   uint32_t footing(const OrblitPhysicsId *ids, uint32_t count,
                    OrblitPhysicsFooting *out) const;
 
-  /// Wakes a body and says so, if it was asleep.
+  /// Wakes a body and says so, if it was asleep, and everything joined to it
+  /// that is asleep with it.
+  ///
+  /// A body the solver does not move is never asleep, but waking one — by
+  /// placing it or setting it going — still wakes what hangs from it: a lift
+  /// that starts to rise wakes the rope tied to it.
   void wake(uint32_t row);
+
+  /// Makes a joint where the bodies stand, waking both. False, and nothing
+  /// changed, if it cannot be made.
+  bool join(const OrblitPhysicsJoint &from);
+
+  /// Removes a joint, waking both its bodies. False if there was none.
+  bool unjoin(OrblitPhysicsId id);
+
+  /// How joint `id` stands. False if there is no such joint.
+  bool joint(OrblitPhysicsId id, OrblitPhysicsJointState &out) const;
 
  private:
   void apply(const OrblitPhysicsCommand &command);
 
-  /// Removes a body and everything this world keeps beside it.
+  /// Removes a body and everything this world keeps beside it, its joints
+  /// included, and wakes what it was joined to.
   void destroy(OrblitPhysicsId id);
+
+  /// Removes a body and what this world keeps beside it, but not its joints:
+  /// ground laid again under the same id is still what they were tied to.
+  void unmake(OrblitPhysicsId id);
   void findContacts();
   void integrateVelocities(float delta);
   void integratePositions(float delta);
@@ -98,6 +107,22 @@ class World {
   void moveCharacter(Character &character, uint32_t row, const Vec3 &up,
                      float delta);
   void updateSleep(float delta);
+
+  /// Puts every group of joined bodies to sleep that is still enough as a
+  /// whole, and none that is not.
+  void sleepJoined();
+
+  /// Wakes everything joined to `row`, and everything joined to that, but
+  /// not through a body the solver does not move: two chains hung from the
+  /// same wall are two chains, and touching one leaves the other asleep.
+  void wakeJoined(uint32_t row);
+
+  /// Removes every joint that held with more than it could take this step,
+  /// saying so.
+  void breakJoints(float delta);
+
+  /// Wakes the two ends of a joint, either of which may be the world.
+  void wakeEnds(OrblitPhysicsId a, OrblitPhysicsId b);
   void reportTouches();
   void note(uint32_t kind, uint32_t row);
 
@@ -114,6 +139,7 @@ class World {
 
   Bodies bodies_;
   Solver solver_;
+  Joints joints_;
 
   /// The heights of every ground body, by its id. A body's shape points into
   /// one of these, so one is only ever let go of after its body is.
@@ -144,6 +170,14 @@ class World {
   std::vector<uint32_t> sorted_;
   std::vector<uint32_t> planes_;
   std::vector<std::pair<uint32_t, uint32_t>> candidates_;
+
+  /// Scratch for joints, likewise: which group each row is in, whether each
+  /// group may sleep, the bodies left to wake, and the joints that broke.
+  std::vector<uint32_t> group_;
+  std::vector<uint8_t> ready_;
+  std::vector<OrblitPhysicsId> waking_;
+  std::vector<OrblitPhysicsId> partners_;
+  std::vector<Broken> broken_;
 };
 
 } // namespace orblit

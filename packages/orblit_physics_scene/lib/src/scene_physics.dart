@@ -29,6 +29,16 @@ import 'pose.dart';
 /// number is ever given to a second entity, so an event that names a body
 /// never names the wrong thing.
 ///
+/// An entity with a [JointComponent] joins two bodies: the nearest body at or
+/// above it, to the nearest body above that or to the world, as
+/// [JointComponent.endsOf] says. It is made where the document puts the joint
+/// entity, holding the bodies as they stand, and remade whenever an edit
+/// rebuilds either body or touches the joint — remade as the bodies stand
+/// then, so a door edited half open reads nought half open. [jointOf] and
+/// [entityOfJoint] are the one-to-one between joint entities and the world's
+/// joint numbers, which are counted apart from the bodies'. A joint that
+/// breaks stays broken, and in [broken], until its own entity is edited.
+///
 /// [physics] is the world itself, for everything a document cannot say:
 /// pushing, driving and casting. What touched what is [events], gathered over
 /// every step a frame took. Numbers from one upwards are this class's to hand
@@ -70,6 +80,16 @@ class ScenePhysics {
   final Map<int, Float32List> _known = {};
 
   int _next = 1;
+
+  final Map<String, int> _jointOf = {};
+  final Map<int, String> _entityOfJoint = {};
+
+  /// The two bodies each joint in the world holds, so rebuilding a body can
+  /// find the joints the world dropped with it.
+  final Map<String, ({int a, int b})> _held = {};
+  final Set<String> _broken = {};
+  int _nextJoint = 1;
+
   double _owed = 0;
   List<PhysicsEvent> _events = const [];
 
@@ -91,6 +111,21 @@ class ScenePhysics {
   /// document's — including a body whose entity has since lost it.
   String? entityOf(int body) => _entityOf[body];
 
+  /// The joint an entity's [JointComponent] is, or null when it has none. An
+  /// entity keeps its number for as long as it has the component, whether or
+  /// not the joint is holding anything: [Physics.jointStateOf] is null for one
+  /// that has broken or has no body to hold.
+  int? jointOf(String entity) => _jointOf[entity];
+
+  /// The entity joint [number] was made for, or null when it is not one of
+  /// the document's. Kept after the joint breaks, so the event that says it
+  /// broke can be read.
+  String? entityOfJoint(int number) => _entityOfJoint[number];
+
+  /// The joint entities whose joints have broken, and are not holding until
+  /// they are edited.
+  Set<String> get broken => Set.unmodifiable(_broken);
+
   /// Moves the simulation on by [seconds] and says what moved.
   ///
   /// Takes as many whole [step]s as are owed — none, when less than a step has
@@ -110,6 +145,16 @@ class ScenePhysics {
     }
     if (_owed >= step) _owed = 0;
     _events = events;
+
+    // The world has already taken a broken joint out, and says which by its
+    // number.
+    for (final event in events) {
+      if (event.kind != PhysicsEventKind.broke) continue;
+      final id = _entityOfJoint[event.a];
+      if (id == null) continue;
+      _broken.add(id);
+      _held.remove(id);
+    }
     return taken == 0 ? SceneDiff.none : _writeBack();
   }
 
@@ -119,7 +164,10 @@ class ScenePhysics {
   /// rebuilt where the document now puts it — a moved parent carries the
   /// bodies under it, as it carries what they draw — or taken out of the world
   /// when it no longer has one. A rebuilt body has lost its velocity, whatever
-  /// the edit was: editing a document mid-simulation is a teleport.
+  /// the edit was: editing a document mid-simulation is a teleport. Every
+  /// joint on a rebuilt body, and every joint entity touched, is made again
+  /// as things now stand; one that had broken is made again only when the
+  /// edit is to its own entity.
   void apply(SceneDiff diff) {
     if (diff.isEmpty) return;
 
@@ -138,6 +186,10 @@ class ScenePhysics {
 
     final before = _document;
     _document = diff.applyTo(before);
+
+    // Editing a broken joint is asking for it back. Moving what is above it
+    // is not, or dragging the door would mend the hinge it tore off.
+    _broken.removeAll(touched);
 
     // Under a touched entity as it was, for what the edit took away, and as it
     // is, for what the edit brought.
@@ -159,9 +211,13 @@ class ScenePhysics {
   /// its body — or has gone — loses it from the world.
   void _rebuild(Iterable<String> ids) {
     final added = <int>[];
+    final gone = <int>{};
     for (final id in ids) {
       final number = _bodyOf[id];
-      if (number != null) physics.remove(number);
+      if (number != null) {
+        physics.remove(number);
+        gone.add(number);
+      }
 
       final body = _document[id]?[SceneComponents.body];
       if (body is! BodyComponent) {
@@ -179,6 +235,7 @@ class ScenePhysics {
       _add(kept, body, worldOf(_document, id));
       added.add(kept);
     }
+    _rejoin(ids, gone);
     if (added.isEmpty) return;
 
     // Read back rather than remembered from what was sent: the world keeps
@@ -252,6 +309,126 @@ class ScenePhysics {
     BodyMotion.driven => PhysicsMotion.driven,
     BodyMotion.free => PhysicsMotion.free,
   };
+
+  /// Makes the world's joints agree with the document for every joint entity
+  /// in [ids], and for every joint the world dropped when the bodies in
+  /// [gone] were taken out to be rebuilt.
+  void _rejoin(Iterable<String> ids, Set<int> gone) {
+    final joints = <String>{
+      for (final id in ids)
+        if (_jointOf.containsKey(id) ||
+            _document[id]?[SceneComponents.joint] is JointComponent)
+          id,
+      for (final MapEntry(key: id, value: held) in _held.entries)
+        if (gone.contains(held.a) || gone.contains(held.b)) id,
+    };
+    if (joints.isEmpty) return;
+
+    // Taken apart first, all of them, so none is made against a body another
+    // is about to be moved off.
+    for (final id in joints) {
+      if (_held.remove(id) != null) physics.unjoin(_jointOf[id]!);
+    }
+
+    // Nearest the root first. The world solves joints in the order they were
+    // made, and a chain solved from its fixed end outwards settles in fewer
+    // passes than one solved from its tip.
+    final depths = {for (final id in joints) id: _ancestorsOf(id).length};
+    for (final id
+        in joints.toList()..sort((a, b) => depths[a]!.compareTo(depths[b]!))) {
+      _join(id);
+    }
+  }
+
+  /// Makes [id]'s joint in the world, if it has one, it is not broken and
+  /// there is a body for it to hold.
+  void _join(String id) {
+    final joint = _document[id]?[SceneComponents.joint];
+    if (joint is! JointComponent) {
+      final number = _jointOf.remove(id);
+      if (number != null) _entityOfJoint.remove(number);
+      _broken.remove(id);
+      return;
+    }
+
+    final number = _jointOf[id] ??= _nextJoint++;
+    _entityOfJoint[number] = id;
+    if (_broken.contains(id)) return;
+
+    final ends = JointComponent.endsOf(
+      id,
+      parentOf: (id) {
+        final parent = _document[id]?.parent;
+        return parent == id ? null : parent;
+      },
+      hasBody: _bodyOf.containsKey,
+    );
+    final body = ends.body;
+    if (body == null) return;
+    final b = _bodyOf[body]!;
+    final a = ends.holder == null ? 0 : _bodyOf[ends.holder]!;
+
+    // The joint entity's own place and turn, not its size: a hinge scaled
+    // to two is the same hinge.
+    final at = Vector3.zero();
+    final rotation = Quaternion.identity();
+    worldOf(_document, id).decompose(at, rotation, Vector3.zero());
+    final middle = physics.transformOf(b)!;
+
+    final made = physics.join(
+      number,
+      _jointFor(joint),
+      a: a,
+      b: b,
+      at: [at.x, at.y, at.z],
+      rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+      to: [middle[0], middle[1], middle[2]],
+      breakingForce: joint.breakingForce,
+      breakingTorque: joint.breakingTorque,
+      collide: joint.collide,
+    );
+    if (made) _held[id] = (a: a, b: b);
+  }
+
+  /// What [joint] holds, in the world's units: the document gives angles in
+  /// degrees, as a transform's rotation is, and the world wants radians.
+  static Joint _jointFor(JointComponent joint) {
+    JointLimit? limitOf(JointAxis axis) {
+      final range = joint.limits[axis];
+      if (range == null) return null;
+      return axis.turns
+          ? JointLimit(radians(range.low), radians(range.high))
+          : JointLimit(range.low, range.high);
+    }
+
+    return switch (joint.kind) {
+      JointKind.fixed => const Joint.fixed(),
+      JointKind.point => const Joint.point(),
+      JointKind.hinge => Joint.hinge(
+        limit: limitOf(JointAxis.aboutX),
+        speed: radians(joint.speed),
+        strength: joint.strength,
+      ),
+      JointKind.slider => Joint.slider(
+        limit: limitOf(JointAxis.alongX),
+        speed: joint.speed,
+        strength: joint.strength,
+      ),
+      JointKind.distance => Joint.distance(limit: limitOf(JointAxis.alongX)),
+      JointKind.cone => Joint.cone(
+        swing: radians(joint.swing),
+        twist: limitOf(JointAxis.aboutX),
+      ),
+      JointKind.sixAxis => Joint.sixAxis(
+        alongX: limitOf(JointAxis.alongX),
+        alongY: limitOf(JointAxis.alongY),
+        alongZ: limitOf(JointAxis.alongZ),
+        aboutX: limitOf(JointAxis.aboutX),
+        aboutY: limitOf(JointAxis.aboutY),
+        aboutZ: limitOf(JointAxis.aboutZ),
+      ),
+    };
+  }
 
   // --- world to document ----------------------------------------------------
 

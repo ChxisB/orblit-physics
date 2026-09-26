@@ -1,5 +1,8 @@
+import 'dart:ffi' show sizeOf;
+import 'dart:math' show max, min, sqrt;
 import 'dart:typed_data';
 
+import 'package:orblit_physics/native.dart' as native;
 import 'package:orblit_physics/orblit_physics.dart';
 import 'package:test/test.dart';
 
@@ -603,6 +606,333 @@ void main() {
     expect(lay(margin: true), isTrue, reason: 'four is enough with a margin');
     expect(lay(columns: 2, rows: 2, id: 10), isTrue, reason: 'two without');
     expect(physics.count, 2);
+  });
+
+  group('joints', () {
+    /// A post that never moves, for a joint's first body, so what is measured
+    /// is the second body as the post sees it.
+    void post(int id, List<double> at) => physics.add(
+      id,
+      shape: const Shape.box(0.1, 0.1, 0.1),
+      motion: PhysicsMotion.fixed,
+      at: at,
+    );
+
+    /// A quarter turn about z, which takes a joint's x axis to straight up.
+    const upright = [0.0, 0.0, 0.7071068, 0.7071068];
+
+    double distanceFrom(int id, List<double> point) {
+      final at = physics.transformOf(id)!;
+      final dx = at[0] - point[0];
+      final dy = at[1] - point[1];
+      final dz = at[2] - point[2];
+      return sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    test('each kind says which of the six ways it holds', () {
+      const cone = Joint.cone(swing: 0.5, twist: JointLimit(-0.2, 0.2));
+      expect(cone.kind, PhysicsJointKind.cone);
+      expect(cone.swing, 0.5);
+      expect(cone.limits.map((limit) => limit?.high), [
+        null,
+        null,
+        null,
+        0.2,
+        null,
+        null,
+      ]);
+
+      const drawer = Joint.slider(limit: JointLimit(0.0, 0.4));
+      expect(drawer.limits.indexWhere((limit) => limit != null), 0);
+
+      const rail = Joint.sixAxis(
+        alongY: JointLimit(-1.0, 1.0),
+        aboutZ: JointLimit.locked(),
+      );
+      expect(rail.limits.map((limit) => limit == null), [
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+      ]);
+      expect(rail.aboutZ!.low, rail.aboutZ!.high);
+      expect(PhysicsJointKind.values.map((kind) => kind.code), [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+      ]);
+    });
+
+    test('its structs are the size the engine reads', () {
+      expect(sizeOf<native.OrblitPhysicsJoint>(), 144);
+      expect(sizeOf<native.OrblitPhysicsJointState>(), 32);
+    });
+
+    test('a pendulum swings and keeps its length', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [1.0, 3.0, 0.0]);
+      expect(
+        physics.join(1, const Joint.point(), a: 2, at: const [0.0, 3.0, 0.0]),
+        isTrue,
+      );
+
+      var lowest = 3.0;
+      var longest = 0.0;
+      for (var i = 0; i < 120; i++) {
+        physics.step(1 / 60);
+        lowest = min(lowest, heightOf(2));
+        longest = max(longest, distanceFrom(2, const [0.0, 3.0, 0.0]));
+      }
+      expect(lowest, lessThan(2.1), reason: 'it swung down');
+      expect(longest, closeTo(1.0, 0.02), reason: 'and never stretched');
+    });
+
+    test('a hinge turns under its motor and stops at its limit', () {
+      post(1, const [0.0, 1.0, 0.0]);
+      physics.add(
+        2,
+        shape: const Shape.box(0.5, 1.0, 0.05),
+        at: const [0.5, 1.0, 0.0],
+      );
+      physics.join(
+        1,
+        const Joint.hinge(
+          limit: JointLimit(0.0, 1.2),
+          speed: 1.0,
+          strength: 50.0,
+        ),
+        a: 1,
+        b: 2,
+        at: const [0.0, 1.0, 0.0],
+        rotation: upright,
+      );
+
+      run(0.5);
+      expect(physics.jointStateOf(1)!.angles[0], closeTo(0.5, 0.05));
+      expect(physics.velocityOf(2)![4], closeTo(1.0, 0.05));
+
+      run(1.5);
+      final state = physics.jointStateOf(1)!;
+      expect(state.angles[0], closeTo(1.2, 0.03));
+      expect(physics.velocityOf(2)![4].abs(), lessThan(0.05));
+      expect(heightOf(2), closeTo(1.0, 0.01), reason: 'held up by its hinge');
+      expect(
+        state.force,
+        closeTo(9.81, 0.5),
+        reason: 'holding up its own weight',
+      );
+    });
+
+    test('the world may be either end, and which decides the sense', () {
+      double turned(int a, int b) {
+        physics.dispose();
+        physics = Physics();
+        physics.add(
+          2,
+          shape: const Shape.box(0.5, 1.0, 0.05),
+          at: const [0.5, 1.0, 0.0],
+        );
+        physics.join(
+          1,
+          const Joint.hinge(speed: 1.0, strength: 50.0),
+          a: a,
+          b: b,
+          at: const [0.0, 1.0, 0.0],
+          rotation: upright,
+        );
+        run(1.0);
+        expect(physics.jointStateOf(1)!.angles[0], closeTo(1.0, 0.05));
+        return physics.transformOf(2)![2];
+      }
+
+      expect(turned(0, 2), lessThan(-0.3), reason: "the door's own angle");
+      expect(turned(2, 0), greaterThan(0.3), reason: "the world's, reversed");
+    });
+
+    test('a slider keeps to its rail, as far as its limit', () {
+      post(1, const [0.0, 3.0, 0.0]);
+      physics.add(
+        2,
+        shape: const Shape.box(0.2, 0.2, 0.2),
+        at: const [0.0, 3.0, 0.0],
+      );
+      physics.join(
+        1,
+        const Joint.slider(
+          limit: JointLimit(0.0, 0.5),
+          speed: 1.0,
+          strength: 100.0,
+        ),
+        a: 1,
+        b: 2,
+        at: const [0.0, 3.0, 0.0],
+      );
+
+      run(0.25);
+      expect(physics.jointStateOf(1)!.offset[0], closeTo(0.25, 0.03));
+
+      run(1.0);
+      final at = physics.transformOf(2)!;
+      expect(at[0], closeTo(0.5, 0.01));
+      expect(at[1], closeTo(3.0, 0.01), reason: 'the rail holds it up');
+      expect(at[2], closeTo(0.0, 0.01));
+    });
+
+    test('a six-axis joint limits each way in the order it names them', () {
+      post(1, const [0.0, 3.0, 0.0]);
+      physics.add(
+        2,
+        shape: const Shape.box(0.2, 0.2, 0.2),
+        at: const [0.0, 3.0, 0.0],
+      );
+      physics.join(
+        1,
+        const Joint.sixAxis(
+          alongX: JointLimit.locked(),
+          alongY: JointLimit(-0.5, 0.0),
+          alongZ: JointLimit.locked(),
+          aboutX: JointLimit.locked(),
+          aboutY: JointLimit.locked(),
+          aboutZ: JointLimit.locked(),
+        ),
+        a: 1,
+        b: 2,
+        at: const [0.0, 3.0, 0.0],
+      );
+      physics.drive(2, velocity: const [1.0, 0.0, 1.0]);
+
+      run(1.0);
+      final at = physics.transformOf(2)!;
+      expect(at[1], closeTo(2.5, 0.02), reason: 'it fell as far as y lets it');
+      expect(at[0], closeTo(0.0, 0.01));
+      expect(at[2], closeTo(0.0, 0.01));
+      expect(physics.jointStateOf(1)!.offset[1], closeTo(-0.5, 0.02));
+    });
+
+    test('a rope is slack until it is taut', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 3.0, 0.0]);
+      physics.join(
+        1,
+        const Joint.distance(limit: JointLimit(0.0, 3.0)),
+        a: 2,
+        at: const [0.0, 3.0, 0.0],
+        to: const [0.0, 5.0, 0.0],
+      );
+
+      run(0.3);
+      expect(
+        fallSpeedOf(2),
+        closeTo(-9.81 * 0.3, 0.1),
+        reason: 'two metres of a three metre rope does not hold anything',
+      );
+
+      run(3.0);
+      expect(heightOf(2), closeTo(2.0, 0.03));
+      expect(physics.jointStateOf(1)!.offset[0], closeTo(3.0, 0.03));
+    });
+
+    test('a joint breaks past its strength, and says so', () {
+      physics.add(
+        2,
+        shape: const Shape.box(0.2, 0.2, 0.2),
+        at: const [0.0, 3.0, 0.0],
+      );
+      physics.join(
+        7,
+        const Joint.fixed(),
+        a: 2,
+        at: const [0.0, 3.0, 0.0],
+        breakingForce: 5.0,
+      );
+
+      physics.step(1 / 60);
+      final broke = physics.events
+          .where((event) => event.kind == PhysicsEventKind.broke)
+          .toList();
+      expect(broke, hasLength(1));
+      expect(broke.single.a, 7, reason: 'the joint, not a body');
+      expect(broke.single.b, 0);
+      expect(broke.single.force, greaterThan(5.0));
+      expect(broke.single.at[1], closeTo(3.0, 0.01));
+      expect(physics.jointStateOf(7), isNull);
+
+      run(0.5);
+      expect(heightOf(2), lessThan(2.0), reason: 'nothing holds it now');
+    });
+
+    test('a chain sleeps as one, and loses its joints with a body', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 2.0, 0.0]);
+      physics.add(3, shape: const Shape.sphere(0.1), at: const [0.0, 1.0, 0.0]);
+      physics.join(1, const Joint.point(), a: 2, at: const [0.0, 3.0, 0.0]);
+      physics.join(
+        2,
+        const Joint.point(),
+        a: 3,
+        b: 2,
+        at: const [0.0, 1.5, 0.0],
+      );
+
+      run(1.5);
+      expect(physics.asleep(2), isTrue);
+      expect(physics.asleep(3), isTrue);
+
+      physics.remove(2);
+      expect(physics.jointStateOf(1), isNull);
+      expect(physics.jointStateOf(2), isNull);
+      expect(physics.asleep(3), isFalse, reason: 'what it held is woken');
+      expect(
+        physics.events.where((event) => event.kind == PhysicsEventKind.broke),
+        isEmpty,
+        reason: 'nothing broke',
+      );
+
+      run(0.5);
+      expect(heightOf(3), lessThan(0.5));
+    });
+
+    test('unjoining lets go', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 2.0, 0.0]);
+      physics.join(1, const Joint.fixed(), a: 2, at: const [0.0, 2.0, 0.0]);
+      run(1.0);
+      expect(heightOf(2), closeTo(2.0, 0.01));
+      expect(physics.asleep(2), isTrue);
+
+      expect(physics.unjoin(1), isTrue);
+      expect(physics.asleep(2), isFalse);
+      expect(physics.unjoin(1), isFalse);
+      run(0.5);
+      expect(heightOf(2), lessThan(1.0));
+    });
+
+    test('the world refuses a joint it cannot make', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 2.0, 0.0]);
+      physics.add(3, shape: const Shape.sphere(0.1), at: const [1.0, 2.0, 0.0]);
+      bool join(int id, {int a = 2, int b = 0, List<double>? at}) =>
+          physics.join(
+            id,
+            const Joint.point(),
+            a: a,
+            b: b,
+            at: at ?? const [0.0, 2.0, 0.0],
+          );
+
+      expect(join(0), isFalse, reason: 'zero is never a joint');
+      expect(join(1, a: 9), isFalse, reason: 'no such body');
+      expect(join(1, b: 9), isFalse, reason: 'no such body');
+      expect(join(1, b: 2), isFalse, reason: 'a body joined to itself');
+      expect(join(1, a: 0), isFalse, reason: 'the world joined to itself');
+      expect(join(1, at: const [double.nan, 2.0, 0.0]), isFalse);
+      expect(join(1), isTrue);
+      expect(join(1, b: 3), isFalse, reason: 'already a joint');
+      expect(join(3, b: 3), isTrue, reason: 'joints are named apart');
+      expect(physics.jointStateOf(99), isNull);
+      expect(physics.unjoin(99), isFalse);
+    });
   });
 
   test('readInto fills a strided buffer and skips what it does not know', () {

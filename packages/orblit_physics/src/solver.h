@@ -18,6 +18,12 @@
 // approaching; a later position pass moves them apart. Folding the overlap
 // into the velocity solve instead adds energy that was never there, and a
 // stack fed energy by its own contacts is a stack that eventually jumps.
+//
+// Joints are solved in the same passes, before the contacts in each. A joint
+// is a row like a contact's, and solving the two apart — all the joints to
+// convergence, then all the contacts — would have each undo the other: a
+// ragdoll's arm held to its shoulder and then pushed out of the floor, with
+// nothing left to put it back.
 
 #ifndef ORBLIT_PHYSICS_SOLVER_H
 #define ORBLIT_PHYSICS_SOLVER_H
@@ -26,6 +32,7 @@
 
 #include "body.h"
 #include "collide.h"
+#include "joint.h"
 
 namespace orblit {
 
@@ -40,12 +47,16 @@ struct SolverSettings {
 /// Holds its scratch between steps so a step does not allocate.
 class Solver {
  public:
-  /// Stops the bodies in `count` manifolds approaching one another.
+  /// Stops the bodies in `count` manifolds approaching one another, and
+  /// the bodies on `joints` moving the ways their joints hold.
   ///
-  /// Reads each contact's impulses from the last tick to start from, and
-  /// leaves the scratch it built for the position half, so the two must be
-  /// called in order and with the same manifolds.
+  /// Reads each contact's and joint's impulses from the last tick to start
+  /// from, and leaves the scratch it built for the position half, so the two
+  /// must be called in order and with the same manifolds and joints. `delta`
+  /// is the step, which a joint's limits and motor need to turn a distance
+  /// into a speed.
   void solveVelocities(Bodies &bodies, const Manifold *manifolds, uint32_t count,
+                       Joints &joints, float delta,
                        const SolverSettings &settings);
 
   /// Moves apart whatever overlap is left, and writes each contact's
@@ -55,7 +66,7 @@ class Solver {
   /// Called after the caller has integrated positions, because the overlap
   /// worth correcting is the one the bodies have now, not the one they had
   /// before they moved.
-  void solvePositions(Bodies &bodies, Manifold *manifolds,
+  void solvePositions(Bodies &bodies, Manifold *manifolds, Joints &joints,
                       const SolverSettings &settings);
 
  private:

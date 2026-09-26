@@ -1,3 +1,22 @@
+## 0.5.0
+
+- Joints: `Physics.join` holds two bodies together, or one to the world, as a
+  `Joint` says — `fixed`, `point`, `hinge`, `slider`, `distance`, `cone` or
+  `sixAxis`. Each is which of the six ways the second body can move relative
+  to the first it holds, and how far, solved in the same passes as the
+  contacts. A range solves only its nearer end, a hinge and a slider take a
+  motor, and a joint made with its door shut reads nought shut.
+- Either end may be the world, and which one decides the sense: every measure
+  is the second body as the first sees it.
+- `jointStateOf` reads back how a joint stands and how hard it held on the
+  last step. Past `breakingForce` or `breakingTorque` it breaks, and a
+  `PhysicsEventKind.broke` event names it.
+- Bodies joined together sleep and wake as one. Removing a body takes its
+  joints with it, silently, and wakes what they held; laying ground again
+  keeps them. `unjoin` takes one away.
+- The ABI gains `OrblitPhysicsJoint`, `OrblitPhysicsJointState` and
+  `orblit_physics_join`, `_unjoin` and `_joint`.
+
 ## 0.4.0
 
 - Ground: `Physics.layGround` lays heights on a grid as one fixed body. Each

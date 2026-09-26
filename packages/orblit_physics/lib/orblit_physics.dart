@@ -10,6 +10,10 @@ library;
 
 export 'src/world.dart'
     show
+        Joint,
+        PhysicsJointKind,
+        JointLimit,
+        JointState,
         Layers,
         Physics,
         PhysicsEvent,

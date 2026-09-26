@@ -90,6 +90,9 @@ typedef enum {
 
 typedef enum {
   ORBLIT_PHYSICS_CREATE = 1,
+
+  /// Take it out of the world, and every joint on it with it: silently,
+  /// since nothing broke, and waking whatever those joints held.
   ORBLIT_PHYSICS_DESTROY = 2,
 
   /// Put it exactly here, forgetting how it was moving. The teleport, not the
@@ -198,6 +201,11 @@ typedef enum {
   ORBLIT_PHYSICS_TOUCH_ENDED = 2,
   ORBLIT_PHYSICS_SLEPT = 3,
   ORBLIT_PHYSICS_WOKE = 4,
+
+  /// A joint gave way. `a` is the joint, not a body, and `b` is zero; `at` is
+  /// where it was, and `force` what broke it: the force in newtons, or the
+  /// torque in newton-metres if that was what went past its limit.
+  ORBLIT_PHYSICS_BROKE = 5,
 } OrblitPhysicsEventKind;
 
 /// Something that happened during a step and is worth telling the caller.
@@ -209,7 +217,8 @@ typedef struct {
   uint32_t kind; ///< An OrblitPhysicsEventKind.
   uint32_t _pad;
 
-  /// The bodies. For SLEPT and WOKE only `a` means anything.
+  /// The bodies. For SLEPT and WOKE only `a` means anything, and for BROKE
+  /// `a` is a joint.
   ///
   /// A pair is always reported with the smaller id first, so a caller keying a
   /// set by the pair does not have to order it.
@@ -490,11 +499,12 @@ typedef struct {
 ///
 /// Laying it again under the same id replaces it, which is how an edit to
 /// the heights reaches the world: lay the piece again. Anything already under
-/// that id is replaced, ground or not. Everything over the field is woken, so
-/// a crate on a hill that was just lowered falls with it rather than hanging
-/// asleep where the hill was. Destroying it, as destroying any body, wakes
-/// nothing: a crate asleep on ground streamed out from under it stays put
-/// until something wakes it.
+/// that id is replaced, ground or not, and keeps its joints, so a rope tied to
+/// a hill stays tied when the hill is edited. Everything over the field is
+/// woken, so a crate on a hill that was just lowered falls with it rather than
+/// hanging asleep where the hill was. Destroying it, as destroying any body,
+/// wakes nothing it was only touching: a crate asleep on ground streamed out
+/// from under it stays put until something wakes it.
 ///
 /// False, and nothing changed, for a zero id, no heights, a spacing that is
 /// not a positive number, or a grid with no square of its own: at least two
@@ -545,6 +555,171 @@ typedef struct {
 uint32_t orblit_physics_footing(const OrblitPhysics *physics,
                                 const OrblitPhysicsId *ids, uint32_t count,
                                 OrblitPhysicsFooting *out);
+
+// ----------------------------------------------------------------- joints ---
+//
+// A joint holds two bodies together, or one body to the world, in some ways
+// and not others. A door is a hinge: its edge stays on the frame and it turns
+// about one axis. A drawer is a slider. A rope is a distance that may shorten
+// and never lengthen. A shoulder is a cone.
+//
+// Every joint is made where the bodies stand. It is given one frame in the
+// world — a point, and a rotation whose x axis is the axis that matters — and
+// it keeps that frame on each body from then on. What it holds is how the
+// bodies stood when it was made, so a limit is measured from there: a hinge
+// made with its door shut has an angle of nought when the door is shut.
+//
+// Every axis and every measure is `a`'s: how `b` has moved and turned as `a`
+// sees it, along axes that turn when `a` does. A slider on a body that is
+// spinning slides along a line that spins with it. Either may be the world,
+// and which one is the world decides which way everything reads: with the
+// world as `a`, a door's angle is the door's; with the world as `b`, it is
+// the world's as the door sees it, the other way round.
+//
+// Joints are solved alongside contacts, in the same passes, so a chain lying
+// on the ground is held together and held up at once rather than one fighting
+// the other. Two bodies joined together do not collide with each other unless
+// the joint asks them to, because a joint's two bodies nearly always overlap
+// where it is.
+//
+// Joined bodies sleep together and wake together. A chain does not go to sleep
+// one link at a time, and touching its end wakes all of it.
+
+typedef enum {
+  /// Holds `b` exactly where it is relative to `a`: welded.
+  ORBLIT_PHYSICS_JOINT_FIXED = 1,
+
+  /// Holds the two points together and lets the bodies turn any way about
+  /// them. A pendulum, a ball and socket with no limit.
+  ORBLIT_PHYSICS_JOINT_POINT = 2,
+
+  /// Holds the points together and lets `b` turn about the frame's x axis
+  /// only. Limited by `low[3]` and `high[3]`, the angle `b` has turned about
+  /// x relative to `a`, right-handed, in radians, within a half turn either
+  /// way. Takes a motor.
+  ORBLIT_PHYSICS_JOINT_HINGE = 3,
+
+  /// Lets `b` move along the frame's x axis only, never turning. Limited by
+  /// `low[0]` and `high[0]`, how far `b` has moved along x, in metres. Takes
+  /// a motor.
+  ORBLIT_PHYSICS_JOINT_SLIDER = 4,
+
+  /// Keeps a point on `a`, `at`, and a point on `b`, `to`, a distance apart,
+  /// with the bodies free to turn. Limited, it is a range: `low[0]` to
+  /// `high[0]` in metres, and a rope is nought to its length. Unlimited, it is
+  /// a rod the length it was made.
+  ORBLIT_PHYSICS_JOINT_DISTANCE = 5,
+
+  /// Holds the points together and lets `b`'s x axis swing within `swing`
+  /// radians of `a`'s, in any direction. Limited by `low[3]` and `high[3]`,
+  /// it also bounds the twist about x. A shoulder or a hip.
+  ORBLIT_PHYSICS_JOINT_CONE = 6,
+
+  /// Each of the six ways `b` can move relative to `a` set on its own: free
+  /// unless limited, and locked where a limit's low is its high. For whatever
+  /// the other kinds do not cover.
+  ///
+  /// Turning is measured as a twist about x and then a swing, and the swing's
+  /// turn about y and about z are limited separately. For a joint that stays
+  /// within a quarter turn that is the angle it looks like; further, the
+  /// three stop being independent, which is true of any three angles.
+  ORBLIT_PHYSICS_JOINT_SIX_AXIS = 7,
+} OrblitPhysicsJointKind;
+
+/// How to make a joint.
+///
+/// Fields a kind does not name are ignored, so zeroing the struct and filling
+/// in what matters is always correct: a zeroed limit is no limit, a zeroed
+/// motor is no motor, and a zeroed strength never breaks.
+typedef struct {
+  /// Whatever the caller calls the joint. Joints are named apart from bodies,
+  /// so a joint may share a number with a body. Zero is never a joint.
+  OrblitPhysicsId id;
+
+  /// The two bodies. Either may be zero, which is the world, but not both.
+  OrblitPhysicsId a;
+  OrblitPhysicsId b;
+
+  uint32_t kind; ///< An OrblitPhysicsJointKind.
+
+  /// Which of the six axes `low` and `high` apply to, one bit each: bits 0 to
+  /// 2 for moving along x, y and z, bits 3 to 5 for turning about them. An
+  /// axis whose bit is clear is free, or whatever its kind makes it.
+  uint32_t limited;
+
+  /// The joint's point, and on every kind but DISTANCE its point on `b` too,
+  /// in the world.
+  float at[3];
+
+  /// The joint's frame in the world, xyzw. Its x axis is the one a hinge
+  /// turns about, a slider slides along and a cone points along. All zeroes
+  /// is identity.
+  float rotation[4];
+
+  /// DISTANCE: the point on `b`, in the world.
+  float to[3];
+
+  /// The least and most of each axis, in the order `limited` names them:
+  /// metres along x, y and z, then radians about them. Kept in order, so a
+  /// low above its high is read as the other way round.
+  float low[6];
+  float high[6];
+
+  /// CONE: the widest `b`'s x axis may swing from `a`'s, in radians.
+  float swing;
+
+  /// HINGE and SLIDER: a motor, driving `b` relative to `a` at `speed`, in
+  /// radians or metres a second, and never harder than `strength`, in
+  /// newton-metres or newtons. A strength of zero is no motor. A speed of
+  /// zero with a small strength is friction in the joint.
+  float speed;
+  float strength;
+
+  /// Past this force in newtons, or this torque in newton-metres, the joint
+  /// breaks: it is removed, and a BROKE event says so. Zero never breaks.
+  float breakingForce;
+  float breakingTorque;
+
+  /// Whether the two bodies still collide with each other.
+  bool collide;
+  bool _reserved[3];
+} OrblitPhysicsJoint;
+
+/// How a joint stands, and how hard it held on the last step.
+typedef struct {
+  /// Where `b`'s point is from `a`'s, along the axes of `a`'s frame, in
+  /// metres. For DISTANCE, `offset[0]` is the distance between them.
+  float offset[3];
+
+  /// How far `b`'s frame has turned from `a`'s, in radians: the twist about
+  /// x, then the swing's turn about y and about z.
+  float angles[3];
+
+  /// The force and torque it held with on the last step, in newtons and
+  /// newton-metres. This is the number to read before choosing where it
+  /// should break.
+  float force;
+  float torque;
+} OrblitPhysicsJointState;
+
+/// Makes a joint, and returns whether it was made. Both bodies are woken.
+///
+/// False, and nothing changed, for a zero id or one already a joint, an `a` or
+/// `b` that is neither zero nor a body, a joint from a body to itself or from
+/// the world to itself, a kind that is not one, a NaN in any field, or a point
+/// or rotation that is not finite.
+bool orblit_physics_join(OrblitPhysics *physics, const OrblitPhysicsJoint *joint);
+
+/// Removes a joint, waking both its bodies so what it held up falls. False if
+/// there was no such joint.
+///
+/// Destroying a body removes its joints the same way, silently: no BROKE
+/// event, because nothing broke.
+bool orblit_physics_unjoin(OrblitPhysics *physics, OrblitPhysicsId joint);
+
+/// Writes how joint `joint` stands into `out`. False if there is no such joint.
+bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
+                          OrblitPhysicsJointState *out);
 
 #ifdef __cplusplus
 }

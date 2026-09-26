@@ -14,6 +14,7 @@
 #ifndef ORBLIT_PHYSICS_BODY_H
 #define ORBLIT_PHYSICS_BODY_H
 
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -41,6 +42,28 @@ enum class Motion : uint8_t {
 inline bool interact(uint32_t isA, uint32_t caresA, uint32_t isB, uint32_t caresB) {
   return (caresA & isB) != 0 || (caresB & isA) != 0;
 }
+
+/// Two bodies, by the caller's ids, smaller first.
+struct PairKey {
+  OrblitPhysicsId a = 0;
+  OrblitPhysicsId b = 0;
+
+  /// The key for `x` and `y`, whichever way round they come.
+  static PairKey of(OrblitPhysicsId x, OrblitPhysicsId y) {
+    return x < y ? PairKey{x, y} : PairKey{y, x};
+  }
+
+  bool operator==(const PairKey &o) const { return a == o.a && b == o.b; }
+};
+
+struct PairKeyHash {
+  size_t operator()(const PairKey &k) const {
+    // Two ids into one hash. The shift stops a pair and its reverse landing
+    // on the same bucket, which an xor alone would do.
+    const uint64_t mixed = k.a * 0x9E3779B97F4A7C15ull ^ (k.b + 0x165667B1ull);
+    return static_cast<size_t>(mixed ^ (mixed >> 29));
+  }
+};
 
 /// How a body was made. Everything that does not change after a create.
 struct BodyDescription {

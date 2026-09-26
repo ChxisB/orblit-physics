@@ -61,10 +61,12 @@ and writes back only the entities whose bodies moved, parents before children.
 `apply` rebuilds the bodies an edit touches where the document now puts them.
 That is a teleport: a crate that is dragged mid-fall stops falling. Entities
 are named by strings and bodies by numbers, so the bridge keeps the pairing
-(`bodyOf`, `entityOf`) and never gives a number to a second entity. The world
-itself is `scene.physics`, for pushing and casting. What touched what is
-`scene.events`, gathered over every step the last `advance` took; the world's
-own list keeps only its last step.
+(`bodyOf`, `entityOf`) and never gives a number to a second entity. An entity
+with a joint component joins two bodies, [below](#joints), and `jointOf` and
+`entityOfJoint` pair joints with entities the same way. The world itself is
+`scene.physics`, for pushing and casting. What touched what is `scene.events`,
+gathered over every step the last `advance` took; the world's own list keeps
+only its last step.
 
 It depends on `orblit_scene` over git. To work against a checkout of the engine
 beside this one:
@@ -76,7 +78,8 @@ beside this one:
 ### Inside
 
 A step is: find contacts, integrate velocity, solve velocity, integrate
-position, solve position, move characters, sleep. Velocity and position are solved separately
+position, solve position, break joints, move characters, sleep. Velocity and
+position are solved separately
 because they answer different questions — restitution and friction are about
 how things are moving, overlap is about where they are — and the position pass
 runs after integration so it is not correcting a gap that integration is about
@@ -89,7 +92,8 @@ or across a crate — the contact is reported at both ends, because one contact 
 the middle of a line is something to roll off. Manifolds persist between ticks,
 so each pass starts from the impulse that worked last time rather than from
 zero. Bodies that stop moving go to sleep individually and are woken by
-anything that touches them.
+anything that touches them, except that bodies joined together sleep and wake
+as one: half a chain asleep is half a chain that has stopped being held.
 
 ### Casting
 
@@ -181,6 +185,61 @@ because ground big enough to stream is laid in pieces, side by side. Laid with
 a `margin`, a piece's outer ring of samples is its neighbours', never stood on,
 and a ridge along the line between two pieces holds a ball up the way one
 piece would.
+
+### Joints
+
+A joint holds two bodies together, or one to the world. There are seven kinds,
+and each is only which of the six ways the second body can move relative to
+the first it holds, and how far: along the three axes of the joint's frame and
+about them. A hinge holds five of them and leaves the turn about x free,
+perhaps within a limit. The rows are solved in the same passes as the
+contacts, so a door leaning on a crate and the crate leaning on the floor are
+one problem rather than two that take turns being wrong.
+
+```dart
+physics.join(
+  1,
+  const Joint.hinge(limit: JointLimit(0, 1.6), speed: 1, strength: 50),
+  a: frame,
+  b: door,
+  at: [0.5, 1, 0],
+  rotation: upright, // the frame's x axis is the one it turns about
+);
+```
+
+`fixed` welds, `point` is a ball and socket, `hinge` turns about x, `slider`
+slides along it, `distance` keeps two points apart — a rod, or with a range a
+rope — `cone` lets x swing within a cone and twist within a range, and
+`sixAxis` sets each of the six on its own. A hinge and a slider take a motor,
+which drives at a speed no harder than a strength; a motor with no speed is
+friction in the joint.
+
+It is made where the bodies stand, and what it holds is how they stood, so a
+hinge made with its door shut reads nought shut. Every measure is the second
+body as the first sees it, so which body is first decides the sense: with the
+world first a door's angle is the door's, and with the world second it is the
+world's as the door sees it, the other way round. `jointStateOf` reads it
+back, and says how hard it held on the last step, which is the number to look
+at before choosing `breakingForce` or `breakingTorque`. Past either it breaks,
+and a `broke` event names it. Taking a body out of the world takes its joints
+with it, silently, since nothing broke; laying ground again keeps them.
+
+A range solves only its nearer end, and pushes only once the joint would reach
+it within the step, so a hinge swinging in the middle of its range is held by
+its five locked rows and nothing else. Turning is measured as a twist about x
+and then a swing, which is the angle it looks like to within a quarter turn
+either way and stops meaning anything close to a half turn; a joint asked to
+bend that far wants a limit that stops it first.
+
+In a scene document a joint is a `JointComponent`, and which two bodies it
+holds is where its entity sits in the tree: the nearest body at or above it,
+held to the nearest body above that, or to the world when there is none. An
+id named in a component is one every copy, paste and prefab has to find and
+change; a parent is one they already do. The joint's point and frame are the
+entity's own, and its angles are in degrees, as a transform's are. An edit
+that rebuilds either body makes the joint again as things then stand, and one
+that has broken stays broken, in `scene.broken`, until its own entity is
+edited — dragging the door does not mend the hinge it tore off.
 
 ## On terrain
 

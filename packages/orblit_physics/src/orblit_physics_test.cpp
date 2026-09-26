@@ -1359,6 +1359,759 @@ void refusingGround() {
   orblit_physics_destroy(physics);
 }
 
+// --- joints --------------------------------------------------------------- //
+
+/// A joint of `kind` from `a` to `b` at (x, y, z), its frame the world's.
+OrblitPhysicsJoint jointOf(OrblitPhysicsId id, uint32_t kind, OrblitPhysicsId a,
+                           OrblitPhysicsId b, float x, float y, float z) {
+  OrblitPhysicsJoint made{};
+  made.id = id;
+  made.kind = kind;
+  made.a = a;
+  made.b = b;
+  made.at[0] = x;
+  made.at[1] = y;
+  made.at[2] = z;
+  return made;
+}
+
+/// Turns a joint's frame so its x axis points along world y: a quarter turn
+/// about z.
+void pointUp(OrblitPhysicsJoint &joint) {
+  joint.rotation[2] = 0.70710678f;
+  joint.rotation[3] = 0.70710678f;
+}
+
+/// Turns a joint's frame so its x axis points straight down.
+void pointDown(OrblitPhysicsJoint &joint) {
+  joint.rotation[2] = -0.70710678f;
+  joint.rotation[3] = 0.70710678f;
+}
+
+/// Limits axis `which` of a joint to between `low` and `high`.
+void limitTo(OrblitPhysicsJoint &joint, int which, float low, float high) {
+  joint.limited |= 1u << which;
+  joint.low[which] = low;
+  joint.high[which] = high;
+}
+
+bool join(OrblitPhysics *physics, const OrblitPhysicsJoint &joint) {
+  return orblit_physics_join(physics, &joint);
+}
+
+OrblitPhysicsJointState stateOf(OrblitPhysics *physics, OrblitPhysicsId joint) {
+  OrblitPhysicsJointState out{};
+  orblit_physics_joint(physics, joint, &out);
+  return out;
+}
+
+void setMotion(OrblitPhysics *physics, OrblitPhysicsId id, float vx, float vy,
+               float vz, float sx, float sy, float sz) {
+  OrblitPhysicsCommand made{};
+  made.kind = ORBLIT_PHYSICS_VELOCITY;
+  made.id = id;
+  made.vector[0] = vx;
+  made.vector[1] = vy;
+  made.vector[2] = vz;
+  made.spin[0] = sx;
+  made.spin[1] = sy;
+  made.spin[2] = sz;
+  submit(physics, made);
+}
+
+float spinOf(OrblitPhysics *physics, OrblitPhysicsId id, int axis) {
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, id, motion);
+  return motion[3 + axis];
+}
+
+float distanceBetween(OrblitPhysics *physics, OrblitPhysicsId a, OrblitPhysicsId b) {
+  float x = 0.0f;
+  for (int axis = 0; axis < 3; ++axis) {
+    const float d = coordinateOf(physics, a, axis) - coordinateOf(physics, b, axis);
+    x += d * d;
+  }
+  return std::sqrt(x);
+}
+
+float distanceFrom(OrblitPhysics *physics, OrblitPhysicsId id, float x, float y,
+                   float z) {
+  const float dx = coordinateOf(physics, id, 0) - x;
+  const float dy = coordinateOf(physics, id, 1) - y;
+  const float dz = coordinateOf(physics, id, 2) - z;
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/// How far a body has turned from how it was made, in radians, if it was
+/// made unturned.
+float turnOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float transform[7] = {0};
+  orblit_physics_transform(physics, id, transform);
+  return 2.0f * std::acos(std::fmin(std::fabs(transform[6]), 1.0f));
+}
+
+/// How many events of `kind` the last step reported.
+int eventsOf(OrblitPhysics *physics, uint32_t kind) {
+  uint32_t count = 0;
+  const OrblitPhysicsEvent *events = orblit_physics_events(physics, &count);
+  int found = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (events[i].kind == kind) found++;
+  }
+  return found;
+}
+
+void step(OrblitPhysics *physics) { orblit_physics_step(physics, kStep); }
+
+void welding() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 1.0f, 2.0f, 0.0f));
+  check(join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_FIXED, 2, 0, 0.0f, 2.0f, 0.0f)),
+        "a box is welded to the world a metre to its side");
+  run(physics, 2.0f);
+  check(near(coordinateOf(physics, 2, 0), 1.0f, 0.01f) &&
+            near(heightOf(physics, 2), 2.0f, 0.01f) && turnOf(physics, 2) < 0.01f,
+        "and stays where it was welded, held out against its own weight");
+  orblit_physics_destroy(physics);
+
+  // Two boxes welded side by side and dropped: they land as one.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.25f, 0.0f, 2.0f, 0.0f));
+  submit(physics, boxAt(3, 0.25f, 0.5f, 2.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_FIXED, 2, 3, 0.25f, 2.0f, 0.0f));
+  setMotion(physics, 2, 0.0f, 0.0f, 0.0f, 3.0f, 0.0f, 2.0f);
+  run(physics, 3.0f);
+  const OrblitPhysicsJointState state = stateOf(physics, 1);
+  check(near(distanceBetween(physics, 2, 3), 0.5f, 0.01f) &&
+            std::fabs(state.angles[0]) < 0.01f && std::fabs(state.angles[1]) < 0.01f &&
+            std::fabs(state.angles[2]) < 0.01f,
+        "two welded boxes thrown spinning at the ground land as one");
+  orblit_physics_destroy(physics);
+}
+
+void swinging() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 1.0f, 3.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f));
+
+  // Held out level and let go: it swings down and up the other side, never
+  // further from the pivot than it started, and never higher.
+  float stretch = 0.0f;
+  float highest = -1.0f;
+  float lowest = 10.0f;
+  float furthest = 0.0f;
+  for (int i = 0; i < 300; ++i) {
+    step(physics);
+    stretch = std::fmax(stretch, std::fabs(distanceFrom(physics, 2, 0.0f, 3.0f, 0.0f) - 1.0f));
+    highest = std::fmax(highest, heightOf(physics, 2));
+    lowest = std::fmin(lowest, heightOf(physics, 2));
+    furthest = std::fmin(furthest, coordinateOf(physics, 2, 0));
+  }
+  check(stretch < 0.01f, "a ball on a point joint swings a metre from its pivot");
+  check(near(lowest, 2.0f, 0.02f) && furthest < -0.9f,
+        "down through the bottom and up the other side");
+  check(highest < 3.01f, "and never climbs above where it was let go");
+  orblit_physics_destroy(physics);
+}
+
+void hinging() {
+  // A door, hung by its edge on an upright hinge, driven round by a motor.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand door = boxAt(2, 0.5f, 0.5f, 1.0f, 0.0f);
+  door.size[1] = 1.0f;
+  door.size[2] = 0.05f;
+  submit(physics, door);
+  OrblitPhysicsJoint hinge = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 2, 0, 0.0f, 1.0f, 0.0f);
+  pointUp(hinge);
+  hinge.speed = 1.0f;
+  hinge.strength = 100.0f;
+  check(join(physics, hinge), "a door is hung on a hinge");
+  run(physics, 1.0f);
+  OrblitPhysicsJointState state = stateOf(physics, 1);
+  // The door is `a` and the world `b`, so it is the world that turns, as the
+  // door sees it, and the door that turns the other way.
+  check(near(state.angles[0], 1.0f, 0.05f),
+        "a motor turns it at the speed asked for");
+  check(near(distanceFrom(physics, 2, 0.0f, 1.0f, 0.0f), 0.5f, 0.01f) &&
+            near(heightOf(physics, 2), 1.0f, 0.01f),
+        "about its hinge, which it neither leaves nor sags from");
+  check(std::fabs(state.offset[0]) < 0.01f && std::fabs(state.offset[1]) < 0.01f &&
+            std::fabs(state.offset[2]) < 0.01f && std::fabs(state.angles[1]) < 0.01f &&
+            std::fabs(state.angles[2]) < 0.01f,
+        "and its state says it is on the hinge and turning only about it");
+  check(state.torque > 0.0f && state.torque < 100.0f + 1.0f,
+        "and how hard it held, which is no harder than the motor's strength");
+  check(coordinateOf(physics, 2, 2) > 0.3f,
+        "and the door turns the other way round from the angle it reads");
+  orblit_physics_destroy(physics);
+
+  // With the world as `a` it reads the door's own angle, and the same motor
+  // turns it right-handed about up, which takes its far edge towards -z.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, door);
+  hinge.a = 0;
+  hinge.b = 2;
+  check(join(physics, hinge), "the world may be either end of a joint");
+  run(physics, 1.0f);
+  check(near(stateOf(physics, 1).angles[0], 1.0f, 0.05f) &&
+            coordinateOf(physics, 2, 2) < -0.3f,
+        "and with the world as `a`, the angle is the door's own");
+  orblit_physics_destroy(physics);
+  hinge.a = 2;
+  hinge.b = 0;
+
+  // The same door with a stop at half a radian each way, flung open.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, door);
+  hinge.speed = 0.0f;
+  hinge.strength = 0.0f;
+  limitTo(hinge, 3, -0.5f, 0.5f);
+  join(physics, hinge);
+  setMotion(physics, 2, 0.0f, 0.0f, 0.0f, 0.0f, -6.0f, 0.0f);
+  float widest = 0.0f;
+  for (int i = 0; i < 120; ++i) {
+    step(physics);
+    widest = std::fmax(widest, stateOf(physics, 1).angles[0]);
+  }
+  check(widest > 0.45f && widest < 0.53f, "a hinge with a limit stops at it");
+  check(near(distanceFrom(physics, 2, 0.0f, 1.0f, 0.0f), 0.5f, 0.01f),
+        "and hitting the stop does not tear it off its hinge");
+  orblit_physics_destroy(physics);
+}
+
+void sliding() {
+  // A box on an upright rail that lets it drop a metre.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_SLIDER, 2, 0, 0.0f, 3.0f, 0.0f);
+  pointUp(rail);
+  // The box is `a`: as it falls the world's point rises above it, so the
+  // offset along the rail grows.
+  limitTo(rail, 0, 0.0f, 1.0f);
+  join(physics, rail);
+  setMotion(physics, 2, 2.0f, 0.0f, -1.0f, 1.0f, 2.0f, 3.0f);
+  run(physics, 2.0f);
+  check(near(heightOf(physics, 2), 2.0f, 0.02f),
+        "a box on a slider falls the length of its limit and stops");
+  check(near(coordinateOf(physics, 2, 0), 0.0f, 0.01f) &&
+            near(coordinateOf(physics, 2, 2), 0.0f, 0.01f) && turnOf(physics, 2) < 0.01f,
+        "never leaving the rail or turning, however it was thrown");
+  check(near(stateOf(physics, 1).offset[0], 1.0f, 0.02f), "and says how far along it is");
+  orblit_physics_destroy(physics);
+
+  // The same rail with a motor winding it back up.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 0.0f, 2.0f, 0.0f));
+  rail.at[1] = 2.0f;
+  rail.limited = 0;
+  rail.speed = -0.5f;
+  rail.strength = 100.0f;
+  join(physics, rail);
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 2.5f, 0.03f),
+        "a slider's motor lifts it at the speed asked for");
+  orblit_physics_destroy(physics);
+
+  // Too weak to hold it up, it lets it down slowly instead.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 0.0f, 2.0f, 0.0f));
+  rail.speed = 0.0f;
+  rail.strength = 5.0f;
+  join(physics, rail);
+  run(physics, 1.0f);
+  const float fell = 2.0f - heightOf(physics, 2);
+  check(fell > 1.0f && fell < 4.9f / 2.0f,
+        "and one weaker than the weight on it gives way, but not all the way");
+  orblit_physics_destroy(physics);
+}
+
+void distances() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  submit(physics, sphereAt(3, 0.1f, 2.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint rod = jointOf(1, ORBLIT_PHYSICS_JOINT_DISTANCE, 2, 3, 0.0f, 3.0f, 0.0f);
+  rod.to[0] = 2.0f;
+  rod.to[1] = 3.0f;
+  join(physics, rod);
+  setMotion(physics, 3, 0.0f, 4.0f, 3.0f, 0.0f, 0.0f, 0.0f);
+  float stretch = 0.0f;
+  for (int i = 0; i < 120; ++i) {
+    step(physics);
+    stretch = std::fmax(stretch, std::fabs(distanceBetween(physics, 2, 3) - 2.0f));
+  }
+  check(stretch < 0.01f, "two balls on a rod stay its length apart however they are thrown");
+  check(near(stateOf(physics, 1).offset[0], 2.0f, 0.01f), "and a rod's state is its length");
+  orblit_physics_destroy(physics);
+
+  // A rope two metres long, tied a metre above a ball: slack, then taut.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint rope = jointOf(1, ORBLIT_PHYSICS_JOINT_DISTANCE, 2, 0, 0.0f, 3.0f, 0.0f);
+  rope.to[1] = 4.0f;
+  limitTo(rope, 0, 0.0f, 2.0f);
+  join(physics, rope);
+  run(physics, 0.3f);
+  check(heightOf(physics, 2) < 2.6f, "a ball on a slack rope falls freely");
+  run(physics, 3.0f);
+  check(near(heightOf(physics, 2), 2.0f, 0.02f), "until the rope is taut, and hangs from it");
+  setMotion(physics, 2, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 0.2f);
+  check(heightOf(physics, 2) > 2.3f, "and a rope does not push: thrown up, it rises");
+  orblit_physics_destroy(physics);
+}
+
+void cones() {
+  // An arm: a capsule hanging from a shoulder, swung hard sideways.
+  float widest[2] = {0.0f, 0.0f};
+  for (int limited = 0; limited < 2; ++limited) {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, capsuleAt(2, 0.1f, 0.4f, 0.0f, 2.0f, 0.0f));
+    OrblitPhysicsJoint shoulder = jointOf(
+        1, limited ? ORBLIT_PHYSICS_JOINT_CONE : ORBLIT_PHYSICS_JOINT_POINT, 2, 0,
+        0.0f, 2.5f, 0.0f);
+    pointDown(shoulder);
+    shoulder.swing = 0.5f;
+    join(physics, shoulder);
+    setMotion(physics, 2, 4.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f);
+    for (int i = 0; i < 180; ++i) {
+      step(physics);
+      const OrblitPhysicsJointState state = stateOf(physics, 1);
+      const float swung =
+          std::sqrt(state.angles[1] * state.angles[1] + state.angles[2] * state.angles[2]);
+      widest[limited] = std::fmax(widest[limited], swung);
+    }
+    if (limited) {
+      check(distanceFrom(physics, 2, 0.0f, 2.5f, 0.0f) < 0.51f,
+            "and the arm stays on its shoulder");
+    }
+    orblit_physics_destroy(physics);
+  }
+  check(widest[0] > 1.0f, "an arm on a point joint swings as far as it is thrown");
+  check(widest[1] > 0.45f && widest[1] < 0.55f,
+        "and on a cone, no further than the cone, whichever way it is thrown");
+
+  // A cone that also stops it twisting.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, capsuleAt(2, 0.1f, 0.4f, 0.0f, 2.0f, 0.0f));
+  OrblitPhysicsJoint shoulder = jointOf(1, ORBLIT_PHYSICS_JOINT_CONE, 2, 0, 0.0f, 2.5f, 0.0f);
+  pointDown(shoulder);
+  shoulder.swing = 0.5f;
+  limitTo(shoulder, 3, -0.2f, 0.2f);
+  join(physics, shoulder);
+  setMotion(physics, 2, 0.0f, 0.0f, 0.0f, 0.0f, 8.0f, 0.0f);
+  float twisted = 0.0f;
+  for (int i = 0; i < 60; ++i) {
+    step(physics);
+    twisted = std::fmax(twisted, std::fabs(stateOf(physics, 1).angles[0]));
+  }
+  check(twisted < 0.23f, "a cone with a twist limit stops the arm twisting past it");
+  orblit_physics_destroy(physics);
+}
+
+void sixAxes() {
+  // Locked along x and z, a half-metre of travel along y, locked about x and
+  // z, and free to turn about y: nothing the other kinds do. Turning about y
+  // leaves `a`'s y axis where it is, so the travel stays upright.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint joint = jointOf(1, ORBLIT_PHYSICS_JOINT_SIX_AXIS, 2, 0, 0.0f, 3.0f, 0.0f);
+  limitTo(joint, 0, 0.0f, 0.0f);
+  limitTo(joint, 1, 0.0f, 0.5f);
+  limitTo(joint, 2, 0.0f, 0.0f);
+  limitTo(joint, 3, 0.0f, 0.0f);
+  limitTo(joint, 5, 0.0f, 0.0f);
+  join(physics, joint);
+  setMotion(physics, 2, 1.0f, 0.0f, 1.0f, 0.5f, 1.0f, 0.5f);
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 2.5f, 0.02f) && near(coordinateOf(physics, 2, 0), 0.0f, 0.01f) &&
+            near(coordinateOf(physics, 2, 2), 0.0f, 0.01f),
+        "a six-axis joint limits each way on its own");
+  check(spinOf(physics, 2, 1) > 0.9f && std::fabs(spinOf(physics, 2, 0)) < 0.01f &&
+            std::fabs(spinOf(physics, 2, 2)) < 0.01f,
+        "and leaves free the one axis it does not limit");
+  orblit_physics_destroy(physics);
+}
+
+void colliding() {
+  // Two overlapping boxes joined where they overlap, as a limb's two halves
+  // are at the elbow.
+  bool touched[2] = {false, false};
+  for (int collide = 0; collide < 2; ++collide) {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, boxAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+    submit(physics, boxAt(3, 0.25f, 0.3f, 3.0f, 0.0f));
+    OrblitPhysicsJoint joint = jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 3, 0.15f, 3.0f, 0.0f);
+    joint.collide = collide != 0;
+    join(physics, joint);
+    for (int i = 0; i < 30; ++i) {
+      step(physics);
+      if (eventsOf(physics, ORBLIT_PHYSICS_TOUCH_BEGAN) > 0) touched[collide] = true;
+    }
+    orblit_physics_destroy(physics);
+  }
+  check(!touched[0], "two joined bodies do not collide with each other");
+  check(touched[1], "unless the joint asks them to");
+}
+
+void sleepingJoined() {
+  // A chain of three hanging from the world, damped so it settles soon.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  for (OrblitPhysicsId link = 2; link <= 4; ++link) {
+    OrblitPhysicsCommand made =
+        sphereAt(link, 0.1f, 0.0f, 3.0f - 0.5f * static_cast<float>(link - 1), 0.0f);
+    made.damping[0] = 2.0f;
+    made.damping[1] = 2.0f;
+    submit(physics, made);
+  }
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f));
+  join(physics, jointOf(2, ORBLIT_PHYSICS_JOINT_POINT, 3, 2, 0.0f, 2.5f, 0.0f));
+  join(physics, jointOf(3, ORBLIT_PHYSICS_JOINT_POINT, 4, 3, 0.0f, 2.0f, 0.0f));
+  setMotion(physics, 4, 0.3f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+
+  int together = 0;
+  int apart = 0;
+  for (int i = 0; i < 1200 && !orblit_physics_asleep(physics, 2); ++i) {
+    step(physics);
+    const int slept = eventsOf(physics, ORBLIT_PHYSICS_SLEPT);
+    if (slept == 3) together++;
+    if (slept > 0 && slept < 3) apart++;
+  }
+  check(together == 1 && apart == 0, "a hanging chain falls asleep all at once, not a link at a time");
+
+  OrblitPhysicsCommand wake{};
+  wake.kind = ORBLIT_PHYSICS_WAKE;
+  wake.id = 4;
+  submit(physics, wake);
+  check(!orblit_physics_asleep(physics, 2) && !orblit_physics_asleep(physics, 3) &&
+            !orblit_physics_asleep(physics, 4),
+        "and waking its end wakes all of it");
+  orblit_physics_destroy(physics);
+
+  // A ball dropped on the end of a sleeping chain wakes the chain.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 2.5f, 0.0f));
+  submit(physics, sphereAt(3, 0.1f, 0.0f, 2.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f));
+  join(physics, jointOf(2, ORBLIT_PHYSICS_JOINT_POINT, 3, 2, 0.0f, 2.5f, 0.0f));
+  run(physics, 2.0f);
+  const bool slept = orblit_physics_asleep(physics, 2) && orblit_physics_asleep(physics, 3);
+  submit(physics, sphereAt(5, 0.1f, 0.0f, 1.8f, 0.0f));
+  step(physics);
+  step(physics);
+  check(slept && !orblit_physics_asleep(physics, 2), "and so does something touching it");
+  orblit_physics_destroy(physics);
+
+  // A ball hanging from a lift that rises too slowly for it to seem to move.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand lift = boxAt(2, 0.25f, 0.0f, 3.0f, 0.0f);
+  lift.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, lift);
+  submit(physics, sphereAt(3, 0.1f, 0.0f, 2.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 3, 2, 0.0f, 2.75f, 0.0f));
+  run(physics, 2.0f);
+  const bool restedFirst = orblit_physics_asleep(physics, 3);
+  drive(physics, 2, 0.0f, 0.02f, 0.0f, 0.0f);
+  check(restedFirst && !orblit_physics_asleep(physics, 3),
+        "setting a body going wakes what hangs from it");
+  run(physics, 5.0f);
+  check(!orblit_physics_asleep(physics, 3) && near(heightOf(physics, 3), 2.1f, 0.01f),
+        "and it does not sleep while what it hangs from is moving");
+  orblit_physics_destroy(physics);
+}
+
+void letGo() {
+  // A ball hung from a beam, which is then taken away.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, slabAt(2, 1.0f, 0.1f, 0.1f, 0.0f, 3.0f, 0.0f));
+  submit(physics, sphereAt(3, 0.1f, 0.0f, 2.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 3, 2, 0.0f, 3.0f, 0.0f));
+  run(physics, 2.0f);
+  const bool hung = orblit_physics_asleep(physics, 3) && near(heightOf(physics, 3), 2.0f, 0.01f);
+  OrblitPhysicsCommand gone{};
+  gone.kind = ORBLIT_PHYSICS_DESTROY;
+  gone.id = 2;
+  submit(physics, gone);
+  OrblitPhysicsJointState state{};
+  check(hung && !orblit_physics_joint(physics, 1, &state) && !orblit_physics_asleep(physics, 3),
+        "destroying a body removes its joints and wakes what was joined to it");
+  step(physics);
+  check(eventsOf(physics, ORBLIT_PHYSICS_BROKE) == 0, "without saying anything broke");
+  run(physics, 0.5f);
+  check(heightOf(physics, 3) < 1.0f, "and what hung from it falls");
+  check(!orblit_physics_unjoin(physics, 1), "and the joint cannot be removed again");
+  orblit_physics_destroy(physics);
+
+  // The same, let go by removing the joint instead.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(3, 0.1f, 0.0f, 2.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 3, 0, 0.0f, 3.0f, 0.0f));
+  run(physics, 2.0f);
+  check(orblit_physics_unjoin(physics, 1) && !orblit_physics_asleep(physics, 3),
+        "removing a joint wakes its bodies");
+  run(physics, 0.5f);
+  check(heightOf(physics, 3) < 1.0f, "so what it held up falls");
+  orblit_physics_destroy(physics);
+
+  // Ground laid again under the same id keeps what is tied to it.
+  physics = orblit_physics_create(nullptr);
+  lay(physics, 1, flat);
+  submit(physics, sphereAt(3, 0.1f, 0.0f, 1.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_DISTANCE, 3, 1, 0.0f, 1.0f, 0.0f));
+  lay(physics, 1, flat);
+  run(physics, 1.0f);
+  check(orblit_physics_joint(physics, 1, &state) && near(heightOf(physics, 3), 1.0f, 0.02f),
+        "laying ground again keeps the joints tied to it");
+  orblit_physics_destroy(physics);
+}
+
+void breaking() {
+  // Tied with a thread that takes five newtons, holding a kilogram.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 2.0f, 0.0f));
+  OrblitPhysicsJoint thread = jointOf(7, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 2.1f, 0.0f);
+  thread.breakingForce = 5.0f;
+  join(physics, thread);
+  step(physics);
+  uint32_t count = 0;
+  const OrblitPhysicsEvent *events = orblit_physics_events(physics, &count);
+  const bool said = count == 1 && events[0].kind == ORBLIT_PHYSICS_BROKE &&
+                    events[0].a == 7 && events[0].b == 0 && events[0].force > 5.0f &&
+                    near(events[0].at[1], 2.1f, 0.01f);
+  OrblitPhysicsJointState state{};
+  check(said && !orblit_physics_joint(physics, 7, &state),
+        "a joint pulled harder than it can take breaks, and says which and how hard");
+  run(physics, 0.5f);
+  check(heightOf(physics, 2) < 1.0f, "and lets go of what it held");
+  orblit_physics_destroy(physics);
+
+  // A stronger one holds the weight, then breaks when the ball is yanked.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 2.0f, 0.0f));
+  thread.breakingForce = 20.0f;
+  join(physics, thread);
+  run(physics, 1.0f);
+  state = stateOf(physics, 7);
+  check(orblit_physics_joint(physics, 7, &state) && near(state.force, 9.81f, 0.2f),
+        "one that can take the weight holds it, and says what it is holding");
+  OrblitPhysicsCommand yank{};
+  yank.kind = ORBLIT_PHYSICS_IMPULSE;
+  yank.id = 2;
+  yank.vector[1] = -2.0f;
+  yank.spin[1] = 2.0f;
+  submit(physics, yank);
+  step(physics);
+  check(eventsOf(physics, ORBLIT_PHYSICS_BROKE) == 1, "until it is yanked");
+  orblit_physics_destroy(physics);
+
+  // A shelf welded to a wall, which turns rather than pulls.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 1.0f, 2.0f, 0.0f));
+  OrblitPhysicsJoint weld = jointOf(3, ORBLIT_PHYSICS_JOINT_FIXED, 2, 0, 0.0f, 2.0f, 0.0f);
+  weld.breakingTorque = 5.0f;
+  join(physics, weld);
+  bool broke = false;
+  for (int i = 0; i < 30 && !broke; ++i) {
+    step(physics);
+    events = orblit_physics_events(physics, &count);
+    broke = count == 1 && events[0].kind == ORBLIT_PHYSICS_BROKE && events[0].force > 5.0f;
+  }
+  check(broke, "a weld breaks on torque too, and says what torque");
+  orblit_physics_destroy(physics);
+}
+
+void refusingJoints() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 2.0f, 0.0f));
+  submit(physics, sphereAt(3, 0.1f, 1.0f, 2.0f, 0.0f));
+  const OrblitPhysicsJoint good = jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 3, 0.5f, 2.0f, 0.0f);
+
+  OrblitPhysicsJoint bad = good;
+  bad.id = 0;
+  bool made = join(physics, bad);
+  bad = good;
+  bad.a = 0;
+  bad.b = 0;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.a = 9;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.b = 9;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.b = 2;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.kind = 0;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.kind = 8;
+  made = made || join(physics, bad);
+  bad = good;
+  bad.at[0] = std::nanf("");
+  made = made || join(physics, bad);
+  bad = good;
+  bad.high[3] = std::nanf("");
+  made = made || join(physics, bad);
+  bad = good;
+  bad.rotation[1] = INFINITY;
+  made = made || join(physics, bad);
+  made = made || orblit_physics_join(physics, nullptr);
+  made = made || orblit_physics_join(nullptr, &good);
+  OrblitPhysicsJointState state{};
+  check(!made && !orblit_physics_joint(physics, 1, &state), "a joint that cannot be made is refused");
+
+  check(join(physics, good) && !join(physics, good), "and so is one made twice");
+  bad = good;
+  bad.id = 2;
+  check(join(physics, bad), "but a joint may share a number with a body");
+  check(!orblit_physics_unjoin(physics, 9) && !orblit_physics_joint(physics, 9, &state) &&
+            !orblit_physics_joint(physics, 1, nullptr) && !orblit_physics_unjoin(nullptr, 1),
+        "and a joint that is not there cannot be read or removed");
+  orblit_physics_destroy(physics);
+}
+
+void ragdoll() {
+  // A figure of capsules and a ball, jointed the way a body is, thrown
+  // tumbling at the ground.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+
+  const float lift = 2.0f;
+  OrblitPhysicsCommand torso = capsuleAt(2, 0.15f, 0.25f, 0.0f, lift + 1.2f, 0.0f);
+  torso.mass = 20.0f;
+  submit(physics, torso);
+  OrblitPhysicsCommand head = sphereAt(3, 0.12f, 0.0f, lift + 1.72f, 0.0f);
+  head.mass = 4.0f;
+  submit(physics, head);
+
+  struct Limb {
+    OrblitPhysicsId upper;
+    OrblitPhysicsId lower;
+    float x;
+    float top;
+    float length;
+  };
+  // Arms from the shoulders, legs from the hips, each two capsules.
+  const Limb limbs[] = {
+      {4, 5, -0.3f, lift + 1.5f, 0.3f},
+      {6, 7, 0.3f, lift + 1.5f, 0.3f},
+      {8, 9, -0.12f, lift + 0.8f, 0.4f},
+      {10, 11, 0.12f, lift + 0.8f, 0.4f},
+  };
+  OrblitPhysicsId joint = 1;
+  bool made = join(physics, [&] {
+    OrblitPhysicsJoint neck = jointOf(joint++, ORBLIT_PHYSICS_JOINT_CONE, 3, 2, 0.0f, lift + 1.6f, 0.0f);
+    pointDown(neck);
+    neck.swing = 0.6f;
+    limitTo(neck, 3, -0.8f, 0.8f);
+    return neck;
+  }());
+  for (const Limb &limb : limbs) {
+    const float half = limb.length / 2.0f;
+    OrblitPhysicsCommand upper = capsuleAt(limb.upper, 0.06f, half - 0.06f, limb.x, limb.top - half, 0.0f);
+    upper.mass = 3.0f;
+    submit(physics, upper);
+    OrblitPhysicsCommand lower = capsuleAt(limb.lower, 0.05f, half - 0.05f, limb.x,
+                                           limb.top - limb.length - half, 0.0f);
+    lower.mass = 2.0f;
+    submit(physics, lower);
+
+    OrblitPhysicsJoint socket = jointOf(joint++, ORBLIT_PHYSICS_JOINT_CONE, limb.upper, 2, limb.x, limb.top, 0.0f);
+    pointDown(socket);
+    socket.swing = 1.2f;
+    limitTo(socket, 3, -0.5f, 0.5f);
+    made = join(physics, socket) && made;
+
+    OrblitPhysicsJoint bend = jointOf(joint++, ORBLIT_PHYSICS_JOINT_HINGE, limb.lower, limb.upper,
+                                      limb.x, limb.top - limb.length, 0.0f);
+    // About x, which for a figure facing +z is the way an elbow or a knee
+    // bends, and only one way.
+    limitTo(bend, 3, 0.0f, 2.2f);
+    made = join(physics, bend) && made;
+  }
+  check(made, "a ragdoll is jointed together");
+
+  setMotion(physics, 2, 1.0f, 2.0f, 0.5f, 3.0f, 1.0f, 4.0f);
+
+  const OrblitPhysicsId last = 11;
+  const OrblitPhysicsId joints = joint - 1;
+  bool finite = true;
+  float highest = 0.0f;
+  float torn = 0.0f;
+  for (int i = 0; i < 600; ++i) {
+    step(physics);
+    for (OrblitPhysicsId body = 2; body <= last; ++body) {
+      float transform[7] = {0};
+      orblit_physics_transform(physics, body, transform);
+      for (const float v : transform) finite = finite && std::isfinite(v);
+      highest = std::fmax(highest, transform[1]);
+    }
+    for (OrblitPhysicsId id = 1; id <= joints; ++id) {
+      const OrblitPhysicsJointState state = stateOf(physics, id);
+      torn = std::fmax(torn, std::sqrt(state.offset[0] * state.offset[0] +
+                                       state.offset[1] * state.offset[1] +
+                                       state.offset[2] * state.offset[2]));
+    }
+  }
+  check(finite, "and thrown at the ground, stays finite");
+  check(highest < lift + 3.0f, "does not explode");
+  check(torn < 0.05f, "and does not come apart at any joint");
+
+  bool resting = true;
+  bool above = true;
+  for (OrblitPhysicsId body = 2; body <= last; ++body) {
+    resting = resting && (orblit_physics_asleep(physics, body) || speedOf(physics, body) < 0.05f);
+    above = above && heightOf(physics, body) > 0.0f;
+  }
+  check(above, "comes to rest on the ground, not in it");
+  check(resting, "and settles there rather than twitching");
+  orblit_physics_destroy(physics);
+}
+
+void chains() {
+  // Twelve links held out level from a wall and dropped, damped enough that
+  // they come to hang within the test.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const int links = 12;
+  for (int i = 0; i < links; ++i) {
+    OrblitPhysicsCommand made = capsuleAt(10 + i, 0.05f, 0.1f, 0.15f + 0.3f * i, 5.0f, 0.0f);
+    made.damping[0] = 0.5f;
+    made.damping[1] = 0.5f;
+    submit(physics, made);
+  }
+  // The links lie along x, and a capsule stands along y, so turn each over.
+  for (int i = 0; i < links; ++i) {
+    OrblitPhysicsCommand turn{};
+    turn.kind = ORBLIT_PHYSICS_PLACE;
+    turn.id = 10 + i;
+    turn.at[0] = 0.15f + 0.3f * i;
+    turn.at[1] = 5.0f;
+    layDown(turn);
+    submit(physics, turn);
+  }
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 10, 0, 0.0f, 5.0f, 0.0f));
+  for (int i = 1; i < links; ++i) {
+    join(physics, jointOf(1 + i, ORBLIT_PHYSICS_JOINT_POINT, 10 + i, 9 + i, 0.3f * i, 5.0f, 0.0f));
+  }
+  float stretch = 0.0f;
+  for (int i = 0; i < 900; ++i) {
+    step(physics);
+    for (int j = 1; j <= links; ++j) {
+      const OrblitPhysicsJointState state = stateOf(physics, j);
+      stretch = std::fmax(stretch, std::sqrt(state.offset[0] * state.offset[0] +
+                                             state.offset[1] * state.offset[1] +
+                                             state.offset[2] * state.offset[2]));
+    }
+  }
+  check(stretch < 0.03f, "a chain dropped from level stays together at every link");
+  // The last link's middle is three and a half links from the wall.
+  check(near(heightOf(physics, 10 + links - 1), 5.0f - 3.45f, 0.03f),
+        "and comes to hang its full length below where it was tied");
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -1392,6 +2145,20 @@ int main() {
   hiking();
   ridges();
   refusingGround();
+  welding();
+  swinging();
+  hinging();
+  sliding();
+  distances();
+  cones();
+  sixAxes();
+  colliding();
+  sleepingJoined();
+  letGo();
+  breaking();
+  refusingJoints();
+  ragdoll();
+  chains();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

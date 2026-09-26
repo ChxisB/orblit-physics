@@ -204,6 +204,75 @@ final class OrblitPhysicsFooting extends Struct {
   external Array<Uint8> reserved;
 }
 
+/// `OrblitPhysicsJoint`, field for field.
+final class OrblitPhysicsJoint extends Struct {
+  @Uint64()
+  external int id;
+
+  @Uint64()
+  external int a;
+
+  @Uint64()
+  external int b;
+
+  @Uint32()
+  external int kind;
+
+  @Uint32()
+  external int limited;
+
+  @Array(3)
+  external Array<Float> at;
+
+  @Array(4)
+  external Array<Float> rotation;
+
+  @Array(3)
+  external Array<Float> to;
+
+  @Array(6)
+  external Array<Float> low;
+
+  @Array(6)
+  external Array<Float> high;
+
+  @Float()
+  external double swing;
+
+  @Float()
+  external double speed;
+
+  @Float()
+  external double strength;
+
+  @Float()
+  external double breakingForce;
+
+  @Float()
+  external double breakingTorque;
+
+  @Bool()
+  external bool collide;
+
+  @Array(3)
+  external Array<Uint8> reserved;
+}
+
+/// `OrblitPhysicsJointState`, field for field.
+final class OrblitPhysicsJointState extends Struct {
+  @Array(3)
+  external Array<Float> offset;
+
+  @Array(3)
+  external Array<Float> angles;
+
+  @Float()
+  external double force;
+
+  @Float()
+  external double torque;
+}
+
 /// `OrblitPhysicsSettings`, field for field.
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
@@ -378,4 +447,31 @@ external int physicsFooting(
   Pointer<Uint64> ids,
   int count,
   Pointer<OrblitPhysicsFooting> out,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsJoint>)
+>(symbol: 'orblit_physics_join', assetId: kOrblitPhysicsAsset)
+external bool physicsJoin(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsJoint> joint,
+);
+
+@Native<Bool Function(Pointer<OrblitPhysicsStruct>, Uint64)>(
+  symbol: 'orblit_physics_unjoin',
+  assetId: kOrblitPhysicsAsset,
+)
+external bool physicsUnjoin(Pointer<OrblitPhysicsStruct> physics, int joint);
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Uint64,
+    Pointer<OrblitPhysicsJointState>,
+  )
+>(symbol: 'orblit_physics_joint', assetId: kOrblitPhysicsAsset)
+external bool physicsJoint(
+  Pointer<OrblitPhysicsStruct> physics,
+  int joint,
+  Pointer<OrblitPhysicsJointState> out,
 );

@@ -85,7 +85,15 @@ final class Layers {
 }
 
 /// What happened during a step.
-enum PhysicsEventKind { touchBegan, touchEnded, slept, woke }
+enum PhysicsEventKind {
+  touchBegan,
+  touchEnded,
+  slept,
+  woke,
+
+  /// A joint gave way and is gone. The event's `a` is the joint, not a body.
+  broke,
+}
 
 final class PhysicsEvent {
   const PhysicsEvent({
@@ -101,17 +109,19 @@ final class PhysicsEvent {
 
   /// The body it happened to, and for a touch the other one. The pair is
   /// always given smaller id first, so a caller can key on it without
-  /// sorting.
+  /// sorting. For [PhysicsEventKind.broke], `a` is the joint and `b` is zero.
   final int a;
   final int b;
 
   /// Where they met, and which way out of `b` towards `a`. Zero for anything
-  /// that is not a touch beginning.
+  /// that is not a touch beginning, except that a joint breaking says where
+  /// it was.
   final List<double> at;
   final List<double> normal;
 
   /// How hard, in newton-seconds along the normal. The number a collision
-  /// sound scales with.
+  /// sound scales with. For a joint breaking, what broke it: the force in
+  /// newtons, or the torque in newton-metres if that went past its limit.
   final double force;
 }
 
@@ -183,6 +193,193 @@ final class PhysicsFooting {
   /// Standing on something it may stand on. False in the air, on a slope
   /// steeper than it may climb, and on the way up a jump.
   final bool grounded;
+}
+
+/// Which kind of joint, as the ABI numbers them.
+///
+/// Named for the package, as [PhysicsMotion] is, because a scene document has
+/// a `JointKind` of its own and a game imports both.
+enum PhysicsJointKind {
+  fixed(1),
+  point(2),
+  hinge(3),
+  slider(4),
+  distance(5),
+  cone(6),
+  sixAxis(7);
+
+  const PhysicsJointKind(this.code);
+  final int code;
+}
+
+/// The least and most a joint lets one of its axes go: metres along it, or
+/// radians about it, measured from where the bodies stood when it was made.
+final class JointLimit {
+  /// Kept in order, so a `low` above its `high` is read the other way round.
+  const JointLimit(this.low, this.high);
+
+  /// Held exactly at `at`, which is where it was made unless said otherwise.
+  const JointLimit.locked([double at = 0.0]) : this(at, at);
+
+  final double low;
+  final double high;
+}
+
+/// What a joint holds, apart from where it is.
+///
+/// Every joint holds some of the six ways its second body can move relative
+/// to its first — along the three axes of its frame and about them — each
+/// within a range, and a kind is only which ways and how far. The value says
+/// nothing about where it goes, so one elbow serves both arms: [Physics.join]
+/// says where.
+///
+/// Every axis and every measure is the first body's, and turns when it does.
+/// Joined to the world, it is the world that moves as that body sees it, so a
+/// body falling down a slider reads as the world sliding up.
+final class Joint {
+  const Joint._(
+    this.kind, {
+    this.alongX,
+    this.alongY,
+    this.alongZ,
+    this.aboutX,
+    this.aboutY,
+    this.aboutZ,
+    this.swing = 0.0,
+    this.speed = 0.0,
+    this.strength = 0.0,
+  });
+
+  /// Holds the second body exactly where it is relative to the first: welded.
+  const Joint.fixed() : this._(PhysicsJointKind.fixed);
+
+  /// Holds the two points together and lets the bodies turn any way about
+  /// them. A pendulum, or a ball and socket with no limit.
+  const Joint.point() : this._(PhysicsJointKind.point);
+
+  /// Holds the points together and lets the second body turn about the
+  /// frame's x axis only: a door, a wheel, a knee. `limit` is the angle it
+  /// may turn, in radians, within a half turn either way.
+  ///
+  /// A motor turns it at `speed` radians a second, never harder than
+  /// `strength` newton-metres. No strength is no motor, and a speed of nought
+  /// with a little strength is friction in the joint.
+  const Joint.hinge({
+    JointLimit? limit,
+    double speed = 0.0,
+    double strength = 0.0,
+  }) : this._(
+         PhysicsJointKind.hinge,
+         aboutX: limit,
+         speed: speed,
+         strength: strength,
+       );
+
+  /// Lets the second body move along the frame's x axis only, never turning:
+  /// a drawer, a piston, a lift on a rail. `limit` is how far, in metres.
+  ///
+  /// A motor moves it at `speed` metres a second, never harder than
+  /// `strength` newtons.
+  const Joint.slider({
+    JointLimit? limit,
+    double speed = 0.0,
+    double strength = 0.0,
+  }) : this._(
+         PhysicsJointKind.slider,
+         alongX: limit,
+         speed: speed,
+         strength: strength,
+       );
+
+  /// Keeps a point on each body a distance apart, with both free to turn.
+  ///
+  /// With no limit it is a rod as long as the points were apart when it was
+  /// made. With one it is a range, in metres: `JointLimit(0, 2)` is a two
+  /// metre rope, slack until it is taut.
+  const Joint.distance({JointLimit? limit})
+    : this._(PhysicsJointKind.distance, alongX: limit);
+
+  /// Holds the points together and lets the second body's x axis swing up to
+  /// `swing` radians from the first's, in any direction: a shoulder or a hip.
+  /// `twist` bounds how far it turns about that axis as well.
+  const Joint.cone({required double swing, JointLimit? twist})
+    : this._(PhysicsJointKind.cone, aboutX: twist, swing: swing);
+
+  /// Each of the six ways set on its own: free unless limited, and locked
+  /// where a limit's low is its high. For whatever the other kinds do not
+  /// cover.
+  ///
+  /// Turning is measured as a twist about x and then a swing, whose turns
+  /// about y and z are limited separately. Within a quarter turn that is the
+  /// angle it looks like; further, the three stop being independent, which is
+  /// true of any three angles.
+  const Joint.sixAxis({
+    JointLimit? alongX,
+    JointLimit? alongY,
+    JointLimit? alongZ,
+    JointLimit? aboutX,
+    JointLimit? aboutY,
+    JointLimit? aboutZ,
+  }) : this._(
+         PhysicsJointKind.sixAxis,
+         alongX: alongX,
+         alongY: alongY,
+         alongZ: alongZ,
+         aboutX: aboutX,
+         aboutY: aboutY,
+         aboutZ: aboutZ,
+       );
+
+  final PhysicsJointKind kind;
+
+  /// The range of each of the six ways, or null where the kind leaves it
+  /// alone: metres along the frame's axes, then radians about them.
+  final JointLimit? alongX;
+  final JointLimit? alongY;
+  final JointLimit? alongZ;
+  final JointLimit? aboutX;
+  final JointLimit? aboutY;
+  final JointLimit? aboutZ;
+
+  /// A cone's widest swing, in radians.
+  final double swing;
+
+  /// A hinge's or a slider's motor.
+  final double speed;
+  final double strength;
+
+  /// The six limits, in the order the ABI names them.
+  List<JointLimit?> get limits => [
+    alongX,
+    alongY,
+    alongZ,
+    aboutX,
+    aboutY,
+    aboutZ,
+  ];
+}
+
+/// How a joint stands, and how hard it held on the last step.
+final class JointState {
+  const JointState({
+    required this.offset,
+    required this.angles,
+    required this.force,
+    required this.torque,
+  });
+
+  /// Where the second body's point is from the first's, along the first's
+  /// axes, in metres. For a distance joint, `offset[0]` is the distance.
+  final List<double> offset;
+
+  /// How far the second body has turned from the first, in radians: the
+  /// twist about x, then the swing's turn about y and about z.
+  final List<double> angles;
+
+  /// The force and torque it held with on the last step, in newtons and
+  /// newton-metres. The numbers to read before choosing where it breaks.
+  final double force;
+  final double torque;
 }
 
 /// How a world behaves. Anything left null is the engine's own default, so
@@ -359,12 +556,12 @@ class Physics {
   /// through it and roll off its rim.
   ///
   /// Laying it again under the same id replaces it — whatever was there,
-  /// ground or not — and wakes everything over it, so an edit reaches the
-  /// world by laying the piece again, and a crate on a hill that was lowered
-  /// falls with it. It is taken away with [remove], which, as for any body,
-  /// wakes nothing: a crate asleep on ground streamed out from under it stays
-  /// where it was until something wakes it, and is still there when the
-  /// ground comes back.
+  /// ground or not, keeping its joints — and wakes everything over it, so an
+  /// edit reaches the world by laying the piece again, and a crate on a hill
+  /// that was lowered falls with it. It is taken away with [remove], which, as
+  /// for any body, wakes nothing it was only touching: a crate asleep on
+  /// ground streamed out from under it stays where it was until something
+  /// wakes it, and is still there when the ground comes back.
   ///
   /// Ground streamed in pieces is laid one field per piece, side by side.
   /// With `margin` the outermost ring of `heights` is the neighbouring
@@ -419,7 +616,8 @@ class Physics {
   }
 
   /// Takes a body out of the world. Anything that was touching it is told the
-  /// touch has ended on the next step.
+  /// touch has ended on the next step. Its joints go with it, silently —
+  /// nothing broke — and whatever they held is woken, so it falls.
   void remove(int id) => _next(2, id);
 
   /// Puts a body exactly here, forgetting how it was moving. The teleport,
@@ -468,6 +666,108 @@ class Physics {
 
   /// Wakes a body, whether or not anything touched it.
   void wake(int id) => _next(6, id);
+
+  // --- joints --------------------------------------------------------------
+
+  /// Joins body `a` to body `b` as `joint` says, and answers whether it was
+  /// made. Both bodies are woken.
+  ///
+  /// Either may be zero, for the world, but not both. Every measure is `b`
+  /// as `a` sees it, so which one is the world decides the sense: hang a
+  /// door with the world as `a` and its angle is the door's; with the world
+  /// as `b` it is the world's as the door sees it, the other way round.
+  ///
+  /// It is made where the bodies stand: `at` is the joint's point in the
+  /// world, and `rotation` its frame, whose x axis is the one a hinge turns
+  /// about, a slider slides along and a cone points along. What it holds is
+  /// how they stood, so a hinge made with its door shut reads nought when the
+  /// door is shut. A distance joint keeps `at` on `a` a distance from `to` on
+  /// `b`; every other kind ignores `to`.
+  ///
+  /// Past `breakingForce` newtons, or `breakingTorque` newton-metres, it
+  /// breaks: it is removed, and a [PhysicsEventKind.broke] event says so.
+  /// Nought never breaks. The two bodies do not collide with each other
+  /// unless `collide` says they do, because a joint's bodies nearly always
+  /// overlap where it is.
+  ///
+  /// Joint ids are apart from body ids, so a joint may share a number with a
+  /// body. False, and nothing changed, for a zero id or one already a joint,
+  /// an `a` or `b` that is neither zero nor a body, a body or the world joined
+  /// to itself, or a number that is not a number.
+  bool join(
+    int id,
+    Joint joint, {
+    required int a,
+    int b = 0,
+    required List<double> at,
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    List<double>? to,
+    double breakingForce = 0.0,
+    double breakingTorque = 0.0,
+    bool collide = false,
+  }) {
+    _requireAlive();
+    // Sent first so a body added or placed a moment ago is where the joint
+    // is made.
+    _flush();
+    final made = calloc<native.OrblitPhysicsJoint>();
+    try {
+      final it = made.ref;
+      it.id = id;
+      it.a = a;
+      it.b = b;
+      it.kind = joint.kind.code;
+      final limits = joint.limits;
+      var limited = 0;
+      for (var i = 0; i < 6; i++) {
+        final limit = limits[i];
+        if (limit == null) continue;
+        limited |= 1 << i;
+        it.low[i] = limit.low;
+        it.high[i] = limit.high;
+      }
+      it.limited = limited;
+      _write3(it.at, at);
+      for (var i = 0; i < 4; i++) {
+        it.rotation[i] = rotation[i];
+      }
+      _write3(it.to, to ?? at);
+      it.swing = joint.swing;
+      it.speed = joint.speed;
+      it.strength = joint.strength;
+      it.breakingForce = breakingForce;
+      it.breakingTorque = breakingTorque;
+      it.collide = collide;
+      return native.physicsJoin(_alive, made);
+    } finally {
+      calloc.free(made);
+    }
+  }
+
+  /// Removes joint `id`, waking both its bodies so what it held up falls.
+  /// False if there was no such joint.
+  bool unjoin(int id) {
+    _flush();
+    return native.physicsUnjoin(_alive, id);
+  }
+
+  /// How joint `id` stands now, or null if there is no such joint.
+  JointState? jointStateOf(int id) {
+    _flush();
+    final state = calloc<native.OrblitPhysicsJointState>();
+    try {
+      if (!native.physicsJoint(_alive, id, state)) return null;
+      final it = state.ref;
+      return JointState(
+        offset: [it.offset[0], it.offset[1], it.offset[2]],
+        angles: [it.angles[0], it.angles[1], it.angles[2]],
+        force: it.force,
+        torque: it.torque,
+      );
+    } finally {
+      calloc.free(state);
+    }
+  }
 
   // --- the step ------------------------------------------------------------
 

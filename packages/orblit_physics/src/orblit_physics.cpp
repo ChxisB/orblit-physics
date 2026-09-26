@@ -133,3 +133,19 @@ uint32_t orblit_physics_footing(const OrblitPhysics *physics,
   if (physics == nullptr || ids == nullptr || out == nullptr) return 0;
   return physics->world.footing(ids, count, out);
 }
+
+bool orblit_physics_join(OrblitPhysics *physics, const OrblitPhysicsJoint *joint) {
+  if (physics == nullptr || joint == nullptr) return false;
+  return physics->world.join(*joint);
+}
+
+bool orblit_physics_unjoin(OrblitPhysics *physics, OrblitPhysicsId joint) {
+  if (physics == nullptr) return false;
+  return physics->world.unjoin(joint);
+}
+
+bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
+                          OrblitPhysicsJointState *out) {
+  if (physics == nullptr || out == nullptr) return false;
+  return physics->world.joint(joint, *out);
+}

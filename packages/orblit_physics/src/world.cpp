@@ -28,10 +28,6 @@ Motion motionOf(uint32_t motion) {
   }
 }
 
-PairKey keyOf(OrblitPhysicsId a, OrblitPhysicsId b) {
-  return a < b ? PairKey{a, b} : PairKey{b, a};
-}
-
 /// Shed as a fraction per second, implicitly, so a large delta slows a body
 /// rather than reversing it.
 float damped(float damping, float delta) {
@@ -186,6 +182,18 @@ void World::apply(const OrblitPhysicsCommand &command) {
 }
 
 void World::destroy(OrblitPhysicsId id) {
+  // What it was joined to is let go of, not left holding a joint to nothing,
+  // and woken, because what was hanging from it should now fall.
+  partners_.clear();
+  joints_.drop(id, partners_);
+  unmake(id);
+  for (const OrblitPhysicsId partner : partners_) {
+    const uint32_t row = bodies_.rowOf(partner);
+    if (row != Bodies::kNone) wake(row);
+  }
+}
+
+void World::unmake(OrblitPhysicsId id) {
   bodies_.remove(id);
   // Erased in place rather than swapped out, because the list's order is the
   // order characters move in, and two characters that swap turns swap which
@@ -213,7 +221,7 @@ bool World::ground(const OrblitPhysicsGround &from) {
   const uint32_t was = bodies_.rowOf(from.id);
   const bool replacing = was != Bodies::kNone;
   const Bounds before = replacing ? bodies_.bounds(was) : Bounds{};
-  destroy(from.id);
+  unmake(from.id);
 
   BodyDescription made;
   made.shape = Shape::ground(field.get());
@@ -265,9 +273,122 @@ const Character *World::characterOf(OrblitPhysicsId id) const {
 }
 
 void World::wake(uint32_t row) {
-  if (!bodies_.movable(row) || !bodies_.asleep(row)) return;
-  bodies_.wake(row);
-  note(ORBLIT_PHYSICS_WOKE, row);
+  const bool sleeper = bodies_.movable(row) && bodies_.asleep(row);
+  if (sleeper) {
+    bodies_.wake(row);
+    note(ORBLIT_PHYSICS_WOKE, row);
+  }
+  // An awake body that the solver moves is in a group that is awake already,
+  // because joined bodies only ever sleep together.
+  if (sleeper || !bodies_.movable(row)) wakeJoined(row);
+}
+
+void World::wakeJoined(uint32_t row) {
+  if (!joints_.on(bodies_.id(row))) return;
+  waking_.clear();
+  waking_.push_back(bodies_.id(row));
+  while (!waking_.empty()) {
+    const OrblitPhysicsId from = waking_.back();
+    waking_.pop_back();
+    joints_.eachPartner(from, [this](OrblitPhysicsId partner) {
+      const uint32_t other = bodies_.rowOf(partner);
+      if (!bodies_.movable(other) || !bodies_.asleep(other)) return;
+      bodies_.wake(other);
+      note(ORBLIT_PHYSICS_WOKE, other);
+      waking_.push_back(partner);
+    });
+  }
+}
+
+// ---------------------------------------------------------------- joints ---
+
+bool World::join(const OrblitPhysicsJoint &from) {
+  JointDescription made;
+  made.id = from.id;
+  made.a = from.a;
+  made.b = from.b;
+  made.kind = from.kind;
+  made.limited = from.limited;
+  made.at = vectorOf(from.at);
+  made.rotation = rotationOf(from.rotation);
+  made.to = vectorOf(from.to);
+  for (int which = 0; which < 6; ++which) {
+    made.low[which] = from.low[which];
+    made.high[which] = from.high[which];
+  }
+  made.swing = from.swing;
+  made.speed = from.speed;
+  made.strength = from.strength;
+  made.breakingForce = from.breakingForce;
+  made.breakingTorque = from.breakingTorque;
+  made.collide = from.collide;
+  // A NaN anywhere is a joint that puts NaN into every body it touches on
+  // its first step, so it is never made. Where it stands must be somewhere
+  // as well; a limit may be as wide as it likes.
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(from.at[i]) || !std::isfinite(from.to[i])) return false;
+  }
+  for (int i = 0; i < 4; ++i) {
+    if (!std::isfinite(from.rotation[i])) return false;
+  }
+  for (int i = 0; i < 6; ++i) {
+    if (std::isnan(from.low[i]) || std::isnan(from.high[i])) return false;
+  }
+  for (const float v : {from.swing, from.speed, from.strength,
+                        from.breakingForce, from.breakingTorque}) {
+    if (std::isnan(v)) return false;
+  }
+  if (!joints_.add(made, bodies_)) return false;
+
+  wakeEnds(made.a, made.b);
+  return true;
+}
+
+bool World::unjoin(OrblitPhysicsId id) {
+  const Joint *joint = joints_.find(id);
+  if (joint == nullptr) return false;
+  const OrblitPhysicsId a = joint->a;
+  const OrblitPhysicsId b = joint->b;
+  joints_.remove(id);
+
+  // Woken after it is gone, so waking does not reach across it.
+  wakeEnds(a, b);
+  return true;
+}
+
+bool World::joint(OrblitPhysicsId id, OrblitPhysicsJointState &out) const {
+  return joints_.state(bodies_, id, out);
+}
+
+void World::breakJoints(float delta) {
+  if (joints_.empty()) return;
+  broken_.clear();
+  joints_.strain(bodies_, delta, broken_);
+  for (const Broken &gave : broken_) {
+    const Joint *joint = joints_.find(gave.id);
+    const OrblitPhysicsId a = joint->a;
+    const OrblitPhysicsId b = joint->b;
+    joints_.remove(gave.id);
+
+    OrblitPhysicsEvent event{};
+    event.kind = ORBLIT_PHYSICS_BROKE;
+    event.a = gave.id;
+    event.at[0] = gave.at.x;
+    event.at[1] = gave.at.y;
+    event.at[2] = gave.at.z;
+    event.force = gave.force;
+    events_.push_back(event);
+
+    // Both were being solved to have broken it, so both are awake; this is
+    // for a partner on the far side that the joint no longer reaches.
+    wakeEnds(a, b);
+  }
+}
+
+void World::wakeEnds(OrblitPhysicsId a, OrblitPhysicsId b) {
+  for (const OrblitPhysicsId end : {a, b}) {
+    if (end != 0) wake(bodies_.rowOf(end));
+  }
 }
 
 void World::note(uint32_t kind, uint32_t row) {
@@ -286,9 +407,11 @@ void World::step(float delta) {
   findContacts();
   integrateVelocities(delta);
   solver_.solveVelocities(bodies_, manifolds_.data(),
-                          static_cast<uint32_t>(manifolds_.size()), solving_);
+                          static_cast<uint32_t>(manifolds_.size()), joints_,
+                          delta, solving_);
   integratePositions(delta);
-  solver_.solvePositions(bodies_, manifolds_.data(), solving_);
+  solver_.solvePositions(bodies_, manifolds_.data(), joints_, solving_);
+  breakJoints(delta);
 
   bodies_.refreshAll();
   moveCharacters(delta);
@@ -330,6 +453,7 @@ void World::findContacts() {
     // which is the whole point of sleeping, and why a settled stack costs
     // nothing until something disturbs it.
     if (!bodies_.solved(a) && !bodies_.solved(b)) return;
+    if (joints_.apart(bodies_.id(a), bodies_.id(b))) return;
     if (!interact(bodies_.layerIs(a), bodies_.layerCares(a), bodies_.layerIs(b),
                   bodies_.layerCares(b))) {
       return;
@@ -380,7 +504,7 @@ void World::findContacts() {
     // A limit on direction, though. Against ground the points of one pair
     // can face different ways, and the push that held a corner against one
     // slope is no start at all for a corner now against the other.
-    const PairKey key = keyOf(bodies_.id(a), bodies_.id(b));
+    const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
       const Manifold &old = before->second;
@@ -459,6 +583,69 @@ void World::updateSleep(float delta) {
     bodies_.still(row) += delta;
     if (bodies_.still(row) < settings_.sleepAfter) continue;
 
+    // A joined body waits for the rest of what it is joined to.
+    if (joints_.on(bodies_.id(row))) continue;
+    bodies_.sleep(row);
+    note(ORBLIT_PHYSICS_SLEPT, row);
+  }
+
+  sleepJoined();
+}
+
+void World::sleepJoined() {
+  if (joints_.empty()) return;
+
+  // Joined bodies are grouped by following joints between bodies the solver
+  // moves, and only those: a wall does not tie together the two chains
+  // hanging from it.
+  const uint32_t count = bodies_.count();
+  group_.resize(count);
+  for (uint32_t row = 0; row < count; ++row) group_[row] = row;
+  const auto root = [this](uint32_t row) {
+    while (group_[row] != row) {
+      group_[row] = group_[group_[row]];
+      row = group_[row];
+    }
+    return row;
+  };
+
+  for (const Joint &joint : joints_.all()) {
+    if (joint.a == 0 || joint.b == 0) continue;
+    const uint32_t a = bodies_.rowOf(joint.a);
+    const uint32_t b = bodies_.rowOf(joint.b);
+    if (!bodies_.movable(a) || !bodies_.movable(b)) continue;
+    group_[root(a)] = root(b);
+  }
+
+  // A group sleeps when every body in it has been still long enough — one
+  // already asleep counts, since it is as still as a body gets — and none of
+  // it hangs from something moving. A rope tied to a rising lift is still
+  // relative to the lift, and would otherwise go to sleep in mid-air.
+  ready_.assign(count, 1);
+  for (const Joint &joint : joints_.all()) {
+    const uint32_t a = joint.a == 0 ? Bodies::kNone : bodies_.rowOf(joint.a);
+    const uint32_t b = joint.b == 0 ? Bodies::kNone : bodies_.rowOf(joint.b);
+    for (const uint32_t row : {a, b}) {
+      if (row == Bodies::kNone || !bodies_.movable(row)) continue;
+      if (bodies_.solved(row) && bodies_.still(row) < settings_.sleepAfter) {
+        ready_[root(row)] = 0;
+      }
+    }
+    if (a == Bodies::kNone || b == Bodies::kNone ||
+        bodies_.movable(a) == bodies_.movable(b)) {
+      continue;
+    }
+    const uint32_t held = bodies_.movable(a) ? a : b;
+    const uint32_t holder = bodies_.movable(a) ? b : a;
+    if (lengthSquared(bodies_.velocity(holder)) > 0.0f ||
+        lengthSquared(bodies_.spin(holder)) > 0.0f) {
+      ready_[root(held)] = 0;
+    }
+  }
+
+  for (uint32_t row = 0; row < count; ++row) {
+    if (!bodies_.solved(row) || !ready_[root(row)]) continue;
+    if (!joints_.on(bodies_.id(row))) continue;
     bodies_.sleep(row);
     note(ORBLIT_PHYSICS_SLEPT, row);
   }
