@@ -3378,6 +3378,401 @@ void wakingControls() {
   orblit_physics_destroy(physics);
 }
 
+// --- seeing what happened ------------------------------------------------- //
+
+/// What a replay has to give back: where everything is, how it moves and
+/// whether it sleeps, then what the step reported and what touched. Kept as
+/// floats and compared as bytes, so a difference in the last bit of anything
+/// is a difference here.
+void record(OrblitPhysics *physics, const std::vector<OrblitPhysicsId> &ids,
+            std::vector<float> &trace) {
+  for (const OrblitPhysicsId id : ids) {
+    float transform[7] = {0};
+    float motion[6] = {0};
+    orblit_physics_transform(physics, id, transform);
+    orblit_physics_velocity(physics, id, motion);
+    trace.insert(trace.end(), transform, transform + 7);
+    trace.insert(trace.end(), motion, motion + 6);
+    trace.push_back(orblit_physics_asleep(physics, id) ? 1.0f : 0.0f);
+  }
+
+  uint32_t count = 0;
+  const OrblitPhysicsEvent *events = orblit_physics_events(physics, &count);
+  trace.push_back(static_cast<float>(count));
+  for (uint32_t i = 0; i < count; ++i) {
+    trace.push_back(static_cast<float>(events[i].kind));
+    trace.push_back(static_cast<float>(events[i].a));
+    trace.push_back(static_cast<float>(events[i].b));
+    trace.insert(trace.end(), events[i].at, events[i].at + 3);
+    trace.insert(trace.end(), events[i].normal, events[i].normal + 3);
+    trace.push_back(events[i].force);
+  }
+
+  // Everything but the time, which is about the machine and not the world.
+  OrblitPhysicsStats stats{};
+  orblit_physics_stats(physics, &stats);
+  for (const uint32_t counted :
+       {stats.bodies, stats.staticBodies, stats.kinematicBodies, stats.dynamicBodies,
+        stats.asleep, stats.triggers, stats.characters, stats.joints, stats.zones,
+        stats.rules, stats.pairs, stats.touching, stats.points}) {
+    trace.push_back(static_cast<float>(counted));
+  }
+
+  const uint32_t points = orblit_physics_contacts(physics, nullptr, 0);
+  std::vector<OrblitPhysicsContact> contacts(points);
+  orblit_physics_contacts(physics, contacts.data(), points);
+  trace.push_back(static_cast<float>(points));
+  for (const OrblitPhysicsContact &contact : contacts) {
+    trace.push_back(static_cast<float>(contact.a));
+    trace.push_back(static_cast<float>(contact.b));
+    trace.insert(trace.end(), contact.at, contact.at + 3);
+    trace.insert(trace.end(), contact.normal, contact.normal + 3);
+    trace.push_back(contact.depth);
+    trace.push_back(contact.impulse);
+  }
+}
+
+bool same(const std::vector<float> &a, const std::vector<float> &b) {
+  if (a.size() != b.size()) return false;
+  return a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
+/// A world with one of everything a snapshot has to hold: a stack, each shape,
+/// a body asleep, a ball on ground that is not flat, two joints, a trigger
+/// inside a zone, a rule and a character. Returns the ids worth watching.
+std::vector<OrblitPhysicsId> richWorld(OrblitPhysics *physics) {
+  OrblitPhysicsCommand bottom = boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f);
+  bottom.stay = true;
+  OrblitPhysicsCommand sleeper = sphereAt(7, 0.3f, 2.0f, 0.3f, 2.0f);
+  sleeper.asleep = true;
+  OrblitPhysicsCommand area = triggerAt(20, 1.5f, -3.0f, 2.0f, 0.0f);
+  area.stay = true;
+
+  const std::vector<OrblitPhysicsCommand> made = {
+      groundPlane(1),
+      bottom,
+      boxAt(3, 0.5f, 0.05f, 1.6f, 0.0f),
+      boxAt(4, 0.5f, -0.05f, 2.8f, 0.0f),
+      sphereAt(5, 0.3f, 0.3f, 5.0f, 0.1f),
+      capsuleAt(6, 0.25f, 0.5f, -0.4f, 4.0f, 0.2f),
+      sleeper,
+      sphereAt(8, 0.3f, 2.0f, 0.3f, -2.0f),
+      boxAt(10, 0.25f, 4.0f, 2.0f, -3.0f),
+      boxAt(12, 0.25f, -2.0f, 3.0f, 3.0f),
+      boxAt(13, 0.25f, -2.0f, 3.6f, 3.0f),
+      area,
+      sphereAt(21, 0.25f, -3.0f, 6.0f, 0.0f),
+      boxAt(22, 0.3f, -4.0f, 0.3f, -2.0f),
+      sphereAt(40, 0.3f, 9.0f, 4.0f, 0.0f),
+  };
+  std::vector<OrblitPhysicsId> ids;
+  for (const OrblitPhysicsCommand &command : made) {
+    submit(physics, command);
+    ids.push_back(command.id);
+  }
+  addCharacter(physics, 30, 4.0f, 0.0f, 3.0f);
+  ids.push_back(30);
+
+  drive(physics, 8, 0.0f, 0.0f, 4.0f, 0.0f);
+  drive(physics, 10, 2.0f, 0.0f, 0.0f, 0.0f);
+  drive(physics, 22, 3.0f, 0.0f, 0.0f, 0.0f);
+
+  const std::vector<float> heights = sampled(9, 9, 1.0f, 6.0f, -4.0f, bumps);
+  const OrblitPhysicsGround ground = groundOf(41, heights, 9, 9, 6.0f, -4.0f);
+  const OrblitPhysicsZone lift = zoneOn(20, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 2.0f);
+  const OrblitPhysicsRule ice = ruleFor(1, 22, ORBLIT_PHYSICS_RULE_FRICTION);
+  const bool built =
+      orblit_physics_ground(physics, &ground) &&
+      join(physics, jointOf(100, ORBLIT_PHYSICS_JOINT_POINT, 10, 0, 4.0f, 3.0f, -3.0f)) &&
+      join(physics, jointOf(101, ORBLIT_PHYSICS_JOINT_FIXED, 12, 13, -2.0f, 3.3f, 3.0f)) &&
+      orblit_physics_zone(physics, &lift) && orblit_physics_rule(physics, &ice);
+  check(built, "the world to replay has its ground, joints, zone and rule");
+  return ids;
+}
+
+/// One step of what a caller does: walks the character, and at fixed steps
+/// makes and removes things, so the steps after a restore differ from the
+/// steps before it in more than where things are.
+void play(OrblitPhysics *physics, int at) {
+  const OrblitPhysicsFooting footing = footingOf(physics, 30);
+  drive(physics, 30, 1.0f, footing.velocity[1] - 9.81f * kStep, 0.0f, 0.0f);
+  if (at == 55) submit(physics, sphereAt(50, 0.25f, 0.1f, 6.0f, 0.1f));
+  if (at == 60) destroyBody(physics, 3);
+  if (at == 75) destroyBody(physics, 2);
+  step(physics);
+}
+
+void replaying() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const std::vector<OrblitPhysicsId> ids = richWorld(physics);
+  for (int at = 0; at < 50; ++at) play(physics, at);
+
+  OrblitPhysicsSnapshot *fifty = orblit_physics_snapshot(physics);
+  check(fifty != nullptr, "a world gives a snapshot of itself");
+  const bool asleepAtFifty = orblit_physics_asleep(physics, 7);
+  const uint32_t bodiesAtFifty = orblit_physics_count(physics);
+  std::vector<float> atFifty;
+  record(physics, ids, atFifty);
+
+  std::vector<float> first;
+  for (int at = 50; at < 100; ++at) {
+    play(physics, at);
+    record(physics, ids, first);
+  }
+  std::vector<float> firstEnd;
+  record(physics, ids, firstEnd);
+  check(asleepAtFifty && !orblit_physics_asleep(physics, 7),
+        "the run does something: a body asleep at step 50 is woken by step 100");
+  check(orblit_physics_alive(physics, 50) && !orblit_physics_alive(physics, 3),
+        "and changes what is there");
+
+  check(orblit_physics_restore(physics, fifty), "a snapshot restores");
+  check(orblit_physics_count(physics) == bodiesAtFifty &&
+            !orblit_physics_alive(physics, 50) && orblit_physics_alive(physics, 3) &&
+            orblit_physics_asleep(physics, 7),
+        "and what was made since is gone, what was removed is back, and the sleeper sleeps");
+  std::vector<float> restored;
+  record(physics, ids, restored);
+  check(same(atFifty, restored),
+        "and before a step, what it reports and lists is what the snapshot's step did");
+
+  std::vector<float> again;
+  for (int at = 50; at < 100; ++at) {
+    play(physics, at);
+    record(physics, ids, again);
+  }
+  std::vector<float> againEnd;
+  record(physics, ids, againEnd);
+  check(same(firstEnd, againEnd),
+        "100 steps, restored at step 50, reach an identical step 100");
+  check(same(first, again),
+        "and every step between, with its events and contacts, came out the same");
+
+  orblit_physics_restore(physics, fifty);
+  std::vector<float> thrice;
+  for (int at = 50; at < 100; ++at) {
+    play(physics, at);
+    record(physics, ids, thrice);
+  }
+  check(same(first, thrice), "a snapshot is left as it was and restores again");
+
+  // Into a world that was made differently, and after the first is gone: the
+  // snapshot carries the settings and the ground, not a borrow of either.
+  orblit_physics_destroy(physics);
+  OrblitPhysicsSettings other;
+  orblit_physics_defaults(&other);
+  other.gravity[1] = -1.0f;
+  other.velocitySteps = 2;
+  other.positionSteps = 1;
+  other.sleeping = false;
+  OrblitPhysics *second = orblit_physics_create(&other);
+  check(orblit_physics_restore(second, fifty), "a snapshot restores into another world");
+  // Let go of the snapshot before the world steps, so the ground it was sharing
+  // has to be the world's own by now.
+  orblit_physics_snapshot_destroy(fifty);
+  std::vector<float> elsewhere;
+  for (int at = 50; at < 100; ++at) {
+    play(second, at);
+    record(second, ids, elsewhere);
+  }
+  check(same(first, elsewhere),
+        "which then does what the first did, though it began with other settings");
+
+  orblit_physics_destroy(second);
+}
+
+void refusingSnapshots() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  check(orblit_physics_snapshot(nullptr) == nullptr, "no world gives no snapshot");
+
+  OrblitPhysicsSnapshot *empty = orblit_physics_snapshot(physics);
+  check(empty != nullptr, "an empty world gives one");
+  check(!orblit_physics_restore(nullptr, empty), "no world takes one");
+  check(!orblit_physics_restore(physics, nullptr), "and no snapshot restores nothing");
+  orblit_physics_snapshot_destroy(nullptr);
+
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 3.0f, 0.0f));
+  run(physics, 0.2f);
+  orblit_physics_restore(physics, empty);
+  check(orblit_physics_count(physics) == 0 && !orblit_physics_alive(physics, 1),
+        "restoring an empty world empties a busy one");
+  check(orblit_physics_contacts(physics, nullptr, 0) == 0,
+        "and its contacts with it");
+  orblit_physics_snapshot_destroy(empty);
+
+  OrblitPhysicsStats stats;
+  std::memset(&stats, 0xFF, sizeof stats);
+  orblit_physics_stats(nullptr, &stats);
+  check(stats.bodies == 0 && stats.points == 0 && stats.stepMicroseconds == 0.0f,
+        "the counts of no world are zero");
+  orblit_physics_stats(physics, nullptr);
+  check(orblit_physics_contacts(nullptr, nullptr, 0) == 0,
+        "and the contacts of no world are none");
+  orblit_physics_destroy(physics);
+}
+
+struct Listed {
+  std::vector<OrblitPhysicsContact> points;
+  uint32_t total;
+};
+
+Listed listContacts(OrblitPhysics *physics) {
+  Listed listed;
+  listed.total = orblit_physics_contacts(physics, nullptr, 0);
+  listed.points.resize(listed.total);
+  orblit_physics_contacts(physics, listed.points.data(), listed.total);
+  return listed;
+}
+
+float impulseOf(const Listed &listed, OrblitPhysicsId a, OrblitPhysicsId b) {
+  float sum = 0.0f;
+  for (const OrblitPhysicsContact &point : listed.points) {
+    if (point.a == a && point.b == b) sum += point.impulse;
+  }
+  return sum;
+}
+
+bool listsPair(const Listed &listed, OrblitPhysicsId a, OrblitPhysicsId b) {
+  for (const OrblitPhysicsContact &point : listed.points) {
+    if (point.a == a && point.b == b) return true;
+  }
+  return false;
+}
+
+void listingContacts() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  submit(physics, sphereAt(3, 0.5f, 3.0f, 0.5f, 0.0f));
+  submit(physics, sphereAt(4, 0.5f, -3.0f, 0.5f, 0.0f));
+  check(orblit_physics_contacts(physics, nullptr, 0) == 0,
+        "before a step there is nothing to list");
+
+  run(physics, 0.3f);
+  const Listed listed = listContacts(physics);
+  check(listed.total >= 3, "three bodies resting on ground make at least three points");
+
+  bool ordered = true;
+  bool facing = true;
+  for (size_t i = 0; i < listed.points.size(); ++i) {
+    const OrblitPhysicsContact &point = listed.points[i];
+    facing = facing && point.a == 1 && point.b >= 2 && point.b <= 4 &&
+             point.normal[1] < -0.9f;
+    if (i == 0) continue;
+    const OrblitPhysicsContact &before = listed.points[i - 1];
+    ordered = ordered && (before.a < point.a ||
+                          (before.a == point.a && before.b <= point.b));
+  }
+  check(ordered, "points come in the order of their pairs' ids");
+  check(facing, "each names the ground first, with the normal out of the body and down");
+  check(near(impulseOf(listed, 1, 3), 9.81f / 60.0f, 0.05f),
+        "and the impulse over a step that holds a kilogram up is its weight times the step");
+
+  OrblitPhysicsStats stats{};
+  orblit_physics_stats(physics, &stats);
+  check(stats.points == listed.total && stats.touching == 3,
+        "the counts agree with the list");
+
+  OrblitPhysicsContact room[3];
+  std::memset(room, 0xAB, sizeof room);
+  const uint32_t reported = orblit_physics_contacts(physics, room, 2);
+  check(reported == listed.total && room[0].a == 1 && room[1].a == 1 &&
+            room[2].a == 0xABABABABABABABABull,
+        "asked for two, it writes two and says how many there were");
+
+  destroyBody(physics, 2);
+  const Listed after = listContacts(physics);
+  check(!listsPair(after, 1, 2) && listsPair(after, 1, 3) && listsPair(after, 1, 4),
+        "a body removed takes its pairs with it, and no other pair is lost when a row moves");
+  check(impulseOf(after, 1, 4) == impulseOf(listed, 1, 4) &&
+            near(after.points.back().normal[1], -1.0f, 0.1f),
+        "and what is left is what it was");
+
+  run(physics, 2.0f);
+  check(orblit_physics_asleep(physics, 3) && orblit_physics_contacts(physics, nullptr, 0) == 0,
+        "a pair that has gone to sleep is not listed, since nothing looked at it");
+  orblit_physics_destroy(physics);
+}
+
+void counting() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsStats stats{};
+  orblit_physics_stats(physics, &stats);
+  check(stats.bodies == 0 && stats.pairs == 0 && stats.stepMicroseconds == 0.0f,
+        "an empty world counts nothing");
+
+  OrblitPhysicsCommand mover = boxAt(4, 0.5f, 10.0f, 5.0f, 0.0f);
+  mover.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  submit(physics, sphereAt(3, 0.5f, 3.0f, 0.5f, 0.0f));
+  submit(physics, mover);
+  submit(physics, triggerAt(5, 1.0f, -6.0f, 1.0f, 0.0f));
+  submit(physics, boxAt(8, 0.25f, 20.0f, 5.0f, 0.0f));
+  addCharacter(physics, 6, 6.0f, 0.0f, 6.0f);
+  join(physics, jointOf(7, ORBLIT_PHYSICS_JOINT_POINT, 8, 0, 20.0f, 6.0f, 0.0f));
+  const OrblitPhysicsZone zone = zoneOn(5, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 0.0f);
+  const OrblitPhysicsRule rule = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_FRICTION);
+  orblit_physics_zone(physics, &zone);
+  orblit_physics_rule(physics, &rule);
+
+  run(physics, 0.3f);
+  orblit_physics_stats(physics, &stats);
+  check(stats.bodies == 7 && stats.staticBodies == 2 && stats.kinematicBodies == 2 &&
+            stats.dynamicBodies == 3,
+        "bodies are counted by what moves them, and the three add up");
+  check(stats.triggers == 1 && stats.characters == 1 && stats.joints == 1 &&
+            stats.zones == 1 && stats.rules == 1 && stats.asleep == 0,
+        "and triggers, characters, joints, zones, rules and sleepers each by themselves");
+  check(stats.pairs >= stats.touching && stats.touching >= 2 && stats.points >= stats.touching,
+        "a step looked at pairs, some touched, and each made points");
+  check(stats.stepMicroseconds > 0.0f, "and took a measurable time");
+
+  OrblitPhysicsSnapshot *snapshot = orblit_physics_snapshot(physics);
+  run(physics, 0.1f);
+  OrblitPhysicsStats ran{};
+  orblit_physics_stats(physics, &ran);
+  orblit_physics_restore(physics, snapshot);
+  orblit_physics_stats(physics, &stats);
+  check(stats.bodies == 7 && stats.pairs > 0, "a restore brings the counts back");
+  check(stats.stepMicroseconds > 0.0f && stats.stepMicroseconds == ran.stepMicroseconds,
+        "while the time stays that of the last step on this handle");
+
+  run(physics, 2.0f);
+  orblit_physics_stats(physics, &stats);
+  check(stats.asleep >= 2, "bodies that have come to rest are counted asleep");
+  orblit_physics_snapshot_destroy(snapshot);
+  orblit_physics_destroy(physics);
+}
+
+void endingInOrder() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  const int scrambled[] = {19, 4, 27, 2, 16, 9, 23, 6, 12, 3, 21, 8};
+  for (const int id : scrambled) {
+    submit(physics, sphereAt(static_cast<OrblitPhysicsId>(id), 0.5f, id * 2.0f, 0.5f, 0.0f));
+  }
+  run(physics, 0.2f);
+
+  destroyBody(physics, 1);
+  step(physics);
+  uint32_t count = 0;
+  const OrblitPhysicsEvent *events = orblit_physics_events(physics, &count);
+  uint32_t ended = 0;
+  bool sorted = true;
+  OrblitPhysicsId last = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (events[i].kind != ORBLIT_PHYSICS_TOUCH_ENDED) continue;
+    sorted = sorted && events[i].b > last;
+    last = events[i].b;
+    ended++;
+  }
+  check(ended == 12, "taking the ground away ends every touch on the one step");
+  check(sorted, "and they are reported in the order of their pairs");
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -3455,6 +3850,11 @@ int main() {
   spreading();
   controlling();
   wakingControls();
+  replaying();
+  refusingSnapshots();
+  listingContacts();
+  counting();
+  endingInOrder();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

@@ -55,6 +55,10 @@ struct PairKey {
   }
 
   bool operator==(const PairKey &o) const { return a == o.a && b == o.b; }
+
+  /// By `a`, then `b`. For listing pairs in an order that does not depend on
+  /// how a hash table happens to lay them out.
+  bool operator<(const PairKey &o) const { return a != o.a ? a < o.a : b < o.b; }
 };
 
 struct PairKeyHash {

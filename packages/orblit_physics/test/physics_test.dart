@@ -1699,6 +1699,297 @@ void main() {
     });
   });
 
+  group('seeing what happened', () {
+    /// Every body the scene below moves, or removes and adds, by name.
+    const watched = [2, 3, 4, 5, 7, 10, 21, 30, 50];
+
+    /// Most of what a snapshot has to hold: a stack, a body that sleeps, a
+    /// joint, a zone over a body, and a character that is driven every step.
+    void richWorld(Physics world) {
+      world.add(
+        ground,
+        shape: const Shape.plane(0.0, 1.0, 0.0),
+        motion: PhysicsMotion.fixed,
+      );
+      world.add(
+        2,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [0.0, 0.5, 0.0],
+        stay: true,
+      );
+      world.add(
+        3,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [0.0, 1.6, 0.0],
+      );
+      world.add(
+        4,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [0.05, 2.7, 0.0],
+      );
+      world.add(5, shape: const Shape.sphere(0.5), at: const [3.0, 2.0, 0.0]);
+      world.add(
+        7,
+        shape: const Shape.sphere(0.5),
+        at: const [-3.0, 0.5, 0.0],
+        asleep: true,
+      );
+      world.add(10, shape: const Shape.sphere(0.2), at: const [1.0, 6.0, 4.0]);
+      world.join(100, const Joint.point(), a: 10, at: const [0.0, 6.0, 4.0]);
+      world.add(
+        20,
+        shape: const Shape.box(2.0, 2.0, 2.0),
+        motion: PhysicsMotion.fixed,
+        at: const [6.0, 1.0, 0.0],
+        trigger: true,
+      );
+      world.setZone(20, const PhysicsZone(gravity: [0.0, 2.0, 0.0]));
+      world.add(21, shape: const Shape.sphere(0.25), at: const [6.0, 1.0, 0.0]);
+      world.addCharacter(30, at: const [-6.0, 1.0, 0.0]);
+    }
+
+    /// What the game does on step `at`, then the step. Scripted by number, so
+    /// a replay does the same thing at the same point of the run.
+    void play(Physics world, int at) {
+      if (at == 55) {
+        world.add(
+          50,
+          shape: const Shape.sphere(0.3),
+          at: const [1.0, 4.0, 1.0],
+        );
+      }
+      if (at == 60) world.remove(3);
+      if (at == 70) world.push(7, impulse: const [0.0, 3.0, 0.0]);
+      if (at == 75) world.remove(2);
+
+      final left = world.footingOf(30)?.velocity ?? const [0.0, 0.0, 0.0];
+      world.drive(30, velocity: [1.0, left[1] - 9.81 / 60, 0.0]);
+      world.step(1 / 60);
+    }
+
+    /// Everything a caller can read about the world after a step, as text.
+    /// Doubles print as the shortest string that reads back as the same
+    /// number, so two records are equal only if every bit is.
+    String record(Physics world) {
+      final out = StringBuffer();
+      for (final id in watched) {
+        out.write('$id ${world.transformOf(id)} ${world.velocityOf(id)} ');
+        out.writeln(world.alive(id) && world.asleep(id));
+      }
+      for (final it in world.events) {
+        out.writeln(
+          '${it.kind.name} ${it.a} ${it.b} ${it.at} ${it.normal} ${it.force}',
+        );
+      }
+      final stats = world.stats;
+      // Step time is the machine's, and differs between two identical runs.
+      out.writeln([
+        stats.bodies,
+        stats.staticBodies,
+        stats.kinematicBodies,
+        stats.dynamicBodies,
+        stats.asleep,
+        stats.triggers,
+        stats.characters,
+        stats.joints,
+        stats.zones,
+        stats.rules,
+        stats.pairs,
+        stats.touching,
+        stats.points,
+      ]);
+      for (final it in world.contacts) {
+        out.writeln(
+          '${it.a} ${it.b} ${it.at} ${it.normal} ${it.depth} ${it.impulse}',
+        );
+      }
+      return out.toString();
+    }
+
+    /// Plays steps `from` up to `to` and keeps a record of each.
+    List<String> replay(Physics world, int from, int to) => [
+      for (var i = from; i < to; i++)
+        () {
+          play(world, i);
+          return record(world);
+        }(),
+    ];
+
+    test('its structs are the size the engine reads', () {
+      expect(sizeOf<native.OrblitPhysicsContact>(), 48);
+      expect(sizeOf<native.OrblitPhysicsStats>(), 56);
+    });
+
+    test('a world restored from step 50 reaches the same step 100', () {
+      richWorld(physics);
+      for (var i = 0; i < 50; i++) {
+        play(physics, i);
+      }
+      final snapshot = physics.snapshot();
+      addTearDown(snapshot.dispose);
+      final atFifty = record(physics);
+      expect(physics.asleep(7), isTrue);
+
+      final first = replay(physics, 50, 100);
+      // The run has to do something, or repeating it proves nothing.
+      expect(physics.asleep(7), isFalse, reason: 'woken at step 70');
+      expect(physics.alive(3), isFalse, reason: 'removed at step 60');
+      expect(physics.alive(50), isTrue, reason: 'added at step 55');
+
+      physics.restore(snapshot);
+
+      expect(record(physics), atFifty, reason: 'not the world that was saved');
+      expect(physics.asleep(7), isTrue);
+      expect(physics.alive(3), isTrue);
+      expect(physics.alive(50), isFalse);
+      expect(replay(physics, 50, 100), first);
+
+      // The snapshot is left as it was, so it goes back again.
+      physics.restore(snapshot);
+      expect(replay(physics, 50, 100), first);
+    });
+
+    test('a snapshot outlives its world and restores into another', () {
+      richWorld(physics);
+      for (var i = 0; i < 50; i++) {
+        play(physics, i);
+      }
+      final snapshot = physics.snapshot();
+      final expected = replay(physics, 50, 100);
+      physics.dispose();
+
+      // Settings that are nothing like the first world's: a restore brings
+      // its own, since a replay under different ones would not be a replay.
+      final other = Physics(
+        settings: const PhysicsSettings(
+          gravity: [0.0, -1.0, 0.0],
+          velocitySteps: 2,
+          positionSteps: 1,
+          sleeping: false,
+        ),
+      );
+      addTearDown(other.dispose);
+      other.restore(snapshot);
+      snapshot.dispose();
+
+      expect(replay(other, 50, 100), expected);
+    });
+
+    test('what was queued is in a snapshot and is undone by a restore', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 3.0, 0.0]);
+      run(0.5);
+
+      physics.add(3, shape: const Shape.sphere(0.5), at: const [4.0, 3.0, 0.0]);
+      final snapshot = physics.snapshot();
+      addTearDown(snapshot.dispose);
+      expect(physics.alive(3), isTrue, reason: 'queued before the copy');
+
+      physics.add(4, shape: const Shape.sphere(0.5), at: const [8.0, 3.0, 0.0]);
+      physics.remove(2);
+      physics.restore(snapshot);
+      physics.step(1 / 60);
+
+      expect(physics.count, 3, reason: 'the ground, 2 and 3');
+      expect(physics.alive(2), isTrue);
+      expect(physics.alive(3), isTrue);
+      expect(physics.alive(4), isFalse, reason: 'queued after the copy');
+    });
+
+    test('a snapshot or a world that is gone says so', () {
+      floor();
+      final snapshot = physics.snapshot();
+      snapshot.dispose();
+      snapshot.dispose();
+
+      expect(snapshot.disposed, isTrue);
+      expect(() => physics.restore(snapshot), throwsStateError);
+
+      final live = physics.snapshot();
+      addTearDown(live.dispose);
+      final short = Physics()..dispose();
+      expect(() => short.snapshot(), throwsStateError);
+      expect(() => short.restore(live), throwsStateError);
+      expect(() => short.contacts, throwsStateError);
+      expect(() => short.stats, throwsStateError);
+    });
+
+    test('a resting box lists its contacts, facing out of the second body', () {
+      floor();
+      physics.add(
+        2,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [0, 1, 0],
+      );
+      // It lands at about a third of a second and sleeps half a second after.
+      run(0.5);
+
+      final listed = physics.contacts;
+
+      expect(listed, isNotEmpty);
+      for (final it in listed) {
+        expect([it.a, it.b], [ground, 2]);
+        // Out of the box, towards the ground: down.
+        expect(it.normal[1], lessThan(-0.9));
+      }
+      // Holding a one kilogram box still takes its weight over the step.
+      final held = listed.fold<double>(0.0, (sum, it) => sum + it.impulse);
+      expect(held, closeTo(9.81 / 60, 0.05));
+
+      final stats = physics.stats;
+      expect(stats.points, listed.length);
+      expect(stats.touching, 1);
+
+      run(3.0);
+      expect(physics.asleep(2), isTrue);
+      expect(physics.contacts, isEmpty, reason: 'nothing looked at a sleeper');
+    });
+
+    test('the counts add up and survive a restore', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 1.0, 0.0]);
+      physics.add(3, shape: const Shape.sphere(0.5), at: const [2.0, 1.0, 0.0]);
+      physics.add(
+        4,
+        shape: const Shape.box(1.0, 1.0, 1.0),
+        motion: PhysicsMotion.driven,
+        at: const [6.0, 1.0, 0.0],
+      );
+      physics.add(
+        5,
+        shape: const Shape.box(1.0, 1.0, 1.0),
+        motion: PhysicsMotion.fixed,
+        at: const [9.0, 1.0, 0.0],
+        trigger: true,
+      );
+      physics.addCharacter(6, at: const [12.0, 1.0, 0.0]);
+      run(0.1);
+
+      final stats = physics.stats;
+      expect(stats.bodies, 6);
+      expect(stats.staticBodies, 2);
+      expect(stats.kinematicBodies, 2, reason: 'a driven body and a character');
+      expect(stats.dynamicBodies, 2);
+      expect(stats.triggers, 1);
+      expect(stats.characters, 1);
+      expect(stats.stepMicroseconds, greaterThan(0));
+
+      final snapshot = physics.snapshot();
+      addTearDown(snapshot.dispose);
+      physics.remove(2);
+      physics.remove(3);
+      physics.step(1 / 60);
+      expect(physics.stats.dynamicBodies, 0);
+
+      physics.restore(snapshot);
+      final restored = physics.stats;
+      expect(restored.bodies, 6);
+      expect(restored.dynamicBodies, 2);
+      // The clock belongs to the handle, not to the world that was saved.
+      expect(restored.stepMicroseconds, greaterThan(0));
+    });
+  });
+
   test('readInto fills a strided buffer and skips what it does not know', () {
     floor();
     physics.add(2, shape: const Shape.sphere(0.5), at: const [1.0, 2.0, 3.0]);

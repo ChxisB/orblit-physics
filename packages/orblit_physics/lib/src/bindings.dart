@@ -381,6 +381,75 @@ final class OrblitPhysicsSettings extends Struct {
   external Array<Uint8> reserved;
 }
 
+/// `OrblitPhysicsSnapshot`, which Dart only ever holds a pointer to.
+final class OrblitPhysicsSnapshotStruct extends Opaque {}
+
+/// `OrblitPhysicsContact`, field for field.
+final class OrblitPhysicsContact extends Struct {
+  @Uint64()
+  external int a;
+
+  @Uint64()
+  external int b;
+
+  @Array(3)
+  external Array<Float> at;
+
+  @Array(3)
+  external Array<Float> normal;
+
+  @Float()
+  external double depth;
+
+  @Float()
+  external double impulse;
+}
+
+/// `OrblitPhysicsStats`, field for field.
+final class OrblitPhysicsStats extends Struct {
+  @Uint32()
+  external int bodies;
+
+  @Uint32()
+  external int staticBodies;
+
+  @Uint32()
+  external int kinematicBodies;
+
+  @Uint32()
+  external int dynamicBodies;
+
+  @Uint32()
+  external int asleep;
+
+  @Uint32()
+  external int triggers;
+
+  @Uint32()
+  external int characters;
+
+  @Uint32()
+  external int joints;
+
+  @Uint32()
+  external int zones;
+
+  @Uint32()
+  external int rules;
+
+  @Uint32()
+  external int pairs;
+
+  @Uint32()
+  external int touching;
+
+  @Uint32()
+  external int points;
+
+  @Float()
+  external double stepMicroseconds;
+}
+
 @Native<Void Function(Pointer<OrblitPhysicsSettings>)>(
   symbol: 'orblit_physics_defaults',
   assetId: kOrblitPhysicsAsset,
@@ -620,4 +689,51 @@ external bool physicsJoint(
   Pointer<OrblitPhysicsStruct> physics,
   int joint,
   Pointer<OrblitPhysicsJointState> out,
+);
+
+@Native<
+  Pointer<OrblitPhysicsSnapshotStruct> Function(Pointer<OrblitPhysicsStruct>)
+>(symbol: 'orblit_physics_snapshot', assetId: kOrblitPhysicsAsset)
+external Pointer<OrblitPhysicsSnapshotStruct> physicsSnapshot(
+  Pointer<OrblitPhysicsStruct> physics,
+);
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsSnapshotStruct>,
+  )
+>(symbol: 'orblit_physics_restore', assetId: kOrblitPhysicsAsset)
+external bool physicsRestore(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsSnapshotStruct> snapshot,
+);
+
+@Native<Void Function(Pointer<OrblitPhysicsSnapshotStruct>)>(
+  symbol: 'orblit_physics_snapshot_destroy',
+  assetId: kOrblitPhysicsAsset,
+)
+external void physicsSnapshotDestroy(
+  Pointer<OrblitPhysicsSnapshotStruct> snapshot,
+);
+
+@Native<
+  Uint32 Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsContact>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_contacts', assetId: kOrblitPhysicsAsset)
+external int physicsContacts(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsContact> out,
+  int capacity,
+);
+
+@Native<
+  Void Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsStats>)
+>(symbol: 'orblit_physics_stats', assetId: kOrblitPhysicsAsset)
+external void physicsStats(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsStats> out,
 );

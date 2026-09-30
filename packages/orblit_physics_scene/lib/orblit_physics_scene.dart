@@ -5,4 +5,4 @@
 /// diff that moves those entities to where the simulation put them.
 library;
 
-export 'src/scene_physics.dart' show ScenePhysics;
+export 'src/scene_physics.dart' show ScenePhysics, ScenePhysicsSnapshot;

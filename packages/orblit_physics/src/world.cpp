@@ -92,6 +92,18 @@ void carryImpulses(const Manifold &old, Manifold &manifold) {
   }
 }
 
+/// Puts the events from `first` on in the order of their pairs. What ended or
+/// was left is found by walking a hash table, whose order is whatever its
+/// buckets happen to hold, and a world restored from a snapshot has its own
+/// buckets. Sorted, the same step reports the same events in the same order
+/// however the table was built.
+void sortByPair(std::vector<OrblitPhysicsEvent> &events, size_t first) {
+  std::sort(events.begin() + static_cast<std::ptrdiff_t>(first), events.end(),
+            [](const OrblitPhysicsEvent &l, const OrblitPhysicsEvent &r) {
+              return PairKey{l.a, l.b} < PairKey{r.a, r.b};
+            });
+}
+
 /// The path a query describes. A ray is a sphere of no size, which is what it
 /// is, and means one routine in the cast rather than two that differ by a
 /// radius of zero.
@@ -260,15 +272,21 @@ void World::defaults(OrblitPhysicsSettings *out) {
   out->sleeping = true;
 }
 
-World::World(const OrblitPhysicsSettings &settings) : settings_(settings) {
+World::World(const OrblitPhysicsSettings &settings)
+    : settings_(settings), solving_(solvingFor(settings)) {
   gravity_ = vectorOf(settings_.gravity);
+}
+
+SolverSettings World::solvingFor(const OrblitPhysicsSettings &settings) {
+  SolverSettings solving;
   // One velocity pass cannot produce friction, so asking for one is asking for
   // ice. Take the two it needs rather than silently giving no grip.
-  solving_.velocitySteps = std::max(settings_.velocitySteps, 2u);
-  solving_.positionSteps = settings_.positionSteps;
-  solving_.slop = std::fmax(settings_.slop, 0.0f);
-  solving_.stiffness = clamped(settings_.stiffness, 0.0f, 1.0f);
-  solving_.bounceThreshold = std::fmax(settings_.bounceThreshold, 0.0f);
+  solving.velocitySteps = std::max(settings.velocitySteps, 2u);
+  solving.positionSteps = settings.positionSteps;
+  solving.slop = std::fmax(settings.slop, 0.0f);
+  solving.stiffness = clamped(settings.stiffness, 0.0f, 1.0f);
+  solving.bounceThreshold = std::fmax(settings.bounceThreshold, 0.0f);
+  return solving;
 }
 
 // -------------------------------------------------------------- commands ---
@@ -438,7 +456,7 @@ bool World::ground(const OrblitPhysicsGround &from) {
   if (from.columns < least || from.rows < least) return false;
   if (!(from.spacing > 0.0f) || !std::isfinite(from.spacing)) return false;
 
-  auto field = std::make_unique<HeightField>();
+  auto field = std::make_shared<HeightField>();
   field->lay(from.columns, from.rows, from.spacing, from.heights, from.margin);
 
   // Replaced rather than changed in place: a body's shape is fixed once it is
@@ -798,6 +816,7 @@ void World::findContacts() {
     }
     for (const uint32_t plane : planes_) consider(a, plane);
   }
+  pairs_ = static_cast<uint32_t>(candidates_.size());
 
   Manifold manifold;
   for (const auto &candidate : candidates_) {
@@ -822,6 +841,7 @@ void World::findContacts() {
     manifold.b = b;
 
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
+    manifold.reversed = bodies_.id(a) != key.a;
     manifold.rule = ruleFor(key, bodies_.id(a));
 
     const auto before = wasTouching_.find(key);
@@ -1013,6 +1033,7 @@ void World::reportTouches() {
     }
   }
 
+  const size_t ended = events_.size();
   for (const auto &was : wasTouching_) {
     if (touching_.find(was.first) != touching_.end()) continue;
     OrblitPhysicsEvent event{};
@@ -1021,6 +1042,7 @@ void World::reportTouches() {
     event.b = was.first.b;
     events_.push_back(event);
   }
+  sortByPair(events_, ended);
 }
 
 OrblitPhysicsEvent World::pairEvent(uint32_t kind, const PairKey &key,
@@ -1067,6 +1089,7 @@ void World::reportSensing() {
   // Found by what is missing rather than by anything the body did, so a body
   // that was destroyed, or a trigger that was, leaves in the same way as one
   // that walked out.
+  const size_t exited = events_.size();
   for (const PairKey &was : wasSensing_) {
     if (sensing_.find(was) != sensing_.end()) continue;
     OrblitPhysicsEvent event{};
@@ -1075,6 +1098,7 @@ void World::reportSensing() {
     event.b = was.b;
     events_.push_back(event);
   }
+  sortByPair(events_, exited);
 }
 
 void World::senseFrom(uint32_t trigger) {

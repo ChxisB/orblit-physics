@@ -999,6 +999,121 @@ bool orblit_physics_unjoin(OrblitPhysics *physics, OrblitPhysicsId joint);
 bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
                           OrblitPhysicsJointState *out);
 
+// -------------------------------------------------------------- snapshots ---
+//
+// A snapshot is the world at one instant, to go back to. It is for a rollback
+// that resimulates from a known step, an undo that puts a scene back the way it
+// was, a replay that runs from its first frame, and a test that wants to ask
+// what a step would have done twice.
+//
+// It lives in memory and is not a file format. It holds everything a step reads
+// from the step before, so a restored world stepped with the same commands and
+// the same deltas gives, on the same build, the same bits the original did. That
+// is the whole promise. Nothing is promised between builds, compilers or
+// machines: floating point differs across them, and a replay that crossed one
+// would drift, which is why cross-platform determinism stays a decision the
+// engine has not taken.
+
+typedef struct OrblitPhysicsSnapshot OrblitPhysicsSnapshot;
+
+/// Copies everything the world remembers, or returns null if there is no world
+/// or no room. The caller owns it and lets go of it with
+/// `orblit_physics_snapshot_destroy`.
+///
+/// Ground is shared with the world rather than copied, because a height field
+/// never changes once it is laid, so a snapshot of a large terrain costs its
+/// bodies and not its heights.
+OrblitPhysicsSnapshot *orblit_physics_snapshot(const OrblitPhysics *physics);
+
+/// Makes `physics` the world `snapshot` was taken from: its bodies, joints,
+/// ground, zones, rules, characters, settings and gravity, and the contacts and
+/// events the last step left. Anything done since is gone. Returns whether it
+/// took, which is false only for a null pointer.
+///
+/// The snapshot is left as it was and may be restored again. It may be restored
+/// into a different world than the one it came from, which then becomes that
+/// one. Commands given but not yet stepped are a part of what is undone, and so
+/// are any that were applied after the snapshot.
+bool orblit_physics_restore(OrblitPhysics *physics,
+                            const OrblitPhysicsSnapshot *snapshot);
+
+void orblit_physics_snapshot_destroy(OrblitPhysicsSnapshot *snapshot);
+
+// ---------------------------------------------------------------- seeing ---
+//
+// What the world can say about itself, for a debug overlay and a profiler. None
+// of it changes anything, and none of it is needed to run a game.
+
+/// One point where two bodies touched in the last step.
+typedef struct {
+  /// The pair, smaller id first, as a touch event names it.
+  OrblitPhysicsId a;
+  OrblitPhysicsId b;
+
+  /// Midway between the two surfaces, where the bodies were when the step began,
+  /// and the way out of `b` towards `a`.
+  float at[3];
+  float normal[3];
+
+  /// How far they overlapped along the normal when the step began, in metres.
+  float depth;
+
+  /// How hard the solver pushed along the normal at this point over that step,
+  /// in newton-seconds.
+  float impulse;
+} OrblitPhysicsContact;
+
+/// Writes the contact points of the last step into `out`, up to `capacity`, and
+/// returns how many there were in all, which can be more than were written.
+///
+/// A pair has up to four points, and they come in the order of the pairs' ids,
+/// so the same world lists them the same way every time. With a `capacity` of
+/// zero `out` may be null and the call only counts, which is how to size the
+/// buffer.
+///
+/// Only pairs the solver looked at are here: a pair that has gone to sleep is
+/// not, since nothing examined it. A body removed since the step takes its pairs
+/// with it.
+uint32_t orblit_physics_contacts(const OrblitPhysics *physics,
+                                 OrblitPhysicsContact *out, uint32_t capacity);
+
+/// How much a world holds, and how much its last step looked at.
+typedef struct {
+  /// Every body, ground and triggers included. The next three add up to it.
+  uint32_t bodies;
+  uint32_t staticBodies;
+  uint32_t kinematicBodies;
+  uint32_t dynamicBodies;
+
+  /// Counted within `bodies`, and each other's neighbours rather than parts of
+  /// one another: a body may be asleep, a trigger and a character in any mix
+  /// its kind allows.
+  uint32_t asleep;
+  uint32_t triggers;
+  uint32_t characters;
+
+  uint32_t joints;
+  uint32_t zones;
+  uint32_t rules;
+
+  /// The pairs of bodies the last step's narrowphase looked at, and how many of
+  /// those touched, and the contact points they made.
+  uint32_t pairs;
+  uint32_t touching;
+  uint32_t points;
+
+  /// How long the last `orblit_physics_step` call took on this handle, in
+  /// microseconds, measured around the call. Zero before the first. Not part of
+  /// a snapshot, since it is about the machine and not the world.
+  float stepMicroseconds;
+} OrblitPhysicsStats;
+
+/// Fills `out`. A null world or a null `out` does nothing.
+///
+/// There is no count of islands: the solver has none yet, and a number that
+/// meant something else would be worse than no number.
+void orblit_physics_stats(const OrblitPhysics *physics, OrblitPhysicsStats *out);
+
 #ifdef __cplusplus
 }
 #endif

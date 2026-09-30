@@ -65,6 +65,12 @@ struct Manifold {
   /// scales in the order of `a` and `b`. The world fills it in between the
   /// narrowphase and the solver, which read it and change nothing.
   Rule rule;
+
+  /// Whether `a` holds the larger id of the pair, so the normal runs against
+  /// the order the pair is keyed in. The world sets it where it keys the pair.
+  /// It is kept because removing a body moves another into its row, and a
+  /// list of contacts taken then still has to know which way each one faces.
+  bool reversed = false;
 };
 
 /// The point of a touching manifold that overlaps most. `count` must not be

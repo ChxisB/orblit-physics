@@ -1,3 +1,34 @@
+## 0.8.0
+
+- Snapshots: `snapshot()` copies the world and `restore(snapshot)` goes back
+  to it. A restored world given the same commands and the same deltas reaches
+  the same bits, on the same build. Nothing is promised across builds,
+  compilers or machines, so the decision against cross-platform determinism
+  stands. A snapshot holds what a step reads from the step before: bodies,
+  joints, ground, zones, rules, characters, settings, gravity, the contacts
+  of the last step and its events. Commands queued and not yet stepped are in
+  the copy, and a restore drops those queued since.
+- A snapshot is native memory and is let go of with `dispose`. It owns its
+  copy, so it outlives the world it came from and restores into another
+  world. It can be restored any number of times. A height field is shared and
+  never copied, because one never changes once it is laid.
+- `contacts` lists the contact points of the last step as `PhysicsContact`:
+  the pair, smaller id first, the point, the normal out of the second body
+  towards the first, the overlap and the impulse. They come in the order of
+  the pairs' ids. A pair asleep is not listed, because nothing looked at it.
+- `stats` counts what the world holds and what its last step looked at:
+  bodies by kind, asleep, triggers, characters, joints, zones, rules, pairs,
+  touching pairs and contact points. It also gives `stepMicroseconds`, the
+  time the last step took in the engine. There is no count of islands, since
+  the solver has none yet.
+- `touchEnded` and `exited` events for one step come in the order of their
+  pairs. They used to follow the order of a hash table, which two equal
+  worlds do not share.
+- The ABI gains `OrblitPhysicsSnapshot` with `orblit_physics_snapshot`,
+  `orblit_physics_restore` and `orblit_physics_snapshot_destroy`, and
+  `OrblitPhysicsContact` and `OrblitPhysicsStats` with
+  `orblit_physics_contacts` and `orblit_physics_stats`.
+
 ## 0.7.0
 
 - Body controls: `setControls` takes a `PhysicsControls` for one body.

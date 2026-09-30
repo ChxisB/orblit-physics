@@ -547,6 +547,110 @@ final class PhysicsSettings {
   final bool? sleeping;
 }
 
+/// A world at one instant, to go back to with [Physics.restore].
+///
+/// It is native memory, so it is let go of with [dispose]. It is a copy that
+/// owns itself: disposing the world it came from leaves it whole, and it may be
+/// restored into another world, or into the same one any number of times.
+final class PhysicsSnapshot {
+  PhysicsSnapshot._(this._pointer);
+
+  Pointer<native.OrblitPhysicsSnapshotStruct> _pointer;
+
+  bool get disposed => _pointer == nullptr;
+
+  void dispose() {
+    if (_pointer == nullptr) return;
+    native.physicsSnapshotDestroy(_pointer);
+    _pointer = nullptr;
+  }
+
+  Pointer<native.OrblitPhysicsSnapshotStruct> get _alive {
+    if (_pointer == nullptr) {
+      throw StateError('This PhysicsSnapshot has been disposed.');
+    }
+    return _pointer;
+  }
+}
+
+/// One point where two bodies touched in the last step.
+final class PhysicsContact {
+  const PhysicsContact({
+    required this.a,
+    required this.b,
+    required this.at,
+    required this.normal,
+    required this.depth,
+    required this.impulse,
+  });
+
+  /// The pair, smaller id first, as a touch event names it.
+  final int a;
+  final int b;
+
+  /// Midway between the two surfaces where the bodies were when the step
+  /// began, and the way out of `b` towards `a`.
+  final List<double> at;
+  final List<double> normal;
+
+  /// How far they overlapped along the normal when the step began, in metres.
+  final double depth;
+
+  /// How hard the solver pushed along the normal at this point over that
+  /// step, in newton-seconds.
+  final double impulse;
+}
+
+/// How much a world holds, and how much its last step looked at.
+final class PhysicsStats {
+  const PhysicsStats({
+    required this.bodies,
+    required this.staticBodies,
+    required this.kinematicBodies,
+    required this.dynamicBodies,
+    required this.asleep,
+    required this.triggers,
+    required this.characters,
+    required this.joints,
+    required this.zones,
+    required this.rules,
+    required this.pairs,
+    required this.touching,
+    required this.points,
+    required this.stepMicroseconds,
+  });
+
+  /// Every body, triggers and ground included. The next three add up to it.
+  final int bodies;
+  final int staticBodies;
+
+  /// Driven bodies and characters, which the solver does not push.
+  final int kinematicBodies;
+  final int dynamicBodies;
+
+  /// Counted within [bodies], and each other's neighbours rather than parts
+  /// of one another: a body may be asleep, a trigger and a character in any
+  /// mix its kind allows.
+  final int asleep;
+  final int triggers;
+  final int characters;
+
+  final int joints;
+  final int zones;
+  final int rules;
+
+  /// The pairs of bodies the last step's narrowphase looked at, how many of
+  /// those touched, and the contact points they made.
+  final int pairs;
+  final int touching;
+  final int points;
+
+  /// How long the last [Physics.step] took in the engine, in microseconds.
+  /// Zero before the first. It is about the machine, so a snapshot does not
+  /// carry it.
+  final double stepMicroseconds;
+}
+
 /// A rigid body world.
 ///
 /// Bodies are named by whatever the caller calls them — an Orblit entity
@@ -1199,6 +1303,103 @@ class Physics {
         force: it.force,
       );
     });
+  }
+
+  // --- seeing what happened ------------------------------------------------
+
+  /// Copies the world as it stands, for [restore] to go back to.
+  ///
+  /// Anything submitted and not yet stepped is in the copy. A world restored
+  /// from it and given the same commands and the same deltas reaches, on the
+  /// same build, the same bits the original did. That is the whole promise: a
+  /// replay across builds, compilers or machines would drift, which is why the
+  /// engine does not claim cross-platform determinism.
+  ///
+  /// The copy is native memory the caller lets go of with
+  /// [PhysicsSnapshot.dispose]. A height field is shared with the world and not
+  /// copied, so a snapshot of a large terrain costs its bodies.
+  PhysicsSnapshot snapshot() {
+    _flush();
+    final taken = native.physicsSnapshot(_alive);
+    if (taken == nullptr) {
+      throw StateError('Could not copy the Orblit physics world.');
+    }
+    return PhysicsSnapshot._(taken);
+  }
+
+  /// Makes this world the one `snapshot` was taken from: its bodies, joints,
+  /// ground, zones, rules, characters and settings, and the contacts and
+  /// events the last step left. Anything done since is gone, commands not yet
+  /// stepped included.
+  ///
+  /// The snapshot is left as it was, so it may be restored again, and it may
+  /// be restored into a different world, which then becomes that one.
+  void restore(PhysicsSnapshot snapshot) {
+    final from = snapshot._alive;
+    final into = _alive;
+    // What was queued belongs to the timeline being left.
+    _pending = 0;
+    native.physicsRestore(into, from);
+  }
+
+  /// The contact points of the last step, pairs in the order of their ids.
+  ///
+  /// Only pairs the solver looked at are here, so a pair that has gone to
+  /// sleep is not. A body removed since the step takes its pairs with it.
+  List<PhysicsContact> get contacts {
+    _flush();
+    final total = native.physicsContacts(_alive, nullptr, 0);
+    if (total == 0) return const [];
+
+    final found = calloc<native.OrblitPhysicsContact>(total);
+    try {
+      // Nothing runs between the two calls, so this lists what the first
+      // counted.
+      native.physicsContacts(_alive, found, total);
+      return List<PhysicsContact>.generate(total, (index) {
+        final it = found[index];
+        return PhysicsContact(
+          a: it.a,
+          b: it.b,
+          at: [it.at[0], it.at[1], it.at[2]],
+          normal: [it.normal[0], it.normal[1], it.normal[2]],
+          depth: it.depth,
+          impulse: it.impulse,
+        );
+      });
+    } finally {
+      calloc.free(found);
+    }
+  }
+
+  /// How much the world holds, and how much its last step looked at.
+  ///
+  /// There is no count of islands, because the solver has none yet.
+  PhysicsStats get stats {
+    _flush();
+    final found = calloc<native.OrblitPhysicsStats>();
+    try {
+      native.physicsStats(_alive, found);
+      final it = found.ref;
+      return PhysicsStats(
+        bodies: it.bodies,
+        staticBodies: it.staticBodies,
+        kinematicBodies: it.kinematicBodies,
+        dynamicBodies: it.dynamicBodies,
+        asleep: it.asleep,
+        triggers: it.triggers,
+        characters: it.characters,
+        joints: it.joints,
+        zones: it.zones,
+        rules: it.rules,
+        pairs: it.pairs,
+        touching: it.touching,
+        points: it.points,
+        stepMicroseconds: it.stepMicroseconds,
+      );
+    } finally {
+      calloc.free(found);
+    }
   }
 
   // --- casting -------------------------------------------------------------

@@ -7,6 +7,53 @@ import 'package:vector_math/vector_math_64.dart';
 
 import 'pose.dart';
 
+/// A [ScenePhysics] at one instant, to go back to with [ScenePhysics.restore].
+///
+/// It holds the world's own [PhysicsSnapshot], so like that one it is native
+/// memory and is let go of with [dispose]. Beside the world it keeps what this
+/// class knows and the world does not: the document, which entity is which
+/// body and joint, the numbers still to hand out, and what has broken or been
+/// told to pass through.
+final class ScenePhysicsSnapshot {
+  ScenePhysicsSnapshot._(ScenePhysics from)
+    : _world = from.physics.snapshot(),
+      _document = from._document,
+      _bodyOf = Map.of(from._bodyOf),
+      _entityOf = Map.of(from._entityOf),
+      _known = {
+        for (final MapEntry(:key, :value) in from._known.entries)
+          key: Float32List.fromList(value),
+      },
+      _next = from._next,
+      _jointOf = Map.of(from._jointOf),
+      _entityOfJoint = Map.of(from._entityOfJoint),
+      _held = Map.of(from._held),
+      _broken = Set.of(from._broken),
+      _nextJoint = from._nextJoint,
+      _ignored = Set.of(from._ignored),
+      _owed = from._owed,
+      _events = List.of(from._events);
+
+  final PhysicsSnapshot _world;
+  final SceneDocument _document;
+  final Map<String, int> _bodyOf;
+  final Map<int, String> _entityOf;
+  final Map<int, Float32List> _known;
+  final int _next;
+  final Map<String, int> _jointOf;
+  final Map<int, String> _entityOfJoint;
+  final Map<String, ({int a, int b})> _held;
+  final Set<String> _broken;
+  final int _nextJoint;
+  final Set<({String a, String b})> _ignored;
+  final double _owed;
+  final List<PhysicsEvent> _events;
+
+  bool get disposed => _world.disposed;
+
+  void dispose() => _world.dispose();
+}
+
 /// The bodies in a scene document, simulated.
 ///
 /// Built from a document, it adds a body to a [Physics] world for every entity
@@ -50,6 +97,11 @@ import 'pose.dart';
 /// the world with the body. [ignore] makes two entities pass through each
 /// other. It is a fact about the pair, so it is kept here and made again when
 /// an edit rebuilds either body.
+///
+/// [snapshot] copies the simulation and [restore] goes back to it, for an undo
+/// or a rollback that resimulates from a known frame. What the world holds of
+/// the last step, contacts and counts, is [Physics.contacts] and
+/// [Physics.stats] on [physics], and [entityOf] says which entity a body is.
 ///
 /// [physics] is the world itself, for everything a document cannot say:
 /// pushing, driving and casting. What touched what is [events], gathered over
@@ -239,6 +291,74 @@ class ScenePhysics {
       ],
     };
     _rebuild(affected);
+  }
+
+  /// Copies the simulation as it stands: the world, and the document with the
+  /// bodies where the last [advance] left them.
+  ///
+  /// Given the same edits and the same [advance] calls, a simulation restored
+  /// from it reaches the same document, on the same build. The copy is native
+  /// memory, so it is let go of with [ScenePhysicsSnapshot.dispose].
+  ScenePhysicsSnapshot snapshot() => ScenePhysicsSnapshot._(this);
+
+  /// Goes back to [snapshot]: the world, the document, which entity is which
+  /// body and joint, what has broken and what is ignored, the time owed to the
+  /// next step and the events of the last [advance]. Everything done since is
+  /// gone, edits included.
+  ///
+  /// Answers with the diff that takes [document] as it stood to the one
+  /// restored, so whatever draws the document can follow. The restored
+  /// document is already in [document].
+  ///
+  /// The numbers handed out since are taken back with the rest, so an entity
+  /// added after the snapshot is given the same number again. That is what
+  /// makes a replay the same replay. A number kept from the run that was left
+  /// names nothing, or something else, in the run that follows.
+  ///
+  /// A snapshot keeps to the [step] it was taken at. One restored into a
+  /// simulation that steps by another does not replay.
+  SceneDiff restore(ScenePhysicsSnapshot snapshot) {
+    final before = _document;
+    // First, because a snapshot that has been disposed throws here, and
+    // nothing is left half changed.
+    physics.restore(snapshot._world);
+
+    _document = snapshot._document;
+    _bodyOf
+      ..clear()
+      ..addAll(snapshot._bodyOf);
+    _entityOf
+      ..clear()
+      ..addAll(snapshot._entityOf);
+    // Copied again, because a step writes into these in place and the
+    // snapshot has to stay as it was for the next restore.
+    _known
+      ..clear()
+      ..addEntries([
+        for (final MapEntry(:key, :value) in snapshot._known.entries)
+          MapEntry(key, Float32List.fromList(value)),
+      ]);
+    _next = snapshot._next;
+    _jointOf
+      ..clear()
+      ..addAll(snapshot._jointOf);
+    _entityOfJoint
+      ..clear()
+      ..addAll(snapshot._entityOfJoint);
+    _held
+      ..clear()
+      ..addAll(snapshot._held);
+    _broken
+      ..clear()
+      ..addAll(snapshot._broken);
+    _nextJoint = snapshot._nextJoint;
+    _ignored
+      ..clear()
+      ..addAll(snapshot._ignored);
+    _owed = snapshot._owed;
+    _events = List.of(snapshot._events);
+
+    return SceneDiff.between(before, _document);
   }
 
   void dispose() => physics.dispose();

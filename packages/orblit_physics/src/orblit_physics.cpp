@@ -8,6 +8,7 @@
 
 #include "orblit_physics.h"
 
+#include <chrono>
 #include <new>
 
 #include "world.h"
@@ -16,6 +17,14 @@ struct OrblitPhysics {
   explicit OrblitPhysics(const OrblitPhysicsSettings &settings)
       : world(settings) {}
   orblit::World world;
+
+  // How long the last step took. The clock is IO, so it is read here at the
+  // boundary and the world never sees it. It is not part of a snapshot.
+  float stepMicroseconds = 0;
+};
+
+struct OrblitPhysicsSnapshot {
+  orblit::Snapshot state;
 };
 
 void orblit_physics_defaults(OrblitPhysicsSettings *out) {
@@ -48,7 +57,11 @@ bool orblit_physics_ground(OrblitPhysics *physics,
 
 void orblit_physics_step(OrblitPhysics *physics, float delta) {
   if (physics == nullptr) return;
+  const auto began = std::chrono::steady_clock::now();
   physics->world.step(delta);
+  const std::chrono::duration<float, std::micro> took =
+      std::chrono::steady_clock::now() - began;
+  physics->stepMicroseconds = took.count();
 }
 
 uint32_t orblit_physics_read(OrblitPhysics *physics, const OrblitPhysicsId *ids,
@@ -189,4 +202,41 @@ bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
                           OrblitPhysicsJointState *out) {
   if (physics == nullptr || out == nullptr) return false;
   return physics->world.joint(joint, *out);
+}
+
+OrblitPhysicsSnapshot *orblit_physics_snapshot(const OrblitPhysics *physics) {
+  if (physics == nullptr) return nullptr;
+  // A copy of a large world is the one allocation here that can fail. Like
+  // create, it is a null the caller can check.
+  try {
+    return new OrblitPhysicsSnapshot{physics->world.snapshot()};
+  } catch (const std::bad_alloc &) {
+    return nullptr;
+  }
+}
+
+bool orblit_physics_restore(OrblitPhysics *physics,
+                            const OrblitPhysicsSnapshot *snapshot) {
+  if (physics == nullptr || snapshot == nullptr) return false;
+  physics->world.restore(snapshot->state);
+  return true;
+}
+
+void orblit_physics_snapshot_destroy(OrblitPhysicsSnapshot *snapshot) {
+  delete snapshot;
+}
+
+uint32_t orblit_physics_contacts(const OrblitPhysics *physics,
+                                 OrblitPhysicsContact *out, uint32_t capacity) {
+  if (physics == nullptr) return 0;
+  return physics->world.contacts(out, out == nullptr ? 0 : capacity);
+}
+
+void orblit_physics_stats(const OrblitPhysics *physics,
+                          OrblitPhysicsStats *out) {
+  if (out == nullptr) return;
+  *out = OrblitPhysicsStats{};
+  if (physics == nullptr) return;
+  physics->world.stats(*out);
+  out->stepMicroseconds = physics->stepMicroseconds;
 }

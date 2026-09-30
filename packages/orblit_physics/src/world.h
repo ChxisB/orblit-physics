@@ -51,6 +51,38 @@
 
 namespace orblit {
 
+/// Everything a world carries from one step to the next, and nothing it
+/// rebuilds inside one.
+///
+/// A copy of the bodies, joints, characters, zones, rules and ground, and of
+/// what the last step left for the next to read: which pairs touched, with the
+/// impulses that warm start them, which bodies were in which triggers, and the
+/// events. Restoring it gives back a world that steps exactly as the one it
+/// was taken from would have, because a step reads nothing else.
+///
+/// Ground is shared rather than copied. A height field never changes once it is
+/// laid, so a snapshot and the world it came from hold the same one, and laying
+/// it again makes a new one and lets go of the old.
+///
+/// The fields here are the members of `World` that are not scratch. A member
+/// added to the world that a step reads from the step before belongs here too,
+/// and the check that restores step 50 into a scene with every feature in it is
+/// the thing that notices when it is not.
+struct Snapshot {
+  OrblitPhysicsSettings settings;
+  Vec3 gravity;
+  Bodies bodies;
+  Joints joints;
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const HeightField>> fields;
+  std::unordered_map<PairKey, Manifold, PairKeyHash> touching;
+  std::unordered_set<PairKey, PairKeyHash> sensing;
+  std::unordered_map<OrblitPhysicsId, Zone> zones;
+  std::unordered_map<PairKey, Rule, PairKeyHash> rules;
+  std::vector<Character> characters;
+  std::vector<OrblitPhysicsEvent> events;
+  uint32_t pairs = 0;
+};
+
 class World {
  public:
   explicit World(const OrblitPhysicsSettings &settings);
@@ -100,6 +132,21 @@ class World {
   /// Sets the world's gravity, waking every body the solver moves. False, and
   /// nothing changed, if any axis is not finite.
   bool gravity(const float to[3]);
+
+  /// What the world is now, to be given back by `restore`.
+  Snapshot snapshot() const;
+
+  /// Makes this world the one `from` was taken from, settings and all, so it
+  /// can be given a snapshot of another world and become that one. Anything
+  /// that happened since is gone.
+  void restore(const Snapshot &from);
+
+  /// The contact points of the last step, in the order of the pairs' ids, up to
+  /// `capacity`, and how many there were in all. With no room it counts.
+  uint32_t contacts(OrblitPhysicsContact *out, uint32_t capacity) const;
+
+  /// How much the world holds and how much the last step looked at.
+  void stats(OrblitPhysicsStats &out) const;
 
   const Bodies &bodies() const { return bodies_; }
   const std::vector<OrblitPhysicsEvent> &events() const { return events_; }
@@ -210,6 +257,11 @@ class World {
   Character *characterOf(OrblitPhysicsId id);
   const Character *characterOf(OrblitPhysicsId id) const;
 
+  /// What the solver runs with, which is the settings with the values it
+  /// cannot work with brought into range. Worked out again wherever the
+  /// settings are set, so the two cannot disagree.
+  static SolverSettings solvingFor(const OrblitPhysicsSettings &settings);
+
   OrblitPhysicsSettings settings_;
   SolverSettings solving_;
   Vec3 gravity_;
@@ -219,8 +271,10 @@ class World {
   Joints joints_;
 
   /// The heights of every ground body, by its id. A body's shape points into
-  /// one of these, so one is only ever let go of after its body is.
-  std::unordered_map<OrblitPhysicsId, std::unique_ptr<HeightField>> fields_;
+  /// one of these, so one is only ever let go of after its body is. Shared with
+  /// any snapshot that was taken while it was the ground.
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const HeightField>>
+      fields_;
 
   std::vector<Manifold> manifolds_;
   std::vector<PairKey> keys_;
@@ -262,6 +316,10 @@ class World {
   std::vector<uint32_t> sorted_;
   std::vector<uint32_t> planes_;
   std::vector<std::pair<uint32_t, uint32_t>> candidates_;
+
+  /// How many of those the narrowphase looked at in the last step. Kept past
+  /// the step, unlike the list, so a snapshot can carry it.
+  uint32_t pairs_ = 0;
 
   /// Scratch for joints, likewise: which group each row is in, whether each
   /// group may sleep, the bodies left to wake, and the joints that broke.

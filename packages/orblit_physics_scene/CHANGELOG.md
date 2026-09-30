@@ -1,3 +1,23 @@
+## 0.5.0
+
+- Snapshots: `snapshot()` copies the simulation and `restore(snapshot)` goes
+  back to it, for an undo or a rollback that resimulates from a known frame.
+  It holds the world's snapshot and what the scene keeps beside it: the
+  document, which body each entity is, the joints, the broken ones, the
+  pairs told to pass through each other, the time still owed and the events
+  of the last `advance`.
+- `restore` answers with the diff that takes the document from what it was
+  to the snapshot's, so whatever draws the scene can follow. The diff is
+  already in `document`.
+- The next body and joint numbers go back with the snapshot. An entity added
+  after it gets the same number again, which a replay needs: the world
+  orders its events and contacts by number.
+- A snapshot is native memory and is let go of with `dispose`. Restoring a
+  snapshot that has been disposed throws `StateError` and changes nothing.
+  One restored into a scene with a different `step` does not replay.
+- Needs `orblit_scene` 0.11.0 and `orblit_physics` 0.8.0. What the world
+  saw in its last step is `physics.contacts` and `physics.stats`.
+
 ## 0.4.0
 
 - Body controls: a body's `locks`, `gravityScale`, `maxSpeed`, `maxSpin`,

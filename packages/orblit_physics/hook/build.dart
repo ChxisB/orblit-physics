@@ -20,6 +20,7 @@ void main(List<String> args) async {
         root.resolve('src/joint.cpp').toFilePath(),
         root.resolve('src/character.cpp').toFilePath(),
         root.resolve('src/heightfield.cpp').toFilePath(),
+        root.resolve('src/inspect.cpp').toFilePath(),
       ],
       includes: [
         root.resolve('include/').toFilePath(),
