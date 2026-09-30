@@ -4,8 +4,9 @@
 // from it. One step is:
 //
 //   find contacts -> feel zones -> integrate velocity -> solve velocity
-//                 -> integrate position -> solve position -> break joints
-//                 -> move characters -> report touches and triggers -> sleep
+//                 -> cap speeds -> integrate position -> solve position
+//                 -> break joints -> move characters
+//                 -> report touches and triggers -> sleep
 //
 // Contacts are found on the positions the last step left, so a caller reading
 // transforms and a caller reading events are looking at the same instant.
@@ -92,6 +93,14 @@ class World {
   /// nothing changed, if it cannot be set or there was none to remove.
   bool rule(const OrblitPhysicsRule &from);
 
+  /// Sets how a body moves, waking it and what rests on it. False, and nothing
+  /// changed, if the body is not there, is ground, or the numbers mean nothing.
+  bool controls(const OrblitPhysicsControls &from);
+
+  /// Sets the world's gravity, waking every body the solver moves. False, and
+  /// nothing changed, if any axis is not finite.
+  bool gravity(const float to[3]);
+
   const Bodies &bodies() const { return bodies_; }
   const std::vector<OrblitPhysicsEvent> &events() const { return events_; }
 
@@ -134,9 +143,20 @@ class World {
   /// other body are, which is how a manifold names them.
   Rule ruleFor(const PairKey &key, OrblitPhysicsId first) const;
 
+  /// Whether a rule says the two bodies pass through each other.
+  bool ignores(OrblitPhysicsId a, OrblitPhysicsId b) const;
+
+  /// Makes a body fixed, driven or free, if it can be. A body already what it
+  /// is asked to be, a trigger, a character and ground are left alone.
+  void switchMotion(uint32_t row, uint32_t to);
+
   /// Settles, for every body the solver moves, what each zone it is in says.
   void feelZones();
   void integrateVelocities(float delta);
+
+  /// Holds each body the solver moves to its caps, after the contacts have had
+  /// their say, so a cap limits where the body goes and not what it hits.
+  void capSpeeds();
   void integratePositions(float delta);
   void moveCharacters(float delta);
   void moveCharacter(Character &character, uint32_t row, const Vec3 &up,

@@ -178,13 +178,21 @@ final class PhysicsRule {
     this.restitution,
     this.moveScaleA = 1.0,
     this.moveScaleB = 1.0,
+    this.ignore = false,
   }) : assert(
          friction != null ||
              restitution != null ||
              moveScaleA != 1.0 ||
-             moveScaleB != 1.0,
+             moveScaleB != 1.0 ||
+             ignore,
          'A rule that changes nothing is not a rule.',
        );
+
+  /// The two bodies pass through each other. There is no contact and no touch
+  /// event, and a trigger does not see the other one. The other fields are
+  /// not read. A character does not read rules, so it still stops at a body
+  /// it is told to ignore.
+  final bool ignore;
 
   /// Replace the pair's friction and restitution outright.
   final double? friction;
@@ -196,6 +204,64 @@ final class PhysicsRule {
   /// carries a crate without the crate slowing it.
   final double moveScaleA;
   final double moveScaleB;
+}
+
+/// One of the six ways a free body can move, held still in the world's axes.
+enum PhysicsLock {
+  moveX,
+  moveY,
+  moveZ,
+  turnX,
+  turnY,
+  turnZ;
+
+  /// The ABI's bit for it.
+  int get bit => 1 << index;
+}
+
+/// How a body moves, apart from what shape it is. The default leaves a body as
+/// it was made.
+///
+/// All of it is set together by [Physics.setControls]. A fixed or driven body
+/// keeps its controls for when it is made free.
+final class PhysicsControls {
+  const PhysicsControls({
+    this.locks = const {},
+    this.gravityScale = 1.0,
+    this.maxSpeed = 0.0,
+    this.maxSpin = 0.0,
+    this.centre = const [0.0, 0.0, 0.0],
+    this.inertia,
+  });
+
+  /// The ways it may not move. A locked move drops that part of a velocity, of
+  /// a push and of every contact. A locked turn does the same to spin. The
+  /// solver holds them, so a body locked to a plane still rests on a floor
+  /// that is tilted across it.
+  final Set<PhysicsLock> locks;
+
+  /// How much of the world's gravity, and of a zone's, it feels. One is
+  /// ordinary, zero floats and a negative number rises.
+  final double gravityScale;
+
+  /// The fastest it may go in metres per second, and spin in radians per
+  /// second. Zero is no cap. A cap is applied once a step, after the contacts,
+  /// so a body can pass it inside one step but never leaves one above it.
+  final double maxSpeed;
+  final double maxSpin;
+
+  /// Where its weight is, in the body's own frame. It turns about this point
+  /// and a push through it does not spin it. Zero is the middle of the shape.
+  final List<double> centre;
+
+  /// The inertia about each of its own axes through the centre of mass, in
+  /// kilogram square metres. Null uses the shape's, moved to the centre of
+  /// mass. So does a set with a zero in it, since all three are used or none.
+  /// A negative one is refused.
+  final List<double>? inertia;
+
+  /// The locks as the ABI holds them.
+  int get bits => locks.fold(0, (bits, lock) => bits | lock.bit);
 }
 
 /// What a cast ran into.
@@ -743,15 +809,74 @@ class Physics {
   }
 
   /// Hits a body with `impulse` newton-seconds at world point `at`, which
-  /// defaults to its own centre. Away from the centre it spins as well as
+  /// defaults to its centre of mass. Away from the centre it spins as well as
   /// moves, which is the whole reason the point is a parameter.
   void push(int id, {required List<double> impulse, List<double>? at}) {
-    // Found before the command is started: looking a body up flushes, and a
-    // flush half way through filling one in would send it unfinished.
-    final point = at ?? _centreOf(id);
     final command = _next(5, id);
     _write3(command.vector, impulse);
-    _write3(command.spin, point);
+    // A point that is not a number is how the engine is told to use the
+    // centre of mass, which only it knows the place of.
+    _write3(command.spin, at ?? const [double.nan, double.nan, double.nan]);
+  }
+
+  /// Makes a body fixed, driven or free. This is how a crate is lifted by a
+  /// cutscene and dropped again, and how a door is locked by making it fixed.
+  ///
+  /// A body made fixed or driven keeps where it is and stops feeling forces.
+  /// Fixed stops it, and driven keeps the velocity it had. A body made free
+  /// has the mass it was created with and the controls it was given, then
+  /// falls and is pushed. What rested on it or is resting on it is woken.
+  ///
+  /// Ignored for a trigger, a character, ground, a body that is not there and
+  /// a body that is already what it is asked to be.
+  void setMotion(int id, PhysicsMotion motion) {
+    final command = _next(9, id);
+    command.motion = motion.code;
+  }
+
+  /// Sets how a body moves, all of [PhysicsControls] at once, and wakes it and
+  /// what rests on it. False, and nothing changed, for a body that is not
+  /// there, ground, a number that is not finite, or a negative cap or inertia.
+  ///
+  /// To change one field, send the others again. [quiet] wakes nothing, for a
+  /// body just added: one added asleep stays asleep with the controls it was
+  /// added with.
+  bool setControls(int id, PhysicsControls controls, {bool quiet = false}) {
+    _requireAlive();
+    _flush();
+    final made = calloc<native.OrblitPhysicsControls>();
+    try {
+      final it = made.ref;
+      it.body = id;
+      it.quiet = quiet;
+      it.locks = controls.bits;
+      it.gravityScale = controls.gravityScale;
+      it.maxSpeed = controls.maxSpeed;
+      it.maxSpin = controls.maxSpin;
+      _write3(it.centre, controls.centre);
+      _write3(it.inertia, controls.inertia ?? const [0.0, 0.0, 0.0]);
+      return native.physicsControls(_alive, made);
+    } finally {
+      calloc.free(made);
+    }
+  }
+
+  /// Sets the world's gravity in metres per second squared, and wakes every
+  /// body that is not fixed or driven. False, and nothing changed, for a number
+  /// that is not finite. Zones and each body's `gravityScale` still apply on
+  /// top of it.
+  bool setGravity(List<double> gravity) {
+    _requireAlive();
+    _flush();
+    final made = calloc<Float>(3);
+    try {
+      for (var i = 0; i < 3; i++) {
+        made[i] = gravity[i];
+      }
+      return native.physicsGravity(_alive, made);
+    } finally {
+      calloc.free(made);
+    }
   }
 
   /// Wakes a body, whether or not anything touched it.
@@ -836,6 +961,7 @@ class Physics {
     if (rule.friction != null) fields |= 1;
     if (rule.restitution != null) fields |= 2;
     if (rule.moveScaleA != 1.0 || rule.moveScaleB != 1.0) fields |= 4;
+    if (rule.ignore) fields |= 8;
     return _sendRule(a, b, fields, rule);
   }
 
@@ -1332,12 +1458,6 @@ class Physics {
     // inside whatever this triggers cannot be sent twice.
     _pending = 0;
     native.physicsSubmit(_alive, _commands, sending);
-  }
-
-  List<double> _centreOf(int id) {
-    final transform = transformOf(id);
-    if (transform == null) return const [0.0, 0.0, 0.0];
-    return [transform[0], transform[1], transform[2]];
   }
 
   static void _write3(Array<Float> into, List<double> from) {

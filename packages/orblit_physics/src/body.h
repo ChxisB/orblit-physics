@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mass.h"
 #include "maths.h"
 #include "orblit_physics.h"
 #include "shape.h"
@@ -121,6 +122,8 @@ class Bodies {
   const Vec3 &at(uint32_t row) const { return at_[row]; }
   Quat &rotation(uint32_t row) { return rotation_[row]; }
   const Quat &rotation(uint32_t row) const { return rotation_[row]; }
+  /// Of the point it turns about: `centre` for a free body, the origin for the
+  /// rest, which are the same point unless a free body's weight is moved.
   Vec3 &velocity(uint32_t row) { return velocity_[row]; }
   const Vec3 &velocity(uint32_t row) const { return velocity_[row]; }
   Vec3 &spin(uint32_t row) { return spin_[row]; }
@@ -138,6 +141,28 @@ class Bodies {
   /// by nothing.
   float inverseMass(uint32_t row) const { return inverseMass_[row]; }
   const Mat3 &inverseInertia(uint32_t row) const { return inverseInertia_[row]; }
+
+  /// Inverse mass on each world axis, zero where a move is locked.
+  const Vec3 &gain(uint32_t row) const { return gain_[row]; }
+
+  /// The mass it was made with, kept for a body that is not free so that it
+  /// has one to be made free with.
+  float mass(uint32_t row) const { return mass_[row]; }
+
+  const Controls &controls(uint32_t row) const { return controls_[row]; }
+
+  /// Where it turns about, in the world: the origin it is placed by, moved to
+  /// where its weight is. Everything that pushes on a body pushes here, and
+  /// everything that asks where a body is asks `at`.
+  Vec3 centre(uint32_t row) const {
+    return at_[row] + rotate(rotation_[row], offset_[row]);
+  }
+
+  /// How far the fastest-moving point of it can be from the point it turns
+  /// about.
+  float reach(uint32_t row) const {
+    return shape_[row].reach() + length(offset_[row]);
+  }
 
   bool sensor(uint32_t row) const { return sensor_[row] != 0; }
   bool stay(uint32_t row) const { return stay_[row] != 0; }
@@ -177,6 +202,27 @@ class Bodies {
   /// and back: neither has mass, so nothing derived from mass goes stale.
   void steer(uint32_t row, Motion motion) { motion_[row] = motion; }
 
+  /// Makes it fixed, driven or free, keeping where it is. Fixed stops it. A
+  /// body that was free and is not any more keeps the velocity of its origin,
+  /// which is what a driven body's velocity is. Woken either way, since a body
+  /// that has changed what it is has not stayed at rest.
+  void convert(uint32_t row, Motion motion) {
+    motion_[row] = motion;
+    if (motion == Motion::fixed) {
+      velocity_[row] = {};
+      spin_[row] = {};
+    }
+    wake(row);
+    configure(row);
+  }
+
+  /// Replaces its controls. A free body's centre may move, and the velocity of
+  /// the body's every point stays what it was.
+  void control(uint32_t row, const Controls &controls) {
+    controls_[row] = controls;
+    configure(row);
+  }
+
   void place(uint32_t row, const Vec3 &at, const Quat &rotation) {
     at_[row] = at;
     rotation_[row] = normalised(rotation);
@@ -185,11 +231,33 @@ class Bodies {
     refresh(row);
   }
 
+  /// Turns it by `spin` for `delta` seconds about its centre, which stays put.
+  /// The origin goes round with the body, so `at` follows from where the centre
+  /// is and how the body now lies.
+  void turn(uint32_t row, const Vec3 &spin, float delta) {
+    const Vec3 about = centre(row);
+    rotation_[row] = integrate(rotation_[row], spin, delta);
+    at_[row] = about - rotate(rotation_[row], offset_[row]);
+  }
+
+  /// Takes from a free body's velocity and spin what its locks forbid. The
+  /// solver's own impulses never add any, since a locked axis has no gain and
+  /// no inertia, so this is for whatever else sets a velocity.
+  void hold(uint32_t row) {
+    if (motion_[row] != Motion::free) return;
+    const Controls &controls = controls_[row];
+    for (int axis = 0; axis < 3; ++axis) {
+      if (controls.locksMove(axis)) velocity_[row][axis] = 0.0f;
+      if (controls.locksTurn(axis)) spin_[row][axis] = 0.0f;
+    }
+  }
+
   /// Recomputes what the position and rotation imply: world inertia and
   /// bounds. Called after anything moves a body outside a step.
   void refresh(uint32_t row) {
-    inverseInertia_[row] =
-        rotatedInverseInertia(rotation_[row], localInverseInertia_[row]);
+    inverseInertia_[row] = holdTurns(
+        rotatedInverseInertia(rotation_[row], localInverseInertia_[row]),
+        controls_[row]);
     bounds_[row] = shape_[row].boundsAt(at_[row], rotation_[row]);
   }
 
@@ -199,6 +267,24 @@ class Bodies {
   }
 
  private:
+  /// Recomputes everything the motion, the mass and the controls imply. The
+  /// velocity of the point it turns about is moved to follow the point, so a
+  /// spinning body whose weight is moved does not change how any part of it is
+  /// travelling.
+  void configure(uint32_t row) {
+    const MassProperties now = massOf(shape_[row], motion_[row] == Motion::free,
+                                      mass_[row], controls_[row]);
+    const Vec3 shift = rotate(rotation_[row], now.offset - offset_[row]);
+    velocity_[row] += cross(spin_[row], shift);
+
+    inverseMass_[row] = now.inverseMass;
+    gain_[row] = now.gain;
+    offset_[row] = now.offset;
+    localInverseInertia_[row] = now.inverseInertia;
+    hold(row);
+    refresh(row);
+  }
+
   std::vector<OrblitPhysicsId> id_;
   std::vector<Vec3> at_;
   std::vector<Quat> rotation_;
@@ -206,8 +292,12 @@ class Bodies {
   std::vector<Vec3> spin_;
   std::vector<Shape> shape_;
   std::vector<Motion> motion_;
+  std::vector<float> mass_;
+  std::vector<Controls> controls_;
   std::vector<float> inverseMass_;
-  std::vector<Vec3> localInverseInertia_;
+  std::vector<Vec3> gain_;
+  std::vector<Vec3> offset_;
+  std::vector<Mat3> localInverseInertia_;
   std::vector<Mat3> inverseInertia_;
   std::vector<float> friction_;
   std::vector<float> restitution_;
@@ -230,7 +320,6 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
 
   const uint32_t row = count();
   const bool free = from.motion == Motion::free;
-  const float mass = from.mass > kTiny ? from.mass : 1.0f;
 
   id_.push_back(id);
   at_.push_back(from.at);
@@ -239,8 +328,12 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
   spin_.push_back({});
   shape_.push_back(from.shape);
   motion_.push_back(from.motion);
-  inverseMass_.push_back(free ? 1.0f / mass : 0.0f);
-  localInverseInertia_.push_back(free ? from.shape.inverseInertia(mass) : Vec3{});
+  mass_.push_back(from.mass > kTiny ? from.mass : 1.0f);
+  controls_.push_back({});
+  inverseMass_.push_back(0.0f);
+  gain_.push_back({});
+  offset_.push_back({});
+  localInverseInertia_.push_back(Mat3::zero());
   inverseInertia_.push_back(Mat3::zero());
   friction_.push_back(from.friction);
   restitution_.push_back(from.restitution);
@@ -256,7 +349,7 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
   surface_.push_back({});
 
   index_.emplace(id, row);
-  refresh(row);
+  configure(row);
   return row;
 }
 
@@ -276,7 +369,11 @@ inline void Bodies::remove(OrblitPhysicsId id) {
     spin_[row] = spin_[last];
     shape_[row] = shape_[last];
     motion_[row] = motion_[last];
+    mass_[row] = mass_[last];
+    controls_[row] = controls_[last];
     inverseMass_[row] = inverseMass_[last];
+    gain_[row] = gain_[last];
+    offset_[row] = offset_[last];
     localInverseInertia_[row] = localInverseInertia_[last];
     inverseInertia_[row] = inverseInertia_[last];
     friction_[row] = friction_[last];
@@ -301,7 +398,11 @@ inline void Bodies::remove(OrblitPhysicsId id) {
   spin_.pop_back();
   shape_.pop_back();
   motion_.pop_back();
+  mass_.pop_back();
+  controls_.pop_back();
   inverseMass_.pop_back();
+  gain_.pop_back();
+  offset_.pop_back();
   localInverseInertia_.pop_back();
   inverseInertia_.pop_back();
   friction_.pop_back();

@@ -83,6 +83,12 @@ inline Vec3 absPerAxis(const Vec3 &v) {
   return {std::fabs(v.x), std::fabs(v.y), std::fabs(v.z)};
 }
 
+/// Each component times its partner. A body's response to a push differs by
+/// axis once an axis is locked, and this is that scaling.
+constexpr Vec3 mulPerAxis(const Vec3 &a, const Vec3 &b) {
+  return {a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
 /// Two unit vectors at right angles to `n` and to each other.
 ///
 /// Friction acts across the contact normal and needs some pair of directions
@@ -160,8 +166,9 @@ inline Quat integrate(const Quat &q, const Vec3 &spin, float delta) {
 
 // ------------------------------------------------------------------------- //
 
-/// A 3x3 matrix, rows first. Used for one thing: an inertia tensor in world
-/// space, which is a rotation away from the diagonal one the shape has.
+/// A 3x3 matrix, rows first. Used for inertia tensors, which are a rotation
+/// away from the diagonal ones a shape has and lose their diagonal once the
+/// centre of mass is off-centre.
 struct Mat3 {
   Vec3 row[3];
 
@@ -174,6 +181,14 @@ struct Mat3 {
 
   static constexpr Mat3 zero() { return {{}, {}, {}}; }
 
+  /// The matrix that turns a vector the way `q` does.
+  static Mat3 rotation(const Quat &q) {
+    const Vec3 c0 = rotate(q, {1.0f, 0.0f, 0.0f});
+    const Vec3 c1 = rotate(q, {0.0f, 1.0f, 0.0f});
+    const Vec3 c2 = rotate(q, {0.0f, 0.0f, 1.0f});
+    return {{c0.x, c1.x, c2.x}, {c0.y, c1.y, c2.y}, {c0.z, c1.z, c2.z}};
+  }
+
   constexpr Vec3 operator*(const Vec3 &v) const {
     return {dot(row[0], v), dot(row[1], v), dot(row[2], v)};
   }
@@ -181,29 +196,58 @@ struct Mat3 {
   constexpr Mat3 operator*(float s) const {
     return {row[0] * s, row[1] * s, row[2] * s};
   }
+
+  Mat3 operator*(const Mat3 &o) const {
+    Mat3 out;
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        out.row[i][j] = row[i][0] * o.row[0][j] + row[i][1] * o.row[1][j] +
+                        row[i][2] * o.row[2][j];
+      }
+    }
+    return out;
+  }
+
+  Mat3 transposed() const {
+    return {{row[0].x, row[1].x, row[2].x},
+            {row[0].y, row[1].y, row[2].y},
+            {row[0].z, row[1].z, row[2].z}};
+  }
 };
 
-/// The inverse inertia of a body turned by `q`, from the diagonal `inverse`
-/// its shape has in its own frame.
+/// The inverse of `m`, or zero when it has none.
 ///
-/// R * I * transpose(R), written out. A body's resistance to being spun
-/// depends on which way round it is, and a long box tipped on its end is the
-/// case where assuming otherwise is visible.
-inline Mat3 rotatedInverseInertia(const Quat &q, const Vec3 &inverse) {
-  const Vec3 c0 = rotate(q, {1.0f, 0.0f, 0.0f});
-  const Vec3 c1 = rotate(q, {0.0f, 1.0f, 0.0f});
-  const Vec3 c2 = rotate(q, {0.0f, 0.0f, 1.0f});
-  // Columns of R scaled by the diagonal, then times transpose(R).
-  const Vec3 s0 = c0 * inverse.x;
-  const Vec3 s1 = c1 * inverse.y;
-  const Vec3 s2 = c2 * inverse.z;
-  Mat3 out;
-  for (int i = 0; i < 3; ++i) {
-    out.row[i] = {s0[i] * c0.x + s1[i] * c1.x + s2[i] * c2.x,
-                  s0[i] * c0.y + s1[i] * c1.y + s2[i] * c2.y,
-                  s0[i] * c0.z + s1[i] * c1.z + s2[i] * c2.z};
-  }
-  return out;
+/// Zero rather than a nan or a huge number, because the matrices this is asked
+/// about are inertias and an inertia with no inverse belongs to a body with no
+/// size, which is one that cannot be spun. Singular is judged against the
+/// matrix's own scale: a tiny body's inertia is a tiny number without being
+/// degenerate.
+inline Mat3 inverse(const Mat3 &m) {
+  const Vec3 c0 = cross(m.row[1], m.row[2]);
+  const Vec3 c1 = cross(m.row[2], m.row[0]);
+  const Vec3 c2 = cross(m.row[0], m.row[1]);
+  const float det = dot(m.row[0], c0);
+
+  const Vec3 big = maxPerAxis(maxPerAxis(absPerAxis(m.row[0]), absPerAxis(m.row[1])),
+                              absPerAxis(m.row[2]));
+  const float scale = std::fmax(big.x, std::fmax(big.y, big.z));
+  if (!(std::fabs(det) > 1.0e-9f * scale * scale * scale)) return Mat3::zero();
+
+  const float s = 1.0f / det;
+  return {{c0.x * s, c1.x * s, c2.x * s},
+          {c0.y * s, c1.y * s, c2.y * s},
+          {c0.z * s, c1.z * s, c2.z * s}};
+}
+
+/// The inverse inertia of a body turned by `q`, from the one `local` it has in
+/// its own frame.
+///
+/// R * I * transpose(R). A body's resistance to being spun depends on which
+/// way round it is, and a long box tipped on its end is the case where
+/// assuming otherwise is visible.
+inline Mat3 rotatedInverseInertia(const Quat &q, const Mat3 &local) {
+  const Mat3 r = Mat3::rotation(q);
+  return r * local * r.transposed();
 }
 
 // ------------------------------------------------------------------------- //

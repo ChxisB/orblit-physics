@@ -45,6 +45,12 @@ import 'pose.dart';
 /// is a trigger whose region changes how the free bodies in it move.
 /// [BodyComponent.surface] is a belt: what stands on the body is carried.
 ///
+/// [BodyComponent.locks], [BodyComponent.gravityScale], the two speed caps, the
+/// centre of mass and the inertia are how a free body moves, and are sent to
+/// the world with the body. [ignore] makes two entities pass through each
+/// other. It is a fact about the pair, so it is kept here and made again when
+/// an edit rebuilds either body.
+///
 /// [physics] is the world itself, for everything a document cannot say:
 /// pushing, driving and casting. What touched what is [events], gathered over
 /// every step a frame took. Numbers from one upwards are this class's to hand
@@ -96,6 +102,10 @@ class ScenePhysics {
   final Set<String> _broken = {};
   int _nextJoint = 1;
 
+  /// The entity pairs told to pass through each other, each with the smaller
+  /// id first so a pair is one entry whichever way it was named.
+  final Set<({String a, String b})> _ignored = {};
+
   double _owed = 0;
   List<PhysicsEvent> _events = const [];
 
@@ -131,6 +141,29 @@ class ScenePhysics {
   /// The joint entities whose joints have broken, and are not holding until
   /// they are edited.
   Set<String> get broken => Set.unmodifiable(_broken);
+
+  /// Makes entities [a] and [b] pass through each other, whatever their layers
+  /// say: no contact and no touch event. Returns false, changing nothing, for
+  /// an entity that has no body and for an entity against itself.
+  ///
+  /// It holds through the edits that rebuild either body, and ends when
+  /// either entity loses its body or goes. It replaces any rule the world had
+  /// for the pair. A character does not read it. [physics] rules for one pair
+  /// are the way to say anything else about it.
+  bool ignore(String a, String b) {
+    final first = _bodyOf[a];
+    final second = _bodyOf[b];
+    if (first == null || second == null || a == b) return false;
+    _ignored.add(_pairOf(a, b));
+    return physics.setRule(first, second, const PhysicsRule(ignore: true));
+  }
+
+  /// Lets [a] and [b] touch again. Returns false if they were not ignoring
+  /// each other.
+  bool unignore(String a, String b) {
+    if (!_ignored.remove(_pairOf(a, b))) return false;
+    return physics.removeRule(_bodyOf[a]!, _bodyOf[b]!);
+  }
 
   /// Moves the simulation on by [seconds] and says what moved.
   ///
@@ -248,6 +281,7 @@ class ScenePhysics {
       added.add(kept);
     }
     _rejoin(ids, gone);
+    _reignore(gone);
     if (added.isEmpty) return;
 
     // Read back rather than remembered from what was sent: the world keeps
@@ -297,6 +331,46 @@ class ScenePhysics {
       physics.setSurface(number, velocity: [surface.x, surface.y, surface.z]);
     }
     if (zone != null) physics.setZone(number, _zoneFor(zone));
+
+    // Quiet, so a body added asleep stays asleep with its controls.
+    final controls = _controlsFor(body, scale);
+    if (controls != null) physics.setControls(number, controls, quiet: true);
+  }
+
+  /// How [body] says it moves, at the size [scale] makes it, or null when it
+  /// says nothing and the world's own ways apply. The centre of mass grows
+  /// with the entity, like the shape it is measured from. The inertia does not:
+  /// it is a mass property the document gives outright.
+  static PhysicsControls? _controlsFor(BodyComponent body, Vector3 scale) {
+    final centre = body.centreOfMass.clone()..multiply(scale);
+    final inertia = body.inertia;
+    final plain =
+        body.locks.isEmpty &&
+        body.gravityScale == 1 &&
+        body.maxSpeed == 0 &&
+        body.maxSpin == 0 &&
+        centre.length2 == 0 &&
+        inertia.length2 == 0;
+    if (plain) return null;
+
+    // A number the world would refuse takes every other control with it, so a
+    // hand-edited file's negative cap or inertia is read as none.
+    return PhysicsControls(
+      locks: {
+        for (final lock in body.locks) PhysicsLock.values.byName(lock.name),
+      },
+      gravityScale: body.gravityScale,
+      maxSpeed: math.max(body.maxSpeed, 0),
+      maxSpin: math.max(body.maxSpin, 0),
+      centre: [centre.x, centre.y, centre.z],
+      inertia: inertia.length2 == 0
+          ? null
+          : [
+              math.max(inertia.x, 0),
+              math.max(inertia.y, 0),
+              math.max(inertia.z, 0),
+            ],
+    );
   }
 
   static PhysicsZone _zoneFor(ZoneComponent zone) {
@@ -375,6 +449,26 @@ class ScenePhysics {
       _join(id);
     }
   }
+
+  /// Makes the world's rules agree with the pairs told to be ignored: a pair
+  /// whose entity has lost its body is forgotten, and one whose body was
+  /// rebuilt in [gone] is made again, because the world drops a rule with the
+  /// body it names.
+  void _reignore(Set<int> gone) {
+    _ignored.removeWhere(
+      (pair) => !_bodyOf.containsKey(pair.a) || !_bodyOf.containsKey(pair.b),
+    );
+    for (final pair in _ignored) {
+      final a = _bodyOf[pair.a]!;
+      final b = _bodyOf[pair.b]!;
+      if (gone.contains(a) || gone.contains(b)) {
+        physics.setRule(a, b, const PhysicsRule(ignore: true));
+      }
+    }
+  }
+
+  static ({String a, String b}) _pairOf(String a, String b) =>
+      a.compareTo(b) <= 0 ? (a: a, b: b) : (a: b, b: a);
 
   /// Makes [id]'s joint in the world, if it has one, it is not broken and
   /// there is a body for it to hold.

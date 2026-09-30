@@ -415,7 +415,7 @@ class Walker {
     if (closing <= 0.0f) return;
     const float impulse = std::fmin(closing / bodies_.inverseMass(row),
                                     character_.strength * delta_);
-    shoves.push_back({row, along * impulse, bodies_.at(row)});
+    shoves.push_back({row, along * impulse, bodies_.centre(row)});
   }
 
   const Bodies &bodies_;

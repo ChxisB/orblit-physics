@@ -1417,6 +1417,288 @@ void main() {
     });
   });
 
+  group('body controls', () {
+    const box = Shape.box(0.5, 0.5, 0.5);
+
+    double speedOf(int id) {
+      final v = physics.velocityOf(id)!;
+      return sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    }
+
+    test('its struct is the size the engine reads', () {
+      expect(sizeOf<native.OrblitPhysicsControls>(), 56);
+    });
+
+    test('locks are the bits the engine numbers them by', () {
+      expect(PhysicsLock.values.map((it) => it.bit), [1, 2, 4, 8, 16, 32]);
+      expect(
+        const PhysicsControls(
+          locks: {PhysicsLock.moveY, PhysicsLock.turnZ},
+        ).bits,
+        2 | 32,
+      );
+    });
+
+    test(
+      'a body locked to a plane, at half gravity, under a cap, behaves so',
+      () {
+        physics.add(2, shape: box, at: const [0.0, 20.0, 0.0]);
+        physics.add(3, shape: box, at: const [4.0, 20.0, 0.0]);
+        const plane = PhysicsControls(
+          locks: {PhysicsLock.moveZ, PhysicsLock.turnX, PhysicsLock.turnY},
+          gravityScale: 0.5,
+          maxSpeed: 3.0,
+        );
+        expect(physics.setControls(2, plane), isTrue);
+
+        // Body 3 is the same box with nothing set, so what differs is the
+        // controls.
+        for (final id in [2, 3]) {
+          physics.drive(
+            id,
+            velocity: const [2.0, 0.0, 2.0],
+            spin: const [4.0, 4.0, 4.0],
+          );
+        }
+        run(1.0);
+
+        final held = physics.velocityOf(2)!;
+        expect(physics.transformOf(2)![2], closeTo(0.0, 1e-4));
+        expect(held[2], 0.0);
+        expect(held[3], 0.0);
+        expect(held[4], 0.0);
+        expect(
+          held[5],
+          greaterThan(1.0),
+          reason: 'the turn left is still free',
+        );
+        expect(speedOf(2), lessThanOrEqualTo(3.001));
+
+        expect(physics.transformOf(3)![2], greaterThan(1.0));
+        expect(20.0 - heightOf(2), lessThan(20.0 - heightOf(3)));
+      },
+    );
+
+    test('half gravity falls half as far', () {
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.5),
+        at: const [0.0, 50.0, 0.0],
+      );
+      physics.add(
+        3,
+        shape: const Shape.sphere(0.5),
+        at: const [4.0, 50.0, 0.0],
+      );
+      physics.setControls(2, const PhysicsControls(gravityScale: 0.5));
+
+      run(0.5);
+
+      // Damping trims both falls a little, so the ratio is not exactly half.
+      expect((50.0 - heightOf(2)) / (50.0 - heightOf(3)), closeTo(0.5, 0.03));
+    });
+
+    test('a speed cap holds a fall, and a spin cap holds a spin', () {
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.5),
+        at: const [0.0, 500.0, 0.0],
+      );
+      physics.setControls(
+        2,
+        const PhysicsControls(maxSpeed: 3.0, maxSpin: 2.0),
+      );
+      physics.drive(2, spin: const [10.0, 0.0, 0.0]);
+
+      // One step, since angular damping would trim a spin already at its cap.
+      physics.step(1 / 60);
+      expect(physics.velocityOf(2)![3], closeTo(2.0, 0.01));
+
+      run(1.0);
+      expect(speedOf(2), closeTo(3.0, 0.01), reason: 'held, not just slowed');
+    });
+
+    test('a push goes through the centre of mass unless told otherwise', () {
+      const weighted = PhysicsControls(centre: [0.4, 0.0, 0.0]);
+      physics.add(2, shape: box, at: const [10.0, 5.0, 0.0]);
+      physics.add(3, shape: box, at: const [15.0, 5.0, 0.0]);
+      physics.setControls(2, weighted);
+      physics.setControls(3, weighted);
+
+      physics.push(2, impulse: const [0.0, 0.0, 1.0]);
+      physics.push(
+        3,
+        impulse: const [0.0, 0.0, 1.0],
+        at: const [15.0, 5.0, 0.0],
+      );
+      physics.step(1 / 60);
+
+      final through = physics.velocityOf(2)!;
+      expect(through[2], closeTo(1.0, 0.01));
+      expect(through[4].abs(), lessThan(0.001));
+      expect(
+        physics.velocityOf(3)![4],
+        greaterThan(1.0),
+        reason: 'through the origin, which is off to one side of the weight',
+      );
+    });
+
+    test('a given inertia is the one the body turns by', () {
+      physics.add(2, shape: box, at: const [0.0, 5.0, 0.0]);
+      physics.add(3, shape: box, at: const [5.0, 5.0, 0.0]);
+      physics.setControls(
+        3,
+        const PhysicsControls(inertia: [100.0, 100.0, 100.0]),
+      );
+
+      physics.push(
+        2,
+        impulse: const [0.0, 0.0, 2.0],
+        at: const [0.0, 5.5, 0.0],
+      );
+      physics.push(
+        3,
+        impulse: const [0.0, 0.0, 2.0],
+        at: const [5.0, 5.5, 0.0],
+      );
+      physics.step(1 / 60);
+
+      expect(physics.velocityOf(2)![3], closeTo(6.0, 0.05));
+      expect(physics.velocityOf(3)![3], closeTo(0.01, 0.002));
+    });
+
+    test('controls that cannot be used are refused and change nothing', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 3.0, 0.0]);
+
+      const half = PhysicsControls(gravityScale: 0.5);
+      expect(
+        physics.setControls(2, const PhysicsControls(gravityScale: double.nan)),
+        isFalse,
+      );
+      expect(
+        physics.setControls(2, const PhysicsControls(maxSpeed: -1.0)),
+        isFalse,
+      );
+      expect(
+        physics.setControls(
+          2,
+          const PhysicsControls(inertia: [-1.0, 1.0, 1.0]),
+        ),
+        isFalse,
+      );
+      expect(physics.setControls(9, half), isFalse, reason: 'no such body');
+      expect(physics.setControls(ground, half), isFalse, reason: 'not a body');
+
+      run(0.5);
+      expect(3.0 - heightOf(2), greaterThan(1.0), reason: 'still full gravity');
+      expect(physics.setControls(2, half), isTrue);
+    });
+
+    test('the world\'s gravity is set, and wakes what was asleep', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 1.0, 0.0]);
+      run(3.0);
+      expect(physics.asleep(2), isTrue);
+
+      expect(physics.setGravity(const [0.0, 9.81, 0.0]), isTrue);
+      run(1.0);
+
+      expect(physics.asleep(2), isFalse);
+      expect(heightOf(2), greaterThan(2.0));
+      expect(physics.setGravity(const [0.0, double.nan, 0.0]), isFalse);
+    });
+
+    test('a body is made fixed or free, and a fixed one stops', () {
+      physics.add(
+        2,
+        shape: box,
+        motion: PhysicsMotion.fixed,
+        at: const [0.0, 10.0, 0.0],
+      );
+      run(0.5);
+      expect(heightOf(2), 10.0, reason: 'a fixed body does not fall');
+
+      physics.setMotion(2, PhysicsMotion.free);
+      run(0.5);
+      expect(heightOf(2), lessThan(9.0));
+
+      physics.setMotion(2, PhysicsMotion.fixed);
+      physics.step(1 / 60);
+      final stopped = heightOf(2);
+      run(0.5);
+      expect(heightOf(2), stopped);
+      expect(physics.velocityOf(2)!.every((it) => it == 0.0), isTrue);
+    });
+
+    test('a trigger is never made free', () {
+      physics.add(
+        2,
+        shape: const Shape.box(1.0, 1.0, 1.0),
+        motion: PhysicsMotion.fixed,
+        at: const [0.0, 10.0, 0.0],
+        trigger: true,
+      );
+      physics.setMotion(2, PhysicsMotion.free);
+      run(0.5);
+      expect(heightOf(2), 10.0);
+    });
+
+    test('controls given quietly to a body added asleep leave it asleep', () {
+      physics.add(2, shape: box, at: const [0.0, 10.0, 0.0], asleep: true);
+      final took = physics.setControls(
+        2,
+        const PhysicsControls(gravityScale: 0.5),
+        quiet: true,
+      );
+      run(0.5);
+
+      expect(took, isTrue);
+      expect(physics.asleep(2), isTrue);
+      expect(heightOf(2), 10.0);
+    });
+
+    test('controls given to a sleeper wake it, unless asked not to', () {
+      physics.add(2, shape: box, at: const [0.0, 10.0, 0.0], asleep: true);
+      physics.setControls(2, const PhysicsControls(gravityScale: 0.5));
+
+      expect(physics.asleep(2), isFalse);
+    });
+
+    test('a quiet body keeps its controls for when it wakes', () {
+      physics.add(2, shape: box, at: const [0.0, 10.0, 0.0], asleep: true);
+      physics.setControls(
+        2,
+        const PhysicsControls(gravityScale: 0.5),
+        quiet: true,
+      );
+      physics.wake(2);
+      run(0.5);
+
+      // Half gravity for half a second falls about 0.61 m, not 1.2.
+      expect(10.0 - heightOf(2), closeTo(0.61, 0.08));
+    });
+
+    test('two bodies that ignore each other pass through', () {
+      floor();
+      // Two columns: a box on the ground with another dropped on it. Only the
+      // first column is told to ignore.
+      void column(int low, int high, double x) {
+        physics.add(low, shape: box, at: [x, 0.5, 0.0]);
+        physics.add(high, shape: box, at: [x, 3.0, 0.0]);
+      }
+
+      column(2, 3, 0.0);
+      column(4, 5, 5.0);
+      expect(physics.setRule(2, 3, const PhysicsRule(ignore: true)), isTrue);
+
+      run(3.0);
+
+      expect(heightOf(3), closeTo(0.5, 0.05), reason: 'fell through body 2');
+      expect(heightOf(5), closeTo(1.5, 0.05), reason: 'stacked as usual');
+    });
+  });
+
   test('readInto fills a strided buffer and skips what it does not know', () {
     floor();
     physics.add(2, shape: const Shape.sphere(0.5), at: const [1.0, 2.0, 3.0]);

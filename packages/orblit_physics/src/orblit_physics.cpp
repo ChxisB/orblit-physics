@@ -139,6 +139,17 @@ bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule) 
   return physics->world.rule(*rule);
 }
 
+bool orblit_physics_controls(OrblitPhysics *physics,
+                             const OrblitPhysicsControls *controls) {
+  if (physics == nullptr || controls == nullptr) return false;
+  return physics->world.controls(*controls);
+}
+
+bool orblit_physics_gravity(OrblitPhysics *physics, const float gravity[3]) {
+  if (physics == nullptr || gravity == nullptr) return false;
+  return physics->world.gravity(gravity);
+}
+
 bool orblit_physics_velocity(const OrblitPhysics *physics, OrblitPhysicsId id,
                              float *out) {
   if (physics == nullptr || out == nullptr) return false;

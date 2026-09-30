@@ -35,6 +35,12 @@ const Vec3 kAlongZ{0.0f, 0.0f, 1.0f};
 
 /// Where a joint stands this instant, from where its bodies are.
 struct Pose {
+  /// Where each body is placed from, which its anchors are measured from.
+  Vec3 originA;
+  Vec3 originB;
+
+  /// Where each body turns about, which the levers are measured from. The same
+  /// point as the origin unless a free body's weight is moved.
   Vec3 centreA;
   Vec3 centreB;
   Vec3 pointA;
@@ -66,10 +72,12 @@ Pose poseOf(const Bodies &bodies, uint32_t rowA, uint32_t rowB,
   const Quat bodyB = worldB ? Quat{} : bodies.rotation(rowB);
 
   Pose pose;
-  pose.centreA = worldA ? Vec3{} : bodies.at(rowA);
-  pose.centreB = worldB ? Vec3{} : bodies.at(rowB);
-  pose.pointA = pose.centreA + rotate(bodyA, joint.anchorA);
-  pose.pointB = pose.centreB + rotate(bodyB, joint.anchorB);
+  pose.originA = worldA ? Vec3{} : bodies.at(rowA);
+  pose.originB = worldB ? Vec3{} : bodies.at(rowB);
+  pose.centreA = worldA ? Vec3{} : bodies.centre(rowA);
+  pose.centreB = worldB ? Vec3{} : bodies.centre(rowB);
+  pose.pointA = pose.originA + rotate(bodyA, joint.anchorA);
+  pose.pointB = pose.originB + rotate(bodyB, joint.anchorB);
 
   const Quat frameA = bodyA * joint.frameA;
   const Quat frameB = bodyB * joint.frameB;
@@ -145,16 +153,6 @@ bool rowAt(const Joint &joint, const Pose &pose, int which, Vec3 &linear,
   turnA = turnB = pose.axis[which - 3];
   at = which == 4 ? pose.swing.y : pose.swing.z;
   return true;
-}
-
-/// How hard it is to change the speed along a row, inverted. Zero when
-/// neither body can move, which makes every impulse along it zero.
-float massAlong(float inverseMassA, float inverseMassB, const Mat3 &inertiaA,
-                const Mat3 &inertiaB, const Vec3 &linear, const Vec3 &turnA,
-                const Vec3 &turnB) {
-  const float k = (inverseMassA + inverseMassB) * lengthSquared(linear) +
-                  dot(turnA, inertiaA * turnA) + dot(turnB, inertiaB * turnB);
-  return k > kTiny ? 1.0f / k : 0.0f;
 }
 
 /// A turn kept within a half turn either way, which is all an angle measured
@@ -357,19 +355,26 @@ Joints::Held Joints::heldFor(const Bodies &bodies, uint32_t index) const {
   held.b = joint.b == 0 ? Bodies::kNone : bodies.rowOf(joint.b);
   // As for a contact: a body the solver will not move is a body of infinite
   // mass, whether it is static, driven, asleep, or the world.
-  if (held.a != Bodies::kNone && bodies.solved(held.a)) {
-    held.inverseMassA = bodies.inverseMass(held.a);
+  held.movesA = held.a != Bodies::kNone && bodies.solved(held.a);
+  held.movesB = held.b != Bodies::kNone && bodies.solved(held.b);
+  if (held.movesA) {
+    held.gainA = bodies.gain(held.a);
     held.inertiaA = bodies.inverseInertia(held.a);
-  } else {
-    held.inertiaA = Mat3::zero();
   }
-  if (held.b != Bodies::kNone && bodies.solved(held.b)) {
-    held.inverseMassB = bodies.inverseMass(held.b);
+  if (held.movesB) {
+    held.gainB = bodies.gain(held.b);
     held.inertiaB = bodies.inverseInertia(held.b);
-  } else {
-    held.inertiaB = Mat3::zero();
   }
   return held;
+}
+
+float Joints::massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
+                        const Vec3 &turnB) {
+  const float k = dot(linear, mulPerAxis(held.gainA, linear)) +
+                  dot(linear, mulPerAxis(held.gainB, linear)) +
+                  dot(turnA, held.inertiaA * turnA) +
+                  dot(turnB, held.inertiaB * turnB);
+  return k > kTiny ? 1.0f / k : 0.0f;
 }
 
 void Joints::prepare(Bodies &bodies, float delta) {
@@ -381,7 +386,7 @@ void Joints::prepare(Bodies &bodies, float delta) {
     const Held held = heldFor(bodies, index);
     // Nothing to move. Its impulses are kept, so a joint that went to sleep
     // holding something up starts holding it up again the moment it wakes.
-    if (held.inverseMassA == 0.0f && held.inverseMassB == 0.0f) continue;
+    if (!held.movesA && !held.movesB) continue;
 
     const uint32_t heldAt = static_cast<uint32_t>(held_.size());
     held_.push_back(held);
@@ -394,8 +399,7 @@ void Joints::prepare(Bodies &bodies, float delta) {
       row.which = which;
       float at = 0.0f;
       if (!rowAt(joint, pose, which, row.linear, row.turnA, row.turnB, at)) return;
-      row.mass = massAlong(held.inverseMassA, held.inverseMassB, held.inertiaA,
-                           held.inertiaB, row.linear, row.turnA, row.turnB);
+      row.mass = massAlong(held, row.linear, row.turnA, row.turnB);
 
       if (which == kMotorRow) {
         row.target = joint.speed;
@@ -490,20 +494,15 @@ void Joints::correctPositions(Bodies &bodies) {
 
       const float most = which < 3 ? kMaxPull : kMaxTurn;
       const float correction = clamped(error * kPull, -most, most);
-      const float pull =
-          -correction * massAlong(held.inverseMassA, held.inverseMassB,
-                                  held.inertiaA, held.inertiaB, linear, turnA,
-                                  turnB);
+      const float pull = -correction * massAlong(held, linear, turnA, turnB);
 
       if (held.a != Bodies::kNone) {
-        bodies.at(held.a) -= linear * (pull * held.inverseMassA);
-        bodies.rotation(held.a) = integrate(
-            bodies.rotation(held.a), -(held.inertiaA * turnA) * pull, 1.0f);
+        bodies.at(held.a) -= mulPerAxis(linear, held.gainA) * pull;
+        bodies.turn(held.a, -(held.inertiaA * turnA) * pull, 1.0f);
       }
       if (held.b == Bodies::kNone) continue;
-      bodies.at(held.b) += linear * (pull * held.inverseMassB);
-      bodies.rotation(held.b) = integrate(bodies.rotation(held.b),
-                                          (held.inertiaB * turnB) * pull, 1.0f);
+      bodies.at(held.b) += mulPerAxis(linear, held.gainB) * pull;
+      bodies.turn(held.b, (held.inertiaB * turnB) * pull, 1.0f);
     }
   }
 }
@@ -555,11 +554,11 @@ float Joints::speedAlong(const Bodies &bodies, const Held &held,
 void Joints::apply(Bodies &bodies, const Held &held, const Row &row,
                    float impulse) {
   if (held.a != Bodies::kNone) {
-    bodies.velocity(held.a) -= row.linear * (impulse * held.inverseMassA);
+    bodies.velocity(held.a) -= mulPerAxis(row.linear, held.gainA) * impulse;
     bodies.spin(held.a) -= (held.inertiaA * row.turnA) * impulse;
   }
   if (held.b == Bodies::kNone) return;
-  bodies.velocity(held.b) += row.linear * (impulse * held.inverseMassB);
+  bodies.velocity(held.b) += mulPerAxis(row.linear, held.gainB) * impulse;
   bodies.spin(held.b) += (held.inertiaB * row.turnB) * impulse;
 }
 

@@ -163,7 +163,53 @@ constexpr uint32_t kZoneFields = ORBLIT_PHYSICS_ZONE_GRAVITY |
 
 constexpr uint32_t kRuleFields = ORBLIT_PHYSICS_RULE_FRICTION |
                                  ORBLIT_PHYSICS_RULE_RESTITUTION |
-                                 ORBLIT_PHYSICS_RULE_MOVE_SCALE;
+                                 ORBLIT_PHYSICS_RULE_MOVE_SCALE |
+                                 ORBLIT_PHYSICS_RULE_IGNORE;
+
+constexpr uint32_t kLockBits =
+    ORBLIT_PHYSICS_LOCK_MOVE_X | ORBLIT_PHYSICS_LOCK_MOVE_Y |
+    ORBLIT_PHYSICS_LOCK_MOVE_Z | ORBLIT_PHYSICS_LOCK_TURN_X |
+    ORBLIT_PHYSICS_LOCK_TURN_Y | ORBLIT_PHYSICS_LOCK_TURN_Z;
+
+bool allFinite(std::initializer_list<float> values) {
+  return std::all_of(values.begin(), values.end(),
+                     [](float v) { return std::isfinite(v); });
+}
+
+/// Shortens `v` to `most` if it is longer. Nought is no limit.
+Vec3 capped(const Vec3 &v, float most) {
+  if (!(most > 0.0f)) return v;
+  const float speed = length(v);
+  return speed > most ? v * (most / speed) : v;
+}
+
+/// Whether the numbers of a set of controls mean anything. The caps and the
+/// inertia are magnitudes, so a negative one is a mistake rather than a wish.
+bool meaningful(const OrblitPhysicsControls &from) {
+  return allFinite({from.gravityScale, from.maxSpeed, from.maxSpin, from.centre[0],
+                    from.centre[1], from.centre[2], from.inertia[0],
+                    from.inertia[1], from.inertia[2]}) &&
+         (from.locks & ~kLockBits) == 0 && from.maxSpeed >= 0.0f &&
+         from.maxSpin >= 0.0f && from.inertia[0] >= 0.0f &&
+         from.inertia[1] >= 0.0f && from.inertia[2] >= 0.0f;
+}
+
+/// A plane and a terrain are the ground: nothing about how they move can be
+/// changed, because they do not.
+bool isGround(const Shape &shape) {
+  return shape.kind == ShapeKind::plane || shape.kind == ShapeKind::heightField;
+}
+
+Controls controlsOf(const OrblitPhysicsControls &from) {
+  Controls controls;
+  controls.locks = from.locks;
+  controls.gravityScale = from.gravityScale;
+  controls.maxSpeed = from.maxSpeed;
+  controls.maxSpin = from.maxSpin;
+  controls.centre = vectorOf(from.centre);
+  controls.inertia = vectorOf(from.inertia);
+  return controls;
+}
 
 Zone zoneOf(const OrblitPhysicsZone &from) {
   Zone zone;
@@ -283,13 +329,23 @@ void World::apply(const OrblitPhysicsCommand &command) {
       }
       bodies_.velocity(row) = vectorOf(command.vector);
       bodies_.spin(row) = vectorOf(command.spin);
+      bodies_.hold(row);
       bodies_.refresh(row);
       wake(row);
       return;
 
-    case ORBLIT_PHYSICS_IMPULSE:
-      push(row, vectorOf(command.vector), vectorOf(command.spin));
+    case ORBLIT_PHYSICS_MOTION:
+      switchMotion(row, command.motion);
       return;
+
+    case ORBLIT_PHYSICS_IMPULSE: {
+      // A point that is not a number is a caller with no point in mind, which
+      // means through the centre of mass. Only this side knows where that is.
+      const Vec3 point = vectorOf(command.spin);
+      push(row, vectorOf(command.vector),
+           std::isnan(point.x) ? bodies_.centre(row) : point);
+      return;
+    }
 
     case ORBLIT_PHYSICS_WAKE:
       wake(row);
@@ -455,6 +511,56 @@ bool World::rule(const OrblitPhysicsRule &from) {
   return true;
 }
 
+bool World::ignores(OrblitPhysicsId a, OrblitPhysicsId b) const {
+  if (rules_.empty()) return false;
+  const auto found = rules_.find(PairKey::of(a, b));
+  return found != rules_.end() &&
+         (found->second.overrides & ORBLIT_PHYSICS_RULE_IGNORE) != 0;
+}
+
+bool World::controls(const OrblitPhysicsControls &from) {
+  const uint32_t row = bodies_.rowOf(from.body);
+  if (row == Bodies::kNone || isGround(bodies_.shape(row)) || !meaningful(from)) {
+    return false;
+  }
+
+  bodies_.control(row, controlsOf(from));
+  // How a body moves is part of whether it is at rest, and so is it for what
+  // rests on it. A body just made asleep is at rest with the controls it was
+  // made with, so its caller says not to wake it.
+  if (!from.quiet) wakeWithin(bodies_.bounds(row).grown(kResting));
+  return true;
+}
+
+bool World::gravity(const float to[3]) {
+  if (!allFinite({to[0], to[1], to[2]})) return false;
+
+  gravity_ = vectorOf(to);
+  const uint32_t count = bodies_.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    if (bodies_.movable(row)) wake(row);
+  }
+  return true;
+}
+
+void World::switchMotion(uint32_t row, uint32_t to) {
+  if (to > ORBLIT_PHYSICS_DYNAMIC) return;
+
+  const Motion next = motionOf(to);
+  const Motion now = bodies_.motion(row);
+  // A trigger is never pushed, a character has its own way of moving, and
+  // ground has no mass to be made free with.
+  if (next == now || now == Motion::character || bodies_.sensor(row) ||
+      isGround(bodies_.shape(row))) {
+    return;
+  }
+
+  bodies_.convert(row, next);
+  // What rested on it is not held up any more, and what it now rests on may be
+  // held up by it.
+  wakeWithin(bodies_.bounds(row).grown(kResting));
+}
+
 void World::wakeWithin(const Bounds &area) {
   const uint32_t count = bodies_.count();
   for (uint32_t row = 0; row < count; ++row) {
@@ -465,8 +571,8 @@ void World::wakeWithin(const Bounds &area) {
 void World::push(uint32_t row, const Vec3 &impulse, const Vec3 &point) {
   if (!bodies_.movable(row)) return;
   wake(row);
-  const Vec3 lever = point - bodies_.at(row);
-  bodies_.velocity(row) += impulse * bodies_.inverseMass(row);
+  const Vec3 lever = point - bodies_.centre(row);
+  bodies_.velocity(row) += mulPerAxis(impulse, bodies_.gain(row));
   bodies_.spin(row) += bodies_.inverseInertia(row) * cross(lever, impulse);
 }
 
@@ -622,6 +728,7 @@ void World::step(float delta) {
   solver_.solveVelocities(bodies_, manifolds_.data(),
                           static_cast<uint32_t>(manifolds_.size()), joints_,
                           delta, solving_);
+  capSpeeds();
   integratePositions(delta);
   solver_.solvePositions(bodies_, manifolds_.data(), joints_, solving_);
   breakJoints(delta);
@@ -672,6 +779,7 @@ void World::findContacts() {
     // nothing until something disturbs it.
     if (!bodies_.solved(a) && !bodies_.solved(b)) return;
     if (joints_.apart(bodies_.id(a), bodies_.id(b))) return;
+    if (ignores(bodies_.id(a), bodies_.id(b))) return;
     if (!interact(bodies_.layerIs(a), bodies_.layerCares(a), bodies_.layerIs(b),
                   bodies_.layerCares(b))) {
       return;
@@ -757,11 +865,24 @@ void World::integrateVelocities(float delta) {
     // No zones means nothing was built to read, and every body feels only
     // the world.
     const Felt &felt = felt_.empty() ? unfelt : felt_[row];
-    bodies_.velocity(row) += felt.gravity(gravity_) * delta;
+    bodies_.velocity(row) +=
+        felt.gravity(gravity_) * (bodies_.controls(row).gravityScale * delta);
     bodies_.velocity(row) *=
         damped(felt.linearDamping(bodies_.linearDamping(row)), delta);
     bodies_.spin(row) *=
         damped(felt.angularDamping(bodies_.angularDamping(row)), delta);
+    // Gravity, or a zone's, may point along an axis the body is locked on.
+    bodies_.hold(row);
+  }
+}
+
+void World::capSpeeds() {
+  const uint32_t count = bodies_.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    if (!bodies_.solved(row)) continue;
+    const Controls &controls = bodies_.controls(row);
+    bodies_.velocity(row) = capped(bodies_.velocity(row), controls.maxSpeed);
+    bodies_.spin(row) = capped(bodies_.spin(row), controls.maxSpin);
   }
 }
 
@@ -775,8 +896,7 @@ void World::integratePositions(float delta) {
     if (bodies_.motion(row) == Motion::character) continue;
     if (bodies_.movable(row) && bodies_.asleep(row)) continue;
     bodies_.at(row) += bodies_.velocity(row) * delta;
-    bodies_.rotation(row) =
-        integrate(bodies_.rotation(row), bodies_.spin(row), delta);
+    bodies_.turn(row, bodies_.spin(row), delta);
   }
 }
 
@@ -791,7 +911,7 @@ void World::updateSleep(float delta) {
     // Measured at the fastest-moving point rather than the centre, so a body
     // spinning on the spot is not mistaken for a body at rest.
     const float speed = length(bodies_.velocity(row)) +
-                        length(bodies_.spin(row)) * bodies_.shape(row).reach();
+                        length(bodies_.spin(row)) * bodies_.reach(row);
     if (speed > settings_.sleepSpeed) {
       bodies_.still(row) = 0.0f;
       continue;
@@ -982,6 +1102,7 @@ bool World::within(uint32_t trigger, uint32_t body, Manifold &inside) const {
                 bodies_.layerIs(body), bodies_.layerCares(body))) {
     return false;
   }
+  if (ignores(bodies_.id(trigger), bodies_.id(body))) return false;
 
   // A plane has no bounds worth asking, being half the world.
   const bool unbounded = bodies_.shape(trigger).kind == ShapeKind::plane ||

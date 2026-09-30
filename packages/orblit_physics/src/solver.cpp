@@ -11,20 +11,6 @@ namespace {
 /// which looks like nothing at all.
 constexpr float kMaxPush = 0.2f;
 
-/// How hard it is to change the velocity of the contact point along `along`,
-/// inverted. Zero when neither body can move, which makes the impulse zero
-/// without a branch anywhere else.
-float effectiveMass(float inverseMassA, float inverseMassB, const Mat3 &inertiaA,
-                    const Mat3 &inertiaB, const Vec3 &leverA, const Vec3 &leverB,
-                    const Vec3 &along) {
-  const Vec3 turnA = cross(leverA, along);
-  const Vec3 turnB = cross(leverB, along);
-  const float k = inverseMassA + inverseMassB +
-                  dot(cross(inertiaA * turnA, leverA), along) +
-                  dot(cross(inertiaB * turnB, leverB), along);
-  return k > kTiny ? 1.0f / k : 0.0f;
-}
-
 } // namespace
 
 void Solver::solveVelocities(Bodies &bodies, const Manifold *manifolds,
@@ -83,8 +69,8 @@ Solver::Pair Solver::pairOf(const Bodies &bodies, const Manifold &manifold) {
   // which makes a body heavier or lighter for this contact and no other.
   const float moveA = bodies.solved(pair.a) ? rule.move[0] : 0.0f;
   const float moveB = bodies.solved(pair.b) ? rule.move[1] : 0.0f;
-  pair.inverseMassA = bodies.inverseMass(pair.a) * moveA;
-  pair.inverseMassB = bodies.inverseMass(pair.b) * moveB;
+  pair.gainA = bodies.gain(pair.a) * moveA;
+  pair.gainB = bodies.gain(pair.b) * moveB;
   pair.inertiaA = bodies.inverseInertia(pair.a) * moveA;
   pair.inertiaB = bodies.inverseInertia(pair.b) * moveB;
   return pair;
@@ -111,23 +97,21 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
 
       Row row;
       row.pair = index;
-      row.leverA = contact.at - bodies.at(pair.a);
-      row.leverB = contact.at - bodies.at(pair.b);
-      row.localA = unrotate(bodies.rotation(pair.a), row.leverA);
-      row.localB = unrotate(bodies.rotation(pair.b), row.leverB);
+      row.leverA = contact.at - bodies.centre(pair.a);
+      row.leverB = contact.at - bodies.centre(pair.b);
+      // From the origin, not the centre: that is what `at` and the rotation
+      // carry the point along with.
+      row.localA = unrotate(bodies.rotation(pair.a), contact.at - bodies.at(pair.a));
+      row.localB = unrotate(bodies.rotation(pair.b), contact.at - bodies.at(pair.b));
       row.normal = contact.normal;
       perpendiculars(row.normal, row.tangent[0], row.tangent[1]);
       row.depth = contact.depth;
       row.normalImpulse = contact.normalImpulse;
       row.frictionImpulse[0] = contact.frictionImpulse[0];
       row.frictionImpulse[1] = contact.frictionImpulse[1];
-      row.normalMass =
-          effectiveMass(pair.inverseMassA, pair.inverseMassB, pair.inertiaA,
-                        pair.inertiaB, row.leverA, row.leverB, row.normal);
+      row.normalMass = effectiveMass(pair, row, row.normal);
       for (int t = 0; t < 2; ++t) {
-        row.tangentMass[t] =
-            effectiveMass(pair.inverseMassA, pair.inverseMassB, pair.inertiaA,
-                          pair.inertiaB, row.leverA, row.leverB, row.tangent[t]);
+        row.tangentMass[t] = effectiveMass(pair, row, row.tangent[t]);
       }
 
       // Restitution is decided here, from the speed the bodies met at, not
@@ -199,18 +183,26 @@ void Solver::correctPositions(Bodies &bodies, const SolverSettings &settings) {
     const float over = depth - settings.slop;
     if (over <= 0.0f) continue;
 
-    const Vec3 leverA = worldA - bodies.at(pair.a);
-    const Vec3 leverB = worldB - bodies.at(pair.b);
+    const Vec3 leverA = worldA - bodies.centre(pair.a);
+    const Vec3 leverB = worldB - bodies.centre(pair.b);
     const float push = clamped(over * settings.stiffness, 0.0f, kMaxPush);
     const Vec3 impulse = row.normal * (row.normalMass * push);
 
-    bodies.at(pair.a) += impulse * pair.inverseMassA;
-    bodies.rotation(pair.a) = integrate(
-        bodies.rotation(pair.a), pair.inertiaA * cross(leverA, impulse), 1.0f);
-    bodies.at(pair.b) -= impulse * pair.inverseMassB;
-    bodies.rotation(pair.b) = integrate(
-        bodies.rotation(pair.b), -(pair.inertiaB * cross(leverB, impulse)), 1.0f);
+    bodies.at(pair.a) += mulPerAxis(impulse, pair.gainA);
+    bodies.turn(pair.a, pair.inertiaA * cross(leverA, impulse), 1.0f);
+    bodies.at(pair.b) -= mulPerAxis(impulse, pair.gainB);
+    bodies.turn(pair.b, -(pair.inertiaB * cross(leverB, impulse)), 1.0f);
   }
+}
+
+float Solver::effectiveMass(const Pair &pair, const Row &row, const Vec3 &along) {
+  const Vec3 turnA = cross(row.leverA, along);
+  const Vec3 turnB = cross(row.leverB, along);
+  const float k = dot(along, mulPerAxis(pair.gainA, along)) +
+                  dot(along, mulPerAxis(pair.gainB, along)) +
+                  dot(cross(pair.inertiaA * turnA, row.leverA), along) +
+                  dot(cross(pair.inertiaB * turnB, row.leverB), along);
+  return k > kTiny ? 1.0f / k : 0.0f;
 }
 
 Vec3 Solver::relative(const Bodies &bodies, const Pair &pair, const Row &row) {
@@ -220,9 +212,9 @@ Vec3 Solver::relative(const Bodies &bodies, const Pair &pair, const Row &row) {
 
 void Solver::apply(Bodies &bodies, const Pair &pair, const Row &row,
                    const Vec3 &impulse) {
-  bodies.velocity(pair.a) += impulse * pair.inverseMassA;
+  bodies.velocity(pair.a) += mulPerAxis(impulse, pair.gainA);
   bodies.spin(pair.a) += pair.inertiaA * cross(row.leverA, impulse);
-  bodies.velocity(pair.b) -= impulse * pair.inverseMassB;
+  bodies.velocity(pair.b) -= mulPerAxis(impulse, pair.gainB);
   bodies.spin(pair.b) -= pair.inertiaB * cross(row.leverB, impulse);
 }
 

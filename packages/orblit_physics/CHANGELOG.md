@@ -1,3 +1,37 @@
+## 0.7.0
+
+- Body controls: `setControls` takes a `PhysicsControls` for one body.
+  `locks` holds any of the six ways it can move, in the world's axes, as
+  `PhysicsLock`. `gravityScale` scales the gravity it feels, zones included.
+  `maxSpeed` and `maxSpin` cap it, and zero is no cap. `centre` moves its
+  weight and `inertia` gives the inertia it turns by. All of it is set
+  together, so a change to one field sends the others again. `quiet: true`
+  wakes nothing, for a body just added: one added asleep stays asleep with
+  its controls.
+- A lock is held by the solver, not clipped afterwards. A body locked along
+  one axis still rests on a floor tilted across that axis, and a joint keeps
+  its length. A lock on a turn holds it exactly, however the body lies.
+- A cap is applied once a step, after the contacts. A body can pass it inside
+  a step and never leaves one above it.
+- A free body with its `centre` moved turns about that point, and its
+  velocity is the velocity of the centre. The transform still reports the
+  origin the body was placed by. The shape's inertia is moved to the centre
+  of mass. A given `inertia` is used as it is, and only when all three parts
+  are above zero.
+- `push` with no `at` goes through the centre of mass, so a weighted body is
+  not spun by a default shove.
+- `setMotion` makes a body fixed, driven or free. Fixed stops it. Driven
+  keeps its velocity. Free gives it the mass it was created with and its
+  controls. A trigger, a character and ground cannot be switched.
+- `setGravity` sets the world's gravity and wakes every body that can move.
+- `PhysicsRule(ignore: true)` makes a pair pass through each other, with no
+  contact and no touch event. A character does not read rules, so it still
+  stops at a body it is told to ignore.
+- The ABI gains `OrblitPhysicsControls`, `orblit_physics_controls` and
+  `orblit_physics_gravity`. `OrblitPhysicsCommand` gains the kind `MOTION`,
+  and a NaN in the first component of an impulse's point means through the
+  centre of mass. The rule field `IGNORE` and the six lock bits are new.
+
 ## 0.6.0
 
 - Triggers: `add(trigger: true)` makes a place rather than a thing. Nothing

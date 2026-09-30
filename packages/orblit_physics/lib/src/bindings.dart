@@ -321,6 +321,33 @@ final class OrblitPhysicsRule extends Struct {
   external Array<Float> moveScale;
 }
 
+/// `OrblitPhysicsControls`, field for field.
+final class OrblitPhysicsControls extends Struct {
+  @Uint64()
+  external int body;
+
+  @Uint32()
+  external int locks;
+
+  @Float()
+  external double gravityScale;
+
+  @Float()
+  external double maxSpeed;
+
+  @Float()
+  external double maxSpin;
+
+  @Array(3)
+  external Array<Float> centre;
+
+  @Array(3)
+  external Array<Float> inertia;
+
+  @Bool()
+  external bool quiet;
+}
+
 /// `OrblitPhysicsSettings`, field for field.
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
@@ -526,6 +553,23 @@ external bool physicsZone(
 external bool physicsRule(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsRule> rule,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsControls>)
+>(symbol: 'orblit_physics_controls', assetId: kOrblitPhysicsAsset)
+external bool physicsControls(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsControls> controls,
+);
+
+@Native<Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<Float>)>(
+  symbol: 'orblit_physics_gravity',
+  assetId: kOrblitPhysicsAsset,
+)
+external bool physicsGravity(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<Float> gravity,
 );
 
 @Native<

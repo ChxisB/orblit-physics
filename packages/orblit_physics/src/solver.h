@@ -81,8 +81,9 @@ class Solver {
     /// pulls the two bodies towards this rather than towards standing still
     /// against each other, which is all a conveyor is.
     Vec3 belt;
-    float inverseMassA = 0.0f;
-    float inverseMassB = 0.0f;
+    /// Inverse mass on each world axis, zero on a locked one.
+    Vec3 gainA;
+    Vec3 gainB;
     Mat3 inertiaA;
     Mat3 inertiaB;
     uint32_t first = 0;
@@ -118,6 +119,11 @@ class Solver {
   void warmStart(Bodies &bodies);
   void correctVelocities(Bodies &bodies);
   void correctPositions(Bodies &bodies, const SolverSettings &settings);
+
+  /// How hard it is to change the velocity of the contact point along `along`,
+  /// inverted. Zero when neither body can move, which makes the impulse zero
+  /// without a branch anywhere else.
+  static float effectiveMass(const Pair &pair, const Row &row, const Vec3 &along);
 
   /// The velocity of one body's contact point relative to the other's.
   static Vec3 relative(const Bodies &bodies, const Pair &pair, const Row &row);

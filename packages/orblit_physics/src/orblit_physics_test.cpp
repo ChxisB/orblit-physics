@@ -2839,6 +2839,545 @@ void askingTheWorld() {
   orblit_physics_destroy(physics);
 }
 
+// --- body controls -------------------------------------------------------- //
+//
+// Gravity scale, axis locks, speed caps, centre of mass, inertia, the switch
+// between fixed, driven and free, and pairs that ignore each other.
+
+OrblitPhysicsControls controlsOf(OrblitPhysicsId body) {
+  OrblitPhysicsControls made{};
+  made.body = body;
+  made.gravityScale = 1.0f;
+  return made;
+}
+
+bool control(OrblitPhysics *physics, const OrblitPhysicsControls &controls) {
+  return orblit_physics_controls(physics, &controls);
+}
+
+/// A world with no gravity, so a body does what it was told and no more.
+OrblitPhysics *spaceWorld() {
+  OrblitPhysicsSettings settings;
+  orblit_physics_defaults(&settings);
+  settings.gravity[0] = 0.0f;
+  settings.gravity[1] = 0.0f;
+  settings.gravity[2] = 0.0f;
+  return orblit_physics_create(&settings);
+}
+
+void impulseAt(OrblitPhysics *physics, OrblitPhysicsId id, float ix, float iy,
+               float iz, float px, float py, float pz) {
+  OrblitPhysicsCommand made{};
+  made.kind = ORBLIT_PHYSICS_IMPULSE;
+  made.id = id;
+  made.vector[0] = ix;
+  made.vector[1] = iy;
+  made.vector[2] = iz;
+  made.spin[0] = px;
+  made.spin[1] = py;
+  made.spin[2] = pz;
+  submit(physics, made);
+}
+
+float velocityOf(OrblitPhysics *physics, OrblitPhysicsId id, int axis) {
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, id, motion);
+  return motion[axis];
+}
+
+/// Where a point given in the body's own frame is in the world. The transform
+/// reports the body's origin, so this is how a test finds its centre of mass.
+void worldPointOf(OrblitPhysics *physics, OrblitPhysicsId id,
+                  const float local[3], float out[3]) {
+  float t[7] = {0};
+  orblit_physics_transform(physics, id, t);
+  const float ux = t[3], uy = t[4], uz = t[5], w = t[6];
+  const float tx = 2.0f * (uy * local[2] - uz * local[1]);
+  const float ty = 2.0f * (uz * local[0] - ux * local[2]);
+  const float tz = 2.0f * (ux * local[1] - uy * local[0]);
+  out[0] = t[0] + local[0] + w * tx + (uy * tz - uz * ty);
+  out[1] = t[1] + local[1] + w * ty + (uz * tx - ux * tz);
+  out[2] = t[2] + local[2] + w * tz + (ux * ty - uy * tx);
+}
+
+void switchTo(OrblitPhysics *physics, OrblitPhysicsId id, uint32_t motion) {
+  OrblitPhysicsCommand made{};
+  made.kind = ORBLIT_PHYSICS_MOTION;
+  made.id = id;
+  made.motion = motion;
+  submit(physics, made);
+}
+
+void weighing() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(1, 0.5f, 0.0f, 100.0f, 0.0f));
+  submit(physics, sphereAt(2, 0.5f, 5.0f, 100.0f, 0.0f));
+  submit(physics, sphereAt(3, 0.5f, 10.0f, 100.0f, 0.0f));
+  submit(physics, sphereAt(4, 0.5f, 15.0f, 100.0f, 0.0f));
+  OrblitPhysicsControls half = controlsOf(2);
+  half.gravityScale = 0.5f;
+  OrblitPhysicsControls none = controlsOf(3);
+  none.gravityScale = 0.0f;
+  OrblitPhysicsControls up = controlsOf(4);
+  up.gravityScale = -1.0f;
+  check(control(physics, half) && control(physics, none) && control(physics, up),
+        "gravity scales are set");
+
+  run(physics, 1.0f);
+  const float full = -velocityOf(physics, 1, 1);
+  check(full > 8.0f, "a body falls at the world's gravity by default");
+  check(near(-velocityOf(physics, 2, 1) / full, 0.5f, 0.02f),
+        "half the scale gives half the speed");
+  check(near(velocityOf(physics, 3, 1), 0.0f, 0.001f), "no scale hangs in the air");
+  check(velocityOf(physics, 4, 1) > 8.0f, "a negative scale rises");
+  orblit_physics_destroy(physics);
+}
+
+void changingGravity() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  run(physics, 2.0f);
+  check(orblit_physics_asleep(physics, 2), "a ball at rest goes to sleep");
+
+  const float up[3] = {0.0f, 9.81f, 0.0f};
+  check(orblit_physics_gravity(physics, up), "the world's gravity is set");
+  check(!orblit_physics_asleep(physics, 2),
+        "which wakes what was at rest, since it no longer is");
+  run(physics, 1.0f);
+  check(heightOf(physics, 2) > 3.0f, "and the ball rises");
+
+  const float bad[3] = {std::nanf(""), 0.0f, 0.0f};
+  check(!orblit_physics_gravity(physics, bad), "NaN gravity is refused");
+  check(!orblit_physics_gravity(physics, nullptr), "and so is none");
+  check(!orblit_physics_gravity(nullptr, up), "and gravity in no world is survivable");
+  orblit_physics_destroy(physics);
+}
+
+void lockingToAPlane() {
+  // The done-when: a body locked to a plane, at half gravity, under a cap.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(1, 0.5f, 0.0f, 50.0f, 0.0f));
+  OrblitPhysicsControls plane = controlsOf(1);
+  plane.locks = ORBLIT_PHYSICS_LOCK_MOVE_Z;
+  plane.gravityScale = 0.5f;
+  plane.maxSpeed = 4.0f;
+  check(control(physics, plane),
+        "a body is locked to a plane, at half gravity, under a cap");
+
+  drive(physics, 1, 1.0f, 0.0f, 3.0f, 0.0f);
+  check(velocityOf(physics, 1, 2) == 0.0f, "a velocity out of the plane is dropped");
+  run(physics, 0.3f);
+  check(near(velocityOf(physics, 1, 1), -1.45f, 0.1f), "it falls at half gravity");
+  check(coordinateOf(physics, 1, 0) > 0.2f, "and keeps moving across the plane");
+
+  float fastest = 0.0f;
+  for (int i = 0; i < 120; ++i) {
+    step(physics);
+    const float vx = velocityOf(physics, 1, 0);
+    const float vy = velocityOf(physics, 1, 1);
+    fastest = std::fmax(fastest, std::sqrt(vx * vx + vy * vy));
+  }
+  check(fastest < 4.001f && fastest > 3.9f, "and is held to the cap, reaching it");
+  check(coordinateOf(physics, 1, 2) == 0.0f, "and never leaves the plane");
+  orblit_physics_destroy(physics);
+
+  OrblitPhysics *pushed = spaceWorld();
+  submit(pushed, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls flat = controlsOf(1);
+  flat.locks = ORBLIT_PHYSICS_LOCK_MOVE_Z;
+  control(pushed, flat);
+  impulseAt(pushed, 1, 2.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f);
+  check(near(velocityOf(pushed, 1, 0), 2.0f, 0.001f) && velocityOf(pushed, 1, 2) == 0.0f,
+        "and so is the part of an impulse that points out of it");
+  orblit_physics_destroy(pushed);
+}
+
+void lockedContacts() {
+  // A tilted floor pushes partly along the locked axis. The ball still has to
+  // rest on it, which only works if the solver treats that axis as immovable.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand floor = groundPlane(1);
+  floor.size[1] = 0.8f;
+  floor.size[2] = 0.6f;
+  submit(physics, floor);
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 0.7f, 0.0f));
+  OrblitPhysicsControls plane = controlsOf(2);
+  plane.locks = ORBLIT_PHYSICS_LOCK_MOVE_Z;
+  control(physics, plane);
+
+  run(physics, 3.0f);
+  check(near(heightOf(physics, 2), 0.625f, 0.02f),
+        "a body locked on one axis rests on a floor tilted across it");
+  check(coordinateOf(physics, 2, 2) == 0.0f, "without moving along the lock");
+  orblit_physics_destroy(physics);
+
+  OrblitPhysics *swing = orblit_physics_create(nullptr);
+  submit(swing, sphereAt(2, 0.25f, 2.0f, 5.0f, 0.0f));
+  OrblitPhysicsControls hung = controlsOf(2);
+  hung.locks = ORBLIT_PHYSICS_LOCK_MOVE_Z;
+  control(swing, hung);
+  join(swing, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 5.0f, 0.0f));
+  drive(swing, 2, 0.0f, 0.0f, 2.0f, 0.0f);
+  run(swing, 2.0f);
+  const float x = coordinateOf(swing, 2, 0);
+  const float y = coordinateOf(swing, 2, 1) - 5.0f;
+  check(coordinateOf(swing, 2, 2) == 0.0f && near(std::sqrt(x * x + y * y), 2.0f, 0.05f),
+        "a locked body on a joint swings in its plane at the joint's length");
+  orblit_physics_destroy(swing);
+}
+
+void lockingTurns() {
+  // An impulse off the centre spins a box about x and y. With x and z locked,
+  // only y is left, and it turns as fast as it did when nothing was locked.
+  OrblitPhysics *loose = spaceWorld();
+  submit(loose, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  impulseAt(loose, 1, 0.0f, 0.0f, 5.0f, 0.5f, 0.5f, 0.0f);
+  check(near(velocityOf(loose, 1, 3), 15.0f, 0.1f) &&
+            near(velocityOf(loose, 1, 4), -15.0f, 0.1f),
+        "an off-centre impulse spins a box about two axes");
+  orblit_physics_destroy(loose);
+
+  OrblitPhysics *locked = spaceWorld();
+  submit(locked, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls upright = controlsOf(1);
+  upright.locks = ORBLIT_PHYSICS_LOCK_TURN_X | ORBLIT_PHYSICS_LOCK_TURN_Z;
+  control(locked, upright);
+  impulseAt(locked, 1, 0.0f, 0.0f, 5.0f, 0.5f, 0.5f, 0.0f);
+  check(velocityOf(locked, 1, 3) == 0.0f && velocityOf(locked, 1, 5) == 0.0f &&
+            near(velocityOf(locked, 1, 4), -15.0f, 0.1f),
+        "with two turns locked it spins about the one left, as fast as before");
+  setMotion(locked, 1, 0.0f, 0.0f, 0.0f, 4.0f, 0.0f, 4.0f);
+  check(velocityOf(locked, 1, 3) == 0.0f && velocityOf(locked, 1, 5) == 0.0f,
+        "and a spin set on a locked axis is dropped");
+  orblit_physics_destroy(locked);
+
+  // A box tipped on its corner topples when free and holds when it cannot turn.
+  OrblitPhysicsCommand tipped = boxAt(2, 0.5f, 0.0f, 2.0f, 0.0f);
+  tipped.rotation[2] = 0.258819f;
+  tipped.rotation[3] = 0.965926f;
+
+  OrblitPhysics *falls = orblit_physics_create(nullptr);
+  submit(falls, groundPlane(1));
+  submit(falls, tipped);
+  run(falls, 3.0f);
+  check(turnOf(falls, 2) < 0.1f, "a box dropped at thirty degrees settles flat");
+  orblit_physics_destroy(falls);
+
+  OrblitPhysics *held = orblit_physics_create(nullptr);
+  submit(held, groundPlane(1));
+  submit(held, tipped);
+  OrblitPhysicsControls stiff = controlsOf(2);
+  stiff.locks = ORBLIT_PHYSICS_LOCK_TURN_X | ORBLIT_PHYSICS_LOCK_TURN_Y |
+                ORBLIT_PHYSICS_LOCK_TURN_Z;
+  control(held, stiff);
+  run(held, 3.0f);
+  check(near(turnOf(held, 2), 0.5236f, 0.01f),
+        "and stays at thirty degrees when it cannot turn");
+  check(heightOf(held, 2) > 0.6f, "resting on its corner");
+  orblit_physics_destroy(held);
+}
+
+void capping() {
+  OrblitPhysics *physics = spaceWorld();
+  submit(physics, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls capped = controlsOf(1);
+  capped.maxSpeed = 5.0f;
+  capped.maxSpin = 3.0f;
+  check(control(physics, capped), "caps are set");
+
+  impulseAt(physics, 1, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+  step(physics);
+  check(speedOf(physics, 1) < 5.001f && speedOf(physics, 1) > 4.9f,
+        "a shove that would go faster is held to the speed cap");
+  drive(physics, 1, 0.0f, 0.0f, 0.0f, 20.0f);
+  step(physics);
+  check(velocityOf(physics, 1, 4) < 3.001f && velocityOf(physics, 1, 4) > 2.9f,
+        "and a spin faster than the cap is held to it");
+
+  capped.maxSpeed = 0.0f;
+  capped.maxSpin = 0.0f;
+  control(physics, capped);
+  drive(physics, 1, 50.0f, 0.0f, 0.0f, 20.0f);
+  step(physics);
+  check(speedOf(physics, 1) > 40.0f && velocityOf(physics, 1, 4) > 10.0f,
+        "a cap of nothing means no cap");
+  orblit_physics_destroy(physics);
+}
+
+/// A ball dropped onto a slab that lies over the ground. The slab is 3, the
+/// ball 2. If `ignored`, the two are told to pass through each other.
+OrblitPhysics *ballOverSlab(bool ignored) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 1.0f, 0.25f, 1.0f, 0.0f, 1.0f, 0.0f));
+  submit(physics, sphereAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+  if (ignored) {
+    const OrblitPhysicsRule pass = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_IGNORE);
+    check(orblit_physics_rule(physics, &pass), "a pair is made to ignore each other");
+  }
+  return physics;
+}
+
+/// A ball dropped through a trigger, and how many times the trigger said it
+/// came in.
+int timesEntered(bool ignored) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, triggerAt(1, 1.0f, 0.0f, 0.0f, 0.0f));
+  submit(physics, sphereAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+  if (ignored) {
+    const OrblitPhysicsRule blind = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_IGNORE);
+    orblit_physics_rule(physics, &blind);
+  }
+  Watch watch(physics);
+  watch.run(2.0f);
+  const int entered = watch.count(ORBLIT_PHYSICS_ENTERED, 1, 2);
+  orblit_physics_destroy(physics);
+  return entered;
+}
+
+void ignoring() {
+  OrblitPhysics *rests = ballOverSlab(false);
+  run(rests, 2.0f);
+  check(near(heightOf(rests, 2), 1.5f, 0.05f), "a ball dropped on a slab rests on it");
+  orblit_physics_destroy(rests);
+
+  OrblitPhysics *passes = ballOverSlab(true);
+  Watch watch(passes);
+  watch.run(2.0f);
+  check(near(heightOf(passes, 2), 0.25f, 0.05f),
+        "and falls through it to the ground when the two ignore each other");
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_BEGAN, 2, 3) == 0, "reporting no touch with it");
+
+  const OrblitPhysicsRule ends = ruleFor(2, 3, 0);
+  check(orblit_physics_rule(passes, &ends), "the rule is removed, named either way round");
+  OrblitPhysicsCommand again{};
+  again.kind = ORBLIT_PHYSICS_PLACE;
+  again.id = 2;
+  again.at[1] = 3.0f;
+  again.rotation[3] = 1.0f;
+  submit(passes, again);
+  run(passes, 2.0f);
+  check(near(heightOf(passes, 2), 1.5f, 0.05f), "and then the slab holds the ball again");
+  orblit_physics_destroy(passes);
+
+  check(timesEntered(false) == 1, "a trigger reports a ball falling through it");
+  check(timesEntered(true) == 0, "and nothing for a ball it ignores");
+}
+
+void switching() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(1, 0.5f, 0.0f, 20.0f, 0.0f));
+  drive(physics, 1, 3.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 0.1f);
+  switchTo(physics, 1, ORBLIT_PHYSICS_STATIC);
+  const float stopped = heightOf(physics, 1);
+  check(speedOf(physics, 1) == 0.0f, "a free body made fixed stops");
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 1), stopped, 0.0001f), "and hangs where it was");
+
+  OrblitPhysicsCommand crate = boxAt(2, 0.5f, 5.0f, 5.0f, 0.0f);
+  crate.motion = ORBLIT_PHYSICS_STATIC;
+  crate.mass = 2.0f;
+  submit(physics, crate);
+  switchTo(physics, 2, ORBLIT_PHYSICS_DYNAMIC);
+  impulseAt(physics, 2, 2.0f, 0.0f, 0.0f, 5.0f, 5.0f, 0.0f);
+  check(near(velocityOf(physics, 2, 0), 1.0f, 0.001f),
+        "a fixed body made free has the mass it was made with");
+  run(physics, 0.5f);
+  check(heightOf(physics, 2) < 4.95f, "and falls");
+
+  submit(physics, sphereAt(3, 0.5f, -5.0f, 10.0f, 0.0f));
+  drive(physics, 3, 3.0f, 0.0f, 0.0f, 0.0f);
+  switchTo(physics, 3, ORBLIT_PHYSICS_KINEMATIC);
+  run(physics, 1.0f);
+  check(near(coordinateOf(physics, 3, 0), -2.0f, 0.05f) &&
+            near(heightOf(physics, 3), 10.0f, 0.0001f),
+        "a free body made driven keeps its velocity and stops feeling gravity");
+
+  switchTo(physics, 3, ORBLIT_PHYSICS_DYNAMIC);
+  run(physics, 0.5f);
+  check(heightOf(physics, 3) < 9.95f, "and a driven body made free falls again");
+
+  submit(physics, triggerAt(4, 1.0f, 20.0f, 20.0f, 0.0f));
+  switchTo(physics, 4, ORBLIT_PHYSICS_DYNAMIC);
+  run(physics, 0.5f);
+  check(near(heightOf(physics, 4), 20.0f, 0.0001f), "a trigger cannot be made free");
+
+  switchTo(physics, 99, ORBLIT_PHYSICS_DYNAMIC);
+  switchTo(physics, 1, 7);
+  run(physics, 0.5f);
+  check(orblit_physics_count(physics) == 4 && near(heightOf(physics, 1), stopped, 0.0001f),
+        "a body that is not there and a motion that does not exist change nothing");
+  orblit_physics_destroy(physics);
+}
+
+void centring() {
+  // A ball weighted on one side rolls until the weight is underneath.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.5f, 0.0f);
+  ball.damping[1] = 3.0f;
+  submit(physics, ball);
+  OrblitPhysicsControls weighted = controlsOf(2);
+  weighted.centre[0] = 0.3f;
+  check(control(physics, weighted), "a centre of mass is set");
+  run(physics, 8.0f);
+  const float local[3] = {0.3f, 0.0f, 0.0f};
+  float centre[3];
+  worldPointOf(physics, 2, local, centre);
+  check(near(centre[0] - coordinateOf(physics, 2, 0), 0.0f, 0.03f) &&
+            near(centre[1] - heightOf(physics, 2), -0.3f, 0.03f),
+        "a ball weighted at one side rolls until the weight is underneath");
+  orblit_physics_destroy(physics);
+
+  // An impulse through the centre of mass does not spin a body. One through
+  // the middle of the shape does, against an inertia that has grown by the
+  // parallel axis theorem: a sixth of a box, plus the square of 0.4.
+  OrblitPhysics *space = spaceWorld();
+  submit(space, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  submit(space, boxAt(2, 0.5f, 10.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls first = controlsOf(1);
+  first.centre[0] = 0.4f;
+  OrblitPhysicsControls second = controlsOf(2);
+  second.centre[0] = 0.4f;
+  control(space, first);
+  control(space, second);
+  impulseAt(space, 1, 0.0f, 0.0f, 1.0f, 0.4f, 0.0f, 0.0f);
+  impulseAt(space, 2, 0.0f, 0.0f, 1.0f, 10.0f, 0.0f, 0.0f);
+  check(near(velocityOf(space, 1, 4), 0.0f, 0.001f),
+        "an impulse through the centre of mass does not spin it");
+  check(near(velocityOf(space, 2, 4), 0.4f / (1.0f / 6.0f + 0.16f), 0.03f),
+        "and one through the middle of the shape does");
+
+  // With no point at all the push goes through the centre of mass.
+  submit(space, boxAt(4, 0.5f, 30.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls unmarked = controlsOf(4);
+  unmarked.centre[0] = 0.4f;
+  control(space, unmarked);
+  const float nowhere = std::nanf("");
+  impulseAt(space, 4, 0.0f, 0.0f, 1.0f, nowhere, nowhere, nowhere);
+  check(near(velocityOf(space, 4, 4), 0.0f, 0.001f) &&
+            near(velocityOf(space, 4, 2), 1.0f, 0.001f),
+        "an impulse with no point goes through the centre of mass");
+
+  // Spinning in space, a body turns about its centre of mass, so its origin
+  // goes round that.
+  submit(space, boxAt(3, 0.5f, 20.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls pivot = controlsOf(3);
+  pivot.centre[0] = 0.4f;
+  control(space, pivot);
+  setMotion(space, 3, 0.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f);
+  run(space, 0.5f);
+  const float there[3] = {0.4f, 0.0f, 0.0f};
+  float heavy[3];
+  worldPointOf(space, 3, there, heavy);
+  check(near(heavy[0], 20.4f, 0.03f) && near(heavy[2], 0.0f, 0.03f),
+        "a body spinning in space turns about its centre of mass");
+  check(turnOf(space, 3) > 0.5f && std::fabs(coordinateOf(space, 3, 2)) > 0.1f,
+        "so its origin goes round it");
+  orblit_physics_destroy(space);
+
+  // A ball about its own middle has 0.1. About a point 0.3 away it has 0.19.
+  OrblitPhysics *round = spaceWorld();
+  submit(round, sphereAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls shifted = controlsOf(1);
+  shifted.centre[0] = 0.3f;
+  control(round, shifted);
+  impulseAt(round, 1, 0.0f, 0.0f, 1.0f, 0.8f, 0.0f, 0.0f);
+  check(near(velocityOf(round, 1, 4), -0.5f / 0.19f, 0.05f),
+        "the inertia about the centre of mass includes the distance to the middle");
+  orblit_physics_destroy(round);
+}
+
+void centringJoined() {
+  // A joint on the body's origin stays on the origin when the centre moves.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.25f, 0.0f, 5.0f, 0.0f));
+  join(physics, jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 5.0f, 0.0f));
+  OrblitPhysicsControls weighted = controlsOf(2);
+  weighted.centre[0] = 0.2f;
+  control(physics, weighted);
+
+  float widest = 0.0f;
+  float turned = 0.0f;
+  for (int i = 0; i < 90; ++i) {
+    step(physics);
+    const float x = coordinateOf(physics, 2, 0);
+    const float y = coordinateOf(physics, 2, 1) - 5.0f;
+    widest = std::fmax(widest, std::sqrt(x * x + y * y));
+    turned = std::fmax(turned, turnOf(physics, 2));
+  }
+  check(widest < 0.05f, "a point joint on the origin stays on it when the centre moves");
+  check(turned > 0.3f, "while the weight swings the body about it");
+  orblit_physics_destroy(physics);
+}
+
+void spreading() {
+  OrblitPhysics *physics = spaceWorld();
+  submit(physics, boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f));
+  submit(physics, boxAt(2, 0.5f, 5.0f, 0.0f, 0.0f));
+  OrblitPhysicsControls heavy = controlsOf(2);
+  heavy.inertia[0] = 10.0f;
+  heavy.inertia[1] = 10.0f;
+  heavy.inertia[2] = 10.0f;
+  check(control(physics, heavy), "an inertia is set");
+  impulseAt(physics, 1, 0.0f, 0.0f, 1.0f, 0.5f, 0.0f, 0.0f);
+  impulseAt(physics, 2, 0.0f, 0.0f, 1.0f, 5.5f, 0.0f, 0.0f);
+  check(near(velocityOf(physics, 1, 4), -3.0f, 0.05f),
+        "a box takes its inertia from its shape");
+  check(near(velocityOf(physics, 2, 4), -0.05f, 0.005f), "and from the one it is given");
+
+  OrblitPhysicsControls partial = controlsOf(2);
+  partial.inertia[0] = 10.0f;
+  control(physics, partial);
+  impulseAt(physics, 2, 0.0f, 0.0f, 1.0f, 5.5f, 0.0f, 0.0f);
+  check(near(velocityOf(physics, 2, 4), -0.05f - 3.0f, 0.1f),
+        "an inertia with an axis missing is not used, and the shape's is");
+  orblit_physics_destroy(physics);
+}
+
+void controlling() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, slabAt(1, 0.5f, 0.5f, 0.5f, 5.0f, 5.0f, 0.0f));
+  check(!control(physics, controlsOf(9)), "controls for a body that is not there are refused");
+  OrblitPhysicsControls nan = controlsOf(1);
+  nan.maxSpeed = std::nanf("");
+  check(!control(physics, nan), "and so are controls with NaN in them");
+  OrblitPhysicsControls centre = controlsOf(1);
+  centre.centre[2] = std::nanf("");
+  check(!control(physics, centre), "in the centre too");
+  OrblitPhysicsControls negative = controlsOf(1);
+  negative.maxSpin = -1.0f;
+  check(!control(physics, negative), "a negative cap is refused");
+  OrblitPhysicsControls unknown = controlsOf(1);
+  unknown.locks = 0x100;
+  check(!control(physics, unknown), "and a lock that does not exist");
+  check(!orblit_physics_controls(physics, nullptr), "and none at all");
+  check(!orblit_physics_controls(nullptr, &centre), "and controls in no world are survivable");
+
+  OrblitPhysicsControls light = controlsOf(1);
+  light.gravityScale = 0.0f;
+  check(control(physics, light), "a fixed body takes controls");
+  switchTo(physics, 1, ORBLIT_PHYSICS_DYNAMIC);
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 1), 5.0f, 0.001f), "and keeps them when it is made free");
+  orblit_physics_destroy(physics);
+}
+
+void wakingControls() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  run(physics, 2.0f);
+  check(orblit_physics_asleep(physics, 2), "a ball at rest sleeps");
+  OrblitPhysicsControls lift = controlsOf(2);
+  lift.gravityScale = -1.0f;
+  control(physics, lift);
+  check(!orblit_physics_asleep(physics, 2), "and is woken by a change to how it moves");
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -2903,6 +3442,19 @@ int main() {
   askingAll();
   askingAny();
   askingTheWorld();
+  weighing();
+  changingGravity();
+  lockingToAPlane();
+  lockedContacts();
+  lockingTurns();
+  capping();
+  ignoring();
+  switching();
+  centring();
+  centringJoined();
+  spreading();
+  controlling();
+  wakingControls();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

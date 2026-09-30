@@ -108,7 +108,8 @@ typedef enum {
 
   /// Add an impulse `vector`, applied at world point `spin`. An impulse away
   /// from the centre of mass spins the body, which is the whole reason the
-  /// point is here rather than assumed.
+  /// point is here rather than assumed. A NaN in the first component of the
+  /// point means through the centre of mass, wherever that has been put.
   ORBLIT_PHYSICS_IMPULSE = 5,
 
   /// Wake it, whether or not anything touched it.
@@ -148,6 +149,19 @@ typedef enum {
   /// set again. Bodies resting on it or near it are woken, so a belt that starts
   /// carries the crate that had gone to sleep on it.
   ORBLIT_PHYSICS_SURFACE = 8,
+
+  /// Change what kind of body this is: `motion` is an OrblitPhysicsMotion.
+  ///
+  /// A door that is fixed until it is unlocked, a crate that is carried and
+  /// then dropped, a platform the game takes over for a cutscene. Made fixed or
+  /// driven, a body keeps its position and stops feeling forces, and a driven
+  /// one keeps the velocity it had. Made free, a body has the mass it was
+  /// created with and the controls it was given, falls, and is pushed.
+  ///
+  /// Ignored for a trigger, which cannot be free, a character, a plane, a
+  /// terrain, a body that is not there, and a motion that does not exist. A
+  /// body switched to the motion it has is left alone.
+  ORBLIT_PHYSICS_MOTION = 9,
 } OrblitPhysicsCommandKind;
 
 /// One thing to do to one body, before the next step.
@@ -183,7 +197,7 @@ typedef struct {
   /// VELOCITY: radians per second. IMPULSE: the world point it acts at.
   float spin[3];
 
-  uint32_t motion;   ///< CREATE: an OrblitPhysicsMotion.
+  uint32_t motion;   ///< CREATE, MOTION: an OrblitPhysicsMotion.
   float mass;        ///< CREATE: kilograms. Ignored unless dynamic.
   float friction;    ///< CREATE: 0 slides for ever, 1 grips. Typically 0.5.
   float restitution; ///< CREATE: 0 lands dead, 1 bounces back to the height it
@@ -657,6 +671,12 @@ typedef enum {
   ORBLIT_PHYSICS_RULE_FRICTION = 1,
   ORBLIT_PHYSICS_RULE_RESTITUTION = 2,
   ORBLIT_PHYSICS_RULE_MOVE_SCALE = 4,
+
+  /// The pair passes through each other. No contact, no touch events, and a
+  /// trigger among them does not see the other. Nothing else in the rule is
+  /// read. A character does not read rules, so it still stops at a body it is
+  /// told to ignore.
+  ORBLIT_PHYSICS_RULE_IGNORE = 8,
 } OrblitPhysicsRuleField;
 
 /// What is different about the contact between two particular bodies, in place
@@ -695,6 +715,80 @@ typedef struct {
 /// itself, a zero id, a NaN or a negative move scale, or removing a rule there
 /// was not.
 bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule);
+
+// --------------------------------------------------------------- controls ---
+
+typedef enum {
+  ORBLIT_PHYSICS_LOCK_MOVE_X = 1,
+  ORBLIT_PHYSICS_LOCK_MOVE_Y = 2,
+  ORBLIT_PHYSICS_LOCK_MOVE_Z = 4,
+  ORBLIT_PHYSICS_LOCK_TURN_X = 8,
+  ORBLIT_PHYSICS_LOCK_TURN_Y = 16,
+  ORBLIT_PHYSICS_LOCK_TURN_Z = 32,
+} OrblitPhysicsLock;
+
+/// How one body moves, apart from what shape it is.
+///
+/// Every field has a value that leaves the body as it was made, so a struct
+/// zeroed except for `body` and `gravityScale` is the ordinary body. Setting
+/// the controls sets all of them: to change one, read what the game holds and
+/// send the rest back.
+typedef struct {
+  OrblitPhysicsId body;
+
+  /// OrblitPhysicsLock bits. A locked axis is in the world's frame, and it is
+  /// held by the solver rather than undone afterwards, so a body locked to a
+  /// plane still rests on a floor that is tilted across it. A locked move drops
+  /// that part of a velocity, of an impulse and of every contact push. A locked
+  /// turn does the same to spin, and to the torque of an off-centre shove.
+  uint32_t locks;
+
+  /// How much of the world's gravity, and of any zone's, this body feels. One
+  /// is ordinary, zero floats, and a negative number rises.
+  float gravityScale;
+
+  /// The fastest it may go, in metres per second, and the fastest it may spin,
+  /// in radians per second. Zero is no cap. A cap is applied at the end of each
+  /// step's velocity solve, so a body can exceed it inside one step's contact
+  /// work and never leaves a step above it.
+  float maxSpeed;
+  float maxSpin;
+
+  /// Where its weight is, in the body's own frame, from the origin it is placed
+  /// by. It turns about this point and a shove at it does not spin it. Unless
+  /// `inertia` is given, the inertia is the shape's about the shape's middle,
+  /// plus the cost of turning about this point instead, as the parallel axis
+  /// theorem has it. Zero is the middle of the shape.
+  float centre[3];
+
+  /// The inertia about each of the body's own axes through its centre of mass,
+  /// in kilogram square metres. All three above zero replace the shape's and
+  /// are used as given, whatever `centre` is. Anything else uses the shape's.
+  float inertia[3];
+
+  /// Sets the controls without waking anything. For a body that has just been
+  /// made, so that one made asleep stays asleep with the controls it was made
+  /// with. Zero, which is every other caller, wakes as described below.
+  bool quiet;
+} OrblitPhysicsControls;
+
+/// Sets a body's controls, and wakes it and what rests on it, since a change to
+/// how it moves is a change to whether it is at rest. Returns whether it took.
+/// `quiet` skips the waking.
+///
+/// A fixed or driven body keeps them for when it is made free. False, and
+/// nothing changed, for a body that is not there, a NaN or an infinity in any
+/// field, a negative cap or inertia, a lock bit that does not exist, and a
+/// plane or terrain, which have nothing to move.
+bool orblit_physics_controls(OrblitPhysics *physics,
+                             const OrblitPhysicsControls *controls);
+
+/// Sets the world's gravity, in metres per second squared, and wakes every
+/// body, since none of them is at rest any more. Returns whether it took: false
+/// for a NaN or an infinity in any axis, a null pointer, and no world.
+///
+/// Zones and body scales still apply on top of it.
+bool orblit_physics_gravity(OrblitPhysics *physics, const float gravity[3]);
 
 // ------------------------------------------------------------- characters ---
 

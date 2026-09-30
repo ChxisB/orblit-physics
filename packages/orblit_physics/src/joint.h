@@ -179,8 +179,13 @@ class Joints {
     uint32_t joint = 0;
     uint32_t a = 0;
     uint32_t b = 0;
-    float inverseMassA = 0.0f;
-    float inverseMassB = 0.0f;
+    /// Whether the solver will move the body: free and awake. The world, a
+    /// fixed or driven body and a sleeper have infinite mass.
+    bool movesA = false;
+    bool movesB = false;
+    /// Inverse mass on each world axis, zero on a locked one.
+    Vec3 gainA;
+    Vec3 gainB;
     Mat3 inertiaA;
     Mat3 inertiaB;
   };
@@ -208,6 +213,11 @@ class Joints {
   };
 
   Held heldFor(const Bodies &bodies, uint32_t index) const;
+
+  /// How hard it is to change the speed along a row, inverted. Zero when
+  /// neither body can move, which makes every impulse along it zero.
+  static float massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
+                         const Vec3 &turnB);
 
   static float speedAlong(const Bodies &bodies, const Held &held,
                           const Row &row);

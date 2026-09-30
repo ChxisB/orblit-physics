@@ -1,3 +1,18 @@
+## 0.4.0
+
+- Body controls: a body's `locks`, `gravityScale`, `maxSpeed`, `maxSpin`,
+  `centreOfMass` and `inertia` are sent to the world with it. The centre of
+  mass grows with the entity's scale and the inertia does not. A body with
+  none of them set sends nothing. A negative cap or inertia from a hand
+  edited file is read as none, so the locks still apply.
+- A body added with `startsAsleep` stays asleep with its controls.
+- `ignore` and `unignore` make two entities pass through each other, and
+  restore contact. They take entity ids, in either order. The pair is kept
+  when an edit rebuilds a body, and forgotten when an entity loses its body
+  or leaves the document. A character does not read the rule.
+- Needs `orblit_scene` 0.11.0, for the body fields, and `orblit_physics`
+  0.7.0.
+
 ## 0.3.0
 
 - Triggers: a body with `BodyComponent.trigger` is a place. What enters and
