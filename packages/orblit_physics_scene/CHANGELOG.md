@@ -1,3 +1,16 @@
+## 0.3.0
+
+- Triggers: a body with `BodyComponent.trigger` is a place. What enters and
+  leaves it is heard in `events` as `entered` and `exited`, with the
+  trigger's number first. `stay` adds `touchStay` and `inside`. The flag is
+  ignored for a free body, which the solver has to move.
+- Zones: an entity with a `ZoneComponent` and a body is a trigger whose
+  region changes how the free bodies in it move. Editing or removing the
+  zone makes the world agree, and what was inside is woken.
+- Belts: `BodyComponent.surface` carries what stands on the body.
+- Needs `orblit_scene` 0.10.0, for `ZoneComponent` and the new body fields,
+  and `orblit_physics` 0.6.0.
+
 ## 0.2.0
 
 - Joints: an entity with a `JointComponent` joins the nearest body at or above

@@ -1,3 +1,33 @@
+## 0.6.0
+
+- Triggers: `add(trigger: true)` makes a place rather than a thing. Nothing
+  collides with it and it pushes nothing. It reports `entered` and `exited`
+  with the trigger named first, and `inside` every step when it has `stay`.
+  Solid casts, overlaps and characters do not see it. Only a fixed or driven
+  body can be one.
+- `stay` on either body of a contact adds `touchStay` every step the touch
+  goes on, between `touchBegan` and `touchEnded`. A pair that has gone to
+  sleep has its touch ended, so the stay stops with it.
+- Zones: `setZone` puts a gravity, a linear damping and an angular damping
+  over a trigger's region, each optional, with a priority. Each field is
+  decided on its own. The highest priority wins and the lower id wins a tie.
+  A zone acts on free bodies that are awake. `removeZone` takes it off.
+- Contact rules: `setRule` changes the friction and restitution of one pair
+  of bodies, and how much of the contact's push each takes. `removeRule`
+  clears it. This is the contact hook as data rather than a callback. A rule
+  ends when either body is removed.
+- `setSurface` sets how fast a body's surface moves while the body stays put:
+  a conveyor belt. What stands on it is carried to that speed and no more.
+- Queries: `castAll` gives every hit along a ray or a swept shape, nearest
+  first, up to a `limit`. `castAny` says whether there is one. `overlap` says
+  which bodies touch a shape, or a point when it has none. `triggers: true`
+  asks about triggers and nothing solid.
+- The ABI gains `OrblitPhysicsZone`, `OrblitPhysicsRule`,
+  `orblit_physics_zone`, `_rule`, `_cast_all`, `_cast_any` and `_overlap`.
+  `OrblitPhysicsCommand` gains `sensor` and `stay` and the kind `SURFACE`.
+  `OrblitPhysicsCast` gains `triggers`. The events `ENTERED`, `EXITED`,
+  `TOUCH_STAY` and `INSIDE` are new.
+
 ## 0.5.0
 
 - Joints: `Physics.join` holds two bodies together, or one to the world, as a

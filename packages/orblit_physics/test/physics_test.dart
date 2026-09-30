@@ -1,5 +1,5 @@
 import 'dart:ffi' show sizeOf;
-import 'dart:math' show max, min, sqrt;
+import 'dart:math' show cos, max, min, sin, sqrt;
 import 'dart:typed_data';
 
 import 'package:orblit_physics/native.dart' as native;
@@ -932,6 +932,488 @@ void main() {
       expect(join(3, b: 3), isTrue, reason: 'joints are named apart');
       expect(physics.jointStateOf(99), isNull);
       expect(physics.unjoin(99), isFalse);
+    });
+  });
+
+  group('asking the world', () {
+    /// A cube trigger of half-size `half`, kept still.
+    void trigger(
+      int id, {
+      required List<double> at,
+      double half = 1.0,
+      bool stay = false,
+    }) => physics.add(
+      id,
+      shape: Shape.box(half, half, half),
+      motion: PhysicsMotion.fixed,
+      at: at,
+      trigger: true,
+      stay: stay,
+    );
+
+    /// Steps `seconds` and keeps every event, since a step drops the last
+    /// one's.
+    List<PhysicsEvent> watch(double seconds) {
+      final seen = <PhysicsEvent>[];
+      for (var i = 0; i < (seconds * 60).round(); i++) {
+        physics.step(1 / 60);
+        seen.addAll(physics.events);
+      }
+      return seen;
+    }
+
+    int count(List<PhysicsEvent> seen, PhysicsEventKind kind, int a, int b) =>
+        seen.where((it) => it.kind == kind && it.a == a && it.b == b).length;
+
+    test('its structs are the size the engine reads', () {
+      expect(sizeOf<native.OrblitPhysicsZone>(), 40);
+      expect(sizeOf<native.OrblitPhysicsRule>(), 40);
+    });
+
+    test('a body falling through a trigger enters and leaves it', () {
+      physics.add(
+        9,
+        shape: const Shape.plane(0.0, 1.0, 0.0, offset: -6.0),
+        motion: PhysicsMotion.fixed,
+      );
+      trigger(1, at: const [0.0, 0.0, 0.0]);
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.25),
+        at: const [0.0, 3.0, 0.0],
+      );
+
+      final seen = watch(2.0);
+
+      expect(count(seen, PhysicsEventKind.entered, 1, 2), 1);
+      expect(count(seen, PhysicsEventKind.exited, 1, 2), 1);
+      expect(count(seen, PhysicsEventKind.touchBegan, 1, 2), 0);
+      expect(heightOf(2), closeTo(-5.75, 0.1), reason: 'nothing was pushed');
+    });
+
+    test('inside and touchStay are heard only by a body that asks', () {
+      floor();
+      trigger(5, at: const [0.0, 0.0, 0.0], stay: true);
+      physics.add(
+        2,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [5.0, 0.49, 0.0],
+        stay: true,
+      );
+      physics.add(
+        3,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [8.0, 0.49, 0.0],
+      );
+      physics.add(
+        4,
+        shape: const Shape.sphere(0.25),
+        motion: PhysicsMotion.driven,
+        at: const [0.0, 0.0, 0.0],
+      );
+
+      final seen = watch(0.3);
+
+      expect(count(seen, PhysicsEventKind.inside, 5, 4), greaterThan(10));
+      expect(
+        count(seen, PhysicsEventKind.touchStay, ground, 2),
+        greaterThan(10),
+      );
+      expect(count(seen, PhysicsEventKind.touchBegan, ground, 3), 1);
+      expect(count(seen, PhysicsEventKind.touchStay, ground, 3), 0);
+    });
+
+    test('entering names the trigger first and gives a unit normal', () {
+      trigger(5, at: const [0.0, 0.0, 0.0]);
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.25),
+        motion: PhysicsMotion.driven,
+        at: const [0.9, 0.0, 0.0],
+      );
+
+      final entered = watch(0.1)
+          .singleWhere((it) => it.kind == PhysicsEventKind.entered);
+
+      expect([entered.a, entered.b], [5, 2], reason: 'not smaller id first');
+      final n = entered.normal;
+      expect(n[0] * n[0] + n[1] * n[1] + n[2] * n[2], closeTo(1.0, 0.01));
+    });
+
+    test('a zone with no gravity holds a body, and removing it lets go', () {
+      trigger(1, at: const [0.0, 10.0, 0.0], half: 20.0);
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.25),
+        at: const [0.0, 10.0, 0.0],
+      );
+
+      expect(
+        physics.setZone(1, const PhysicsZone(gravity: [0.0, 0.0, 0.0])),
+        isTrue,
+      );
+      run(1.0);
+      expect(heightOf(2), closeTo(10.0, 0.05));
+
+      expect(physics.removeZone(1), isTrue);
+      run(1.0);
+      expect(heightOf(2), lessThan(6.0));
+      expect(physics.removeZone(1), isFalse, reason: 'there was none');
+    });
+
+    test('zones agree by priority, then by lowest id', () {
+      // Each zone is (id, priority, upward gravity), over the same ball.
+      double heightUnder(List<(int, int, double)> zones) {
+        final world = Physics();
+        addTearDown(world.dispose);
+        world.add(
+          2,
+          shape: const Shape.sphere(0.25),
+          at: const [0.0, 10.0, 0.0],
+        );
+        for (final (id, priority, gravity) in zones) {
+          world.add(
+            id,
+            shape: const Shape.box(20.0, 20.0, 20.0),
+            motion: PhysicsMotion.fixed,
+            at: const [0.0, 10.0, 0.0],
+            trigger: true,
+          );
+          world.setZone(
+            id,
+            PhysicsZone(gravity: [0.0, gravity, 0.0], priority: priority),
+          );
+        }
+        for (var i = 0; i < 60; i++) {
+          world.step(1 / 60);
+        }
+        return world.transformOf(2)![1];
+      }
+
+      expect(heightUnder([(1, 0, 0.0), (3, 5, 9.81)]), greaterThan(12.0));
+      expect(heightUnder([(1, 5, 9.81), (3, 0, 0.0)]), greaterThan(12.0));
+      expect(heightUnder([(3, 3, -9.81), (1, 3, 9.81)]), greaterThan(12.0));
+    });
+
+    test('a zone can hold damping and leave gravity alone', () {
+      trigger(1, at: const [0.0, 10.0, 0.0], half: 20.0);
+      physics.add(
+        2,
+        shape: const Shape.sphere(0.25),
+        at: const [0.0, 10.0, 0.0],
+        linearDamping: 0.0,
+      );
+      physics.setZone(1, const PhysicsZone(linearDamping: 8.0));
+      physics.drive(2, velocity: const [5.0, 0.0, 0.0]);
+
+      run(1.0);
+
+      expect(physics.velocityOf(2)![0], lessThan(0.1));
+      expect(heightOf(2), lessThan(10.0), reason: 'gravity was not changed');
+    });
+
+    test('a zone is refused on what is not a trigger, and for NaN', () {
+      physics.add(1, shape: const Shape.sphere(0.5), at: const [0.0, 2.0, 0.0]);
+      trigger(2, at: const [0.0, 0.0, 0.0]);
+      const weightless = PhysicsZone(gravity: [0.0, 0.0, 0.0]);
+
+      expect(physics.setZone(1, weightless), isFalse);
+      expect(physics.setZone(99, weightless), isFalse);
+      expect(
+        physics.setZone(2, const PhysicsZone(gravity: [0.0, double.nan, 0.0])),
+        isFalse,
+      );
+    });
+
+    test(
+      'a belt carries a box at its own speed, and reversing it turns it',
+      () {
+        physics.add(
+          1,
+          shape: const Shape.box(8.0, 0.25, 1.0),
+          motion: PhysicsMotion.fixed,
+          at: const [0.0, 0.25, 0.0],
+        );
+        physics.add(
+          2,
+          shape: const Shape.box(0.5, 0.5, 0.5),
+          at: const [0.0, 1.0, 0.0],
+        );
+
+        physics.setSurface(1, velocity: const [2.0, 0.0, 0.0]);
+        run(2.0);
+        expect(physics.velocityOf(2)![0], closeTo(2.0, 0.2));
+        expect(heightOf(2), closeTo(1.0, 0.02));
+
+        physics.setSurface(1, velocity: const [-2.0, 0.0, 0.0]);
+        run(2.0);
+        expect(physics.velocityOf(2)![0], closeTo(-2.0, 0.2));
+
+        physics.setSurface(1, velocity: const [0.0, 0.0, 0.0]);
+        run(2.0);
+        expect(physics.velocityOf(2)![0].abs(), lessThan(0.1));
+      },
+    );
+
+    test('a rule with no friction lets one box slide on grippy ground', () {
+      floor(friction: 1.0);
+      for (final (id, z) in [(2, 0.0), (3, 5.0)]) {
+        physics.add(
+          id,
+          shape: const Shape.box(0.5, 0.5, 0.5),
+          at: [0.0, 0.5, z],
+          friction: 1.0,
+        );
+        physics.drive(id, velocity: const [4.0, 0.0, 0.0]);
+      }
+      physics.setRule(2, ground, const PhysicsRule(friction: 0.0));
+
+      run(2.0);
+
+      expect(physics.transformOf(3)![0], lessThan(1.0));
+      expect(physics.transformOf(2)![0], greaterThan(2.5));
+    });
+
+    test('a rule is removed by naming it, and ends with either body', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 0.5, 0.0]);
+      const bouncy = PhysicsRule(restitution: 0.9);
+
+      expect(physics.setRule(2, ground, bouncy), isTrue);
+      expect(physics.removeRule(ground, 2), isTrue);
+      expect(physics.removeRule(ground, 2), isFalse, reason: 'there was none');
+
+      physics.setRule(2, ground, bouncy);
+      physics.remove(2);
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 0.5, 0.0]);
+      expect(physics.removeRule(2, ground), isFalse, reason: 'it ended with 2');
+    });
+
+    test('a rule is refused for a body against itself and for nonsense', () {
+      floor();
+      physics.add(2, shape: const Shape.sphere(0.5), at: const [0.0, 0.5, 0.0]);
+
+      bool set(int a, int b, PhysicsRule rule) => physics.setRule(a, b, rule);
+      expect(set(2, 2, const PhysicsRule(friction: 0.0)), isFalse);
+      expect(set(2, 55, const PhysicsRule(friction: 0.0)), isFalse);
+      expect(set(2, ground, const PhysicsRule(friction: double.nan)), isFalse);
+      expect(set(2, ground, const PhysicsRule(moveScaleA: -1.0)), isFalse);
+    });
+
+    group('casting', () {
+      /// Three boxes along +x, made in the reverse of the order a ray meets
+      /// them, so that meeting them in order is not an accident of storage.
+      void row() {
+        for (var i = 3; i >= 1; i--) {
+          physics.add(
+            i,
+            shape: const Shape.box(0.5, 0.5, 0.5),
+            motion: PhysicsMotion.fixed,
+            at: [3.0 * i, 0.0, 0.0],
+          );
+        }
+      }
+
+      List<PhysicsHit> alongRow({
+        int ignore = 0,
+        int limit = 32,
+        double x = 0,
+      }) => physics.castAll(
+        from: [x, 0.0, 0.0],
+        direction: const [1.0, 0.0, 0.0],
+        distance: 20.0,
+        ignore: ignore,
+        limit: limit,
+      );
+
+      test('castAll meets every body along the way, nearest first', () {
+        row();
+
+        final all = alongRow();
+
+        expect(all.map((it) => it.body), [1, 2, 3]);
+        expect(all.first.distance, closeTo(2.5, 0.01));
+        expect(all[1].normal[0], closeTo(-1.0, 0.01));
+      });
+
+      test('castAll keeps the nearest when the limit is short', () {
+        row();
+
+        expect(alongRow(limit: 2).map((it) => it.body), [1, 2]);
+        expect(alongRow(limit: 0), isEmpty);
+      });
+
+      test('castAll skips what it is told to ignore and starts inside', () {
+        row();
+
+        final inside = alongRow(x: 3.0);
+
+        expect(alongRow(ignore: 2).map((it) => it.body), [1, 3]);
+        expect(inside.first.started, isTrue);
+        expect(inside.first.distance, 0.0);
+        expect(inside[1].started, isFalse);
+      });
+
+      test('castAny answers whether there is anything in the way', () {
+        row();
+        trigger(4, at: const [30.0, 0.0, 0.0], half: 0.5);
+
+        bool any({
+          double distance = 20.0,
+          double x = 0.0,
+          double direction = 1.0,
+          bool triggers = false,
+        }) => physics.castAny(
+          from: [x, 0.0, 0.0],
+          direction: [direction, 0.0, 0.0],
+          distance: distance,
+          triggers: triggers,
+        );
+
+        expect(any(), isTrue);
+        expect(any(direction: -1.0), isFalse);
+        expect(any(distance: 2.0), isFalse);
+        expect(any(x: 25.0), isFalse, reason: 'a trigger is not a hit');
+        expect(any(x: 25.0, triggers: true), isTrue);
+      });
+
+      test('cast sees a trigger only when asked for triggers', () {
+        trigger(1, at: const [3.0, 0.0, 0.0], half: 0.5);
+
+        PhysicsHit? shoot({required bool triggers}) => physics.cast(
+          from: const [0.0, 0.0, 0.0],
+          direction: const [1.0, 0.0, 0.0],
+          distance: 20.0,
+          triggers: triggers,
+        );
+
+        expect(shoot(triggers: false), isNull);
+        expect(shoot(triggers: true)?.body, 1);
+      });
+
+      test('overlap with no shape asks about a point', () {
+        physics.add(
+          1,
+          shape: const Shape.box(1.0, 1.0, 1.0),
+          motion: PhysicsMotion.fixed,
+        );
+        trigger(2, at: const [10.0, 0.0, 0.0]);
+
+        expect(physics.overlap(at: const [0.0, 0.0, 0.0]), [1]);
+        expect(physics.overlap(at: const [0.0, 1.2, 0.0]), isEmpty);
+        expect(physics.overlap(at: const [10.0, 0.0, 0.0]), isEmpty);
+        expect(physics.overlap(at: const [10.0, 0.0, 0.0], triggers: true), [
+          2,
+        ]);
+      });
+
+      test('overlap by a shape reports what it touches, up to a limit', () {
+        physics.add(
+          1,
+          shape: const Shape.box(1.0, 1.0, 1.0),
+          motion: PhysicsMotion.fixed,
+        );
+        physics.add(
+          2,
+          shape: const Shape.sphere(0.5),
+          motion: PhysicsMotion.fixed,
+          at: const [1.4, 0.0, 0.0],
+        );
+
+        List<int> around({int ignore = 0, int limit = 32}) => physics.overlap(
+          at: const [1.2, 0.0, 0.0],
+          shape: const Shape.sphere(0.3),
+          ignore: ignore,
+          limit: limit,
+        );
+
+        expect(around().toSet(), {1, 2});
+        expect(around(limit: 1), hasLength(1));
+        expect(around(ignore: 1), [2]);
+        expect(around(limit: 0), isEmpty);
+      });
+    });
+
+    test('a ramp, a trigger, a zone and a belt answer all five questions', () {
+      const angle = 0.5;
+      floor();
+      physics.add(
+        2,
+        shape: Shape.plane(
+          -sin(angle),
+          cos(angle),
+          0.0,
+          offset: -10.0 * sin(angle),
+        ),
+        motion: PhysicsMotion.fixed,
+      );
+      trigger(3, at: const [4.0, 1.0, 0.0]);
+      trigger(4, at: const [-20.0, 2.0, 0.0], half: 2.0);
+      physics.setZone(4, const PhysicsZone(gravity: [0.0, 0.0, 0.0]));
+      physics.add(
+        5,
+        shape: const Shape.box(4.0, 0.25, 1.0),
+        motion: PhysicsMotion.fixed,
+        at: const [-5.0, 0.25, 0.0],
+      );
+      physics.add(
+        6,
+        shape: const Shape.box(0.5, 0.5, 0.5),
+        at: const [-5.0, 1.0, 0.0],
+      );
+      physics.add(
+        7,
+        shape: const Shape.sphere(0.25),
+        at: const [-20.0, 2.0, 0.0],
+      );
+      physics.setSurface(5, velocity: const [2.0, 0.0, 0.0]);
+
+      // Point and overlap.
+      expect(physics.overlap(at: const [4.0, 1.0, 0.0]), isEmpty);
+      expect(physics.overlap(at: const [4.0, 1.0, 0.0], triggers: true), [3]);
+      expect(physics.overlap(at: const [-20.0, 2.0, 0.0], triggers: true), [4]);
+      expect(
+        physics.overlap(
+          at: const [-5.0, 1.0, 0.0],
+          shape: const Shape.sphere(0.1),
+        ),
+        [6],
+      );
+
+      // Closest, all and any, down onto the ramp, reporting its normal.
+      const down = [0.0, -1.0, 0.0];
+      const from = [13.0, 10.0, 0.0];
+      final hit = physics.cast(from: from, direction: down, distance: 100.0)!;
+      expect(hit.body, 2);
+      expect(hit.normal[0], closeTo(-sin(angle), 0.01));
+      expect(hit.normal[1], closeTo(cos(angle), 0.01));
+      final both = physics.castAll(
+        from: from,
+        direction: down,
+        distance: 100.0,
+      );
+      expect(both.map((it) => it.body), [2, 1]);
+      expect(both[1].distance, closeTo(10.0, 0.01));
+      expect(
+        physics.castAny(from: from, direction: down, distance: 5.0),
+        isFalse,
+      );
+      expect(
+        physics.castAny(from: from, direction: down, distance: 100.0),
+        isTrue,
+      );
+
+      // The world, run: the belt carries its box and the zone holds its ball.
+      run(2.0);
+      expect(physics.velocityOf(6)![0], closeTo(2.0, 0.2));
+      expect(heightOf(7), closeTo(2.0, 0.05));
+    });
+
+    test('the new event kinds follow the engine\'s numbers', () {
+      expect(PhysicsEventKind.values[5], PhysicsEventKind.entered);
+      expect(PhysicsEventKind.values[6], PhysicsEventKind.exited);
+      expect(PhysicsEventKind.values[7], PhysicsEventKind.touchStay);
+      expect(PhysicsEventKind.values[8], PhysicsEventKind.inside);
     });
   });
 

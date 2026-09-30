@@ -145,8 +145,10 @@ class Walker {
                 OrblitPhysicsId alsoIgnore, Impact &hit) const {
     Sieve sieve = sieve_;
     sieve.alsoIgnore = alsoIgnore;
-    return nearest(bodies_, Placed{shape_, from, rotation_}, direction, distance,
-                   sieve, hit);
+    return nearest(bodies_,
+                   Journey{Placed{shape_, from, rotation_}, direction, distance,
+                           sieve},
+                   hit);
   }
 
   bool walkable(float rises) const {
@@ -181,7 +183,7 @@ class Walker {
     sieve.leaving = false;
     Impact top;
     const Placed ray{Shape::sphere(0.0f), from, Quat{}};
-    if (nearest(bodies_, ray, -up_, kAbove + kBeyond, sieve, top) ==
+    if (nearest(bodies_, Journey{ray, -up_, kAbove + kBeyond, sieve}, top) ==
         Bodies::kNone) {
       return foot;
     }
@@ -309,6 +311,8 @@ class Walker {
         if (row == self) continue;
         const Motion motion = bodies_.motion(row);
         if (motion != Motion::fixed && motion != Motion::driven) continue;
+        // A sensor is somewhere to be, not something to be pushed out of.
+        if (bodies_.sensor(row)) continue;
         if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),
                       bodies_.layerCares(row))) {
           continue;

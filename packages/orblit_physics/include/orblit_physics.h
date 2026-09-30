@@ -134,6 +134,20 @@ typedef enum {
   ///
   /// Ignored for anything but a kinematic body, and for a plane.
   ORBLIT_PHYSICS_CHARACTER = 7,
+
+  /// Set the speed of a body's surface: `vector` is a velocity in the world.
+  ///
+  /// A belt is a body whose top slides while the body stays where it is. What
+  /// stands on it is dragged by friction towards the speed of the surface
+  /// rather than towards rest, and comes to that speed and no more. Only the
+  /// part of `vector` along the surface it touches counts, so a surface speed
+  /// straight into the body does nothing. Zero, which every body starts with,
+  /// is an ordinary surface.
+  ///
+  /// It is a fact about the body, not about one contact, and holds until it is
+  /// set again. Bodies resting on it or near it are woken, so a belt that starts
+  /// carries the crate that had gone to sleep on it.
+  ORBLIT_PHYSICS_SURFACE = 8,
 } OrblitPhysicsCommandKind;
 
 /// One thing to do to one body, before the next step.
@@ -191,7 +205,26 @@ typedef struct {
   /// CREATE: starts asleep. A level full of crates should not simulate itself
   /// awake on the first frame only to find it was already settled.
   bool asleep;
-  bool _reserved[3];
+
+  /// CREATE: a trigger. It is where things are rather than something they hit:
+  /// nothing bounces off it and nothing is pushed by it, and it is invisible to
+  /// solid casts, overlaps and characters. What it does is report bodies
+  /// entering and leaving it as ENTERED and EXITED events, and it is the
+  /// region an `orblit_physics_zone` takes its effect over. Static or
+  /// kinematic: the flag is ignored for a dynamic body, which the solver has to
+  /// move. A trigger and a trigger do not see each other, and neither sees a
+  /// static body, since nothing about that ever changes.
+  ///
+  /// Ask for triggers with `OrblitPhysicsCast::triggers`, which sees only them.
+  bool sensor;
+
+  /// CREATE: report this body's contacts every step as TOUCH_STAY, and for a
+  /// trigger every body inside it as INSIDE, as well as the begin and end
+  /// every body reports. Off by default because most bodies touch something
+  /// for most of their lives and most callers do not want to hear about it
+  /// sixty times a second. Either body of a pair asking is enough.
+  bool stay;
+  bool _reserved;
 } OrblitPhysicsCommand;
 
 // ----------------------------------------------------------------- events ---
@@ -206,6 +239,29 @@ typedef enum {
   /// where it was, and `force` what broke it: the force in newtons, or the
   /// torque in newton-metres if that was what went past its limit.
   ORBLIT_PHYSICS_BROKE = 5,
+
+  /// A body came into a trigger. `a` is the trigger and `b` is the body, in
+  /// that order whichever id is smaller, because what a game wants to know is
+  /// which trigger and what entered it. `at` is the deepest point of the
+  /// overlap and `normal` is out of the body, towards the trigger.
+  ///
+  /// A body asleep in a trigger is in it, and is reported when the trigger or
+  /// the body is made. A trigger that is destroyed reports everything inside it
+  /// leaving.
+  ORBLIT_PHYSICS_ENTERED = 6,
+
+  /// A body left a trigger, `a` and `b` as for ENTERED. `at` and `normal` are
+  /// zero.
+  ORBLIT_PHYSICS_EXITED = 7,
+
+  /// A touch that goes on, reported every step to a body that asked with
+  /// `stay`. Everything else is as for TOUCH_BEGAN, except that `force` is the
+  /// impulse of this step alone.
+  ORBLIT_PHYSICS_TOUCH_STAY = 8,
+
+  /// A body is still in a trigger, reported every step when either asked with
+  /// `stay`. `a` and `b` are as for ENTERED.
+  ORBLIT_PHYSICS_INSIDE = 9,
 } OrblitPhysicsEventKind;
 
 /// Something that happened during a step and is worth telling the caller.
@@ -384,7 +440,13 @@ typedef struct {
   /// bodies follow: it meets a body when either cares about the other.
   uint32_t layerIs;
   uint32_t layerCares;
-  uint32_t _pad;
+
+  /// Which of the two kinds of body it sees. False sees solid bodies and
+  /// never a trigger, which is what a character, a camera and a bullet want.
+  /// True sees triggers and nothing solid, which is how a game asks which
+  /// zone a point is in.
+  bool triggers;
+  bool _reserved[3];
 
   /// The shape's dimensions, read as its kind describes. Ignored for a ray.
   /// A plane cannot be cast: an infinite surface is touching everything
@@ -435,11 +497,43 @@ typedef struct {
 /// Finds the nearest thing `cast` would meet, and returns whether it met
 /// anything. `out` is untouched on a miss.
 ///
-/// Nearest, not every: a caller that wants the list can cast again past what
-/// it found. Sleeping and static bodies are hit like any other — a query asks
-/// where things are, and a crate that has settled is still in the way.
+/// Nearest, not every: `orblit_physics_cast_all` is the list. Sleeping and
+/// static bodies are hit like any other — a query asks where things are, and a
+/// crate that has settled is still in the way.
 bool orblit_physics_cast(const OrblitPhysics *physics,
                          const OrblitPhysicsCast *cast, OrblitPhysicsHit *out);
+
+/// Every body `cast` would meet along its way, nearest first, written into
+/// `out` up to `capacity`. Returns how many were written.
+///
+/// When there are more than `capacity` it keeps the nearest, not the first it
+/// happened to find, so a caller with room for one gets the same answer as
+/// `orblit_physics_cast`. A body the cast begins inside is one of them, with
+/// `started` set and a distance of nought. Each body is met once.
+uint32_t orblit_physics_cast_all(const OrblitPhysics *physics,
+                                 const OrblitPhysicsCast *cast,
+                                 OrblitPhysicsHit *out, uint32_t capacity);
+
+/// Whether `cast` would meet anything at all. The same answer as
+/// `orblit_physics_cast`, found without working out which was nearest, so it
+/// is the cheap way to ask "is there a wall in the way".
+bool orblit_physics_cast_any(const OrblitPhysics *physics,
+                             const OrblitPhysicsCast *cast);
+
+/// The bodies a shape overlaps where it stands, written into `out` up to
+/// `capacity`, in no order. Returns how many were written.
+///
+/// It ignores `direction` and `distance`: nothing is moved. A `shape` of zero
+/// is a point, and finds every body that contains it, a plane included, which
+/// contains everything below its surface. A plane cannot be asked about, and
+/// that returns nothing. Solid bodies unless `triggers` is set, and then only
+/// triggers, the same as a cast.
+///
+/// Stops at `capacity`, so asking for one is the cheap way to ask whether
+/// there is anything.
+uint32_t orblit_physics_overlap(const OrblitPhysics *physics,
+                                const OrblitPhysicsCast *cast,
+                                OrblitPhysicsId *out, uint32_t capacity);
 
 // ----------------------------------------------------------------- ground ---
 
@@ -511,6 +605,96 @@ typedef struct {
 /// samples each way, four with a margin.
 bool orblit_physics_ground(OrblitPhysics *physics,
                            const OrblitPhysicsGround *ground);
+
+// ------------------------------------------------------------------ zones ---
+
+typedef enum {
+  /// The region's `gravity` replaces the world's for what is inside it.
+  ORBLIT_PHYSICS_ZONE_GRAVITY = 1,
+
+  /// The region's linear damping replaces the body's own.
+  ORBLIT_PHYSICS_ZONE_LINEAR_DAMPING = 2,
+
+  /// The region's angular damping replaces the body's own.
+  ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING = 4,
+} OrblitPhysicsZoneField;
+
+/// A trigger that changes how bodies inside it move. Water is a zone with a
+/// weak gravity and a lot of damping, and a lift shaft is one with gravity
+/// upwards.
+typedef struct {
+  /// The trigger the zone is over. Its shape is the region.
+  OrblitPhysicsId body;
+
+  /// Which fields the zone speaks for, as OrblitPhysicsZoneField bits. None
+  /// removes the zone and leaves the trigger.
+  uint32_t overrides;
+
+  /// Where zones overlap, each field takes the answer of the zone that claims
+  /// it with the highest priority, and at a tie the lower body id. The fields
+  /// are settled apart, so a zone that speaks for damping does not silence one
+  /// that speaks for gravity.
+  int32_t priority;
+
+  /// Metres per second squared, for ZONE_GRAVITY.
+  float gravity[3];
+
+  /// Linear then angular, as a fraction shed per second, like a body's.
+  float damping[2];
+} OrblitPhysicsZone;
+
+/// Sets or removes the zone over a trigger. Bodies inside it are woken so a
+/// crate asleep in new water floats. Returns whether it took.
+///
+/// False, and nothing changed, for a body that is not there or is not a
+/// trigger, a NaN in any field, or removing a zone there was not. A dynamic
+/// body is the only kind a zone acts on: it moves what the solver moves.
+bool orblit_physics_zone(OrblitPhysics *physics, const OrblitPhysicsZone *zone);
+
+// ------------------------------------------------------------------ rules ---
+
+typedef enum {
+  ORBLIT_PHYSICS_RULE_FRICTION = 1,
+  ORBLIT_PHYSICS_RULE_RESTITUTION = 2,
+  ORBLIT_PHYSICS_RULE_MOVE_SCALE = 4,
+} OrblitPhysicsRuleField;
+
+/// What is different about the contact between two particular bodies, in place
+/// of what their own friction, restitution and mass would say.
+///
+/// This is the contact hook, as data: a game decides that this crate on that
+/// patch of ice slides, and says so once, rather than being asked about the
+/// contact every step. It holds whenever the two touch, and until it is
+/// removed or either body goes.
+typedef struct {
+  OrblitPhysicsId a;
+  OrblitPhysicsId b;
+
+  /// Which fields the rule speaks for, as OrblitPhysicsRuleField bits. None
+  /// removes the rule.
+  uint32_t overrides;
+
+  /// Replace the pair's friction and its restitution outright.
+  float friction;
+  float restitution;
+
+  /// How much of this contact's push `a` and `b` each take, in this contact and
+  /// no other. One leaves a body as it is. Zero makes it immovable to the other
+  /// one, as if it were infinitely heavy, and two makes it move twice as
+  /// easily, as if it were half the mass. This is how a platform carries a
+  /// crate without the crate slowing it. Both are one for a rule that leaves
+  /// movement alone.
+  float moveScale[2];
+} OrblitPhysicsRule;
+
+/// Sets or removes the rule between two bodies, waking both. Returns whether it
+/// took. The order they are named in matters only to `moveScale`, which follows
+/// `a` and `b` however the world keeps them.
+///
+/// False, and nothing changed, for a body that is not there, a body against
+/// itself, a zero id, a NaN or a negative move scale, or removing a rule there
+/// was not.
+bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule);
 
 // ------------------------------------------------------------- characters ---
 

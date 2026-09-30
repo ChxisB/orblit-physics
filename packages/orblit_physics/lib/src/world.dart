@@ -93,6 +93,22 @@ enum PhysicsEventKind {
 
   /// A joint gave way and is gone. The event's `a` is the joint, not a body.
   broke,
+
+  /// A body came into a trigger. `a` is the trigger and `b` the body, in that
+  /// order whichever id is smaller. `at` is the deepest point of the overlap
+  /// and `normal` points out of the body, towards the trigger.
+  entered,
+
+  /// A body left a trigger, or the trigger or the body was removed. `a` and
+  /// `b` are as for [entered], and `at` and `normal` are zero.
+  exited,
+
+  /// A touch that goes on, every step, for a body added with `stay`.
+  touchStay,
+
+  /// A body is still in a trigger, every step, when either was added with
+  /// `stay`.
+  inside,
 }
 
 final class PhysicsEvent {
@@ -107,15 +123,16 @@ final class PhysicsEvent {
 
   final PhysicsEventKind kind;
 
-  /// The body it happened to, and for a touch the other one. The pair is
-  /// always given smaller id first, so a caller can key on it without
-  /// sorting. For [PhysicsEventKind.broke], `a` is the joint and `b` is zero.
+  /// The body it happened to, and for a touch the other one. A touch gives the
+  /// pair smaller id first, so a caller can key on it without sorting. For
+  /// [PhysicsEventKind.broke], `a` is the joint and `b` is zero. For a trigger
+  /// event, `a` is the trigger and `b` the body, whatever their ids.
   final int a;
   final int b;
 
   /// Where they met, and which way out of `b` towards `a`. Zero for anything
-  /// that is not a touch beginning, except that a joint breaking says where
-  /// it was.
+  /// that is not a touch or a trigger being entered, except that a joint
+  /// breaking says where it was.
   final List<double> at;
   final List<double> normal;
 
@@ -123,6 +140,62 @@ final class PhysicsEvent {
   /// sound scales with. For a joint breaking, what broke it: the force in
   /// newtons, or the torque in newton-metres if that went past its limit.
   final double force;
+}
+
+/// What a zone changes about the bodies inside it. A field left null is left
+/// as the body has it.
+///
+/// Water is a weak gravity and a lot of damping. A lift shaft is a gravity
+/// that points up.
+final class PhysicsZone {
+  const PhysicsZone({
+    this.gravity,
+    this.linearDamping,
+    this.angularDamping,
+    this.priority = 0,
+  });
+
+  /// Metres per second squared, in place of the world's.
+  final List<double>? gravity;
+
+  /// A fraction shed per second, in place of the body's own.
+  final double? linearDamping;
+  final double? angularDamping;
+
+  /// Where zones overlap, each field takes the answer of the zone that claims
+  /// it with the highest priority, and at a tie the lower body id.
+  final int priority;
+}
+
+/// What is different about the contact between two particular bodies, in place
+/// of what their own friction, restitution and mass would say. The contact hook,
+/// as data rather than a callback.
+///
+/// A rule that changes nothing is a removal, so at least one field is given.
+final class PhysicsRule {
+  const PhysicsRule({
+    this.friction,
+    this.restitution,
+    this.moveScaleA = 1.0,
+    this.moveScaleB = 1.0,
+  }) : assert(
+         friction != null ||
+             restitution != null ||
+             moveScaleA != 1.0 ||
+             moveScaleB != 1.0,
+         'A rule that changes nothing is not a rule.',
+       );
+
+  /// Replace the pair's friction and restitution outright.
+  final double? friction;
+  final double? restitution;
+
+  /// How much of this contact's push each body takes, in this contact and no
+  /// other. One leaves a body as it is, zero makes it immovable to the other,
+  /// and two makes it move as if it were half the mass. This is how a platform
+  /// carries a crate without the crate slowing it.
+  final double moveScaleA;
+  final double moveScaleB;
 }
 
 /// What a cast ran into.
@@ -463,6 +536,19 @@ class Physics {
   // --- commands ------------------------------------------------------------
 
   /// Adds a body. Ignored if `id` is zero or already here.
+  ///
+  /// A `trigger` is where things are rather than something they hit: nothing
+  /// bounces off it and it pushes nothing, and solid casts, overlaps and
+  /// characters do not see it. It reports bodies coming into and leaving it,
+  /// and is the region [setZone] takes its effect over. It is ignored for a
+  /// free body, which the solver has to move. A trigger and a trigger do not
+  /// see each other, and neither sees a fixed body.
+  ///
+  /// A body with `stay` hears about its contacts every step as
+  /// [PhysicsEventKind.touchStay], and a trigger with it about everything
+  /// inside as [PhysicsEventKind.inside]. Either body of a pair asking is
+  /// enough. A pair that has gone to sleep has its touch ended, so the stay
+  /// stops with it.
   void add(
     int id, {
     required Shape shape,
@@ -476,6 +562,8 @@ class Physics {
     double angularDamping = 0.05,
     Layers layers = Layers.everything,
     bool asleep = false,
+    bool trigger = false,
+    bool stay = false,
   }) {
     final command = _next(1, id);
     command.shape = shape.kind;
@@ -496,6 +584,8 @@ class Physics {
     command.layerIs = layers.is_;
     command.layerCares = layers.cares;
     command.asleep = asleep;
+    command.sensor = trigger;
+    command.stay = stay;
   }
 
   /// Adds a character: a body that walks.
@@ -666,6 +756,111 @@ class Physics {
 
   /// Wakes a body, whether or not anything touched it.
   void wake(int id) => _next(6, id);
+
+  /// Sets how fast a body's surface moves, in world metres per second, while
+  /// the body stays where it is: a conveyor belt. What stands on it is dragged
+  /// by friction towards the speed of the surface, and to that speed and no
+  /// more. Only the part along the surface it touches counts, so a velocity
+  /// straight into the body does nothing.
+  ///
+  /// It holds until set again, and zero is an ordinary surface. Bodies on it
+  /// are woken, so a belt that starts carries the crate that had gone to sleep
+  /// on it.
+  void setSurface(int id, {required List<double> velocity}) {
+    final command = _next(8, id);
+    _write3(command.vector, velocity);
+  }
+
+  // --- zones and rules -----------------------------------------------------
+
+  /// Puts `zone` over the trigger `id`, replacing any it had, and wakes what
+  /// is inside it. False, and nothing changed, for a body that is not there or
+  /// not a trigger, or a number that is not a number.
+  ///
+  /// It changes what the solver moves, so it acts on free bodies only. A
+  /// character asks for its own gravity and is not touched by one.
+  bool setZone(int id, PhysicsZone zone) {
+    var fields = 0;
+    final gravity = zone.gravity;
+    if (gravity != null) fields |= 1;
+    if (zone.linearDamping != null) fields |= 2;
+    if (zone.angularDamping != null) fields |= 4;
+    return _sendZone(
+      id,
+      fields,
+      priority: zone.priority,
+      gravity: gravity,
+      linearDamping: zone.linearDamping,
+      angularDamping: zone.angularDamping,
+    );
+  }
+
+  /// Takes the zone off a trigger, leaving the trigger, and wakes what was
+  /// inside it. False if there was none.
+  bool removeZone(int id) => _sendZone(id, 0);
+
+  bool _sendZone(
+    int id,
+    int fields, {
+    int priority = 0,
+    List<double>? gravity,
+    double? linearDamping,
+    double? angularDamping,
+  }) {
+    _requireAlive();
+    _flush();
+    final made = calloc<native.OrblitPhysicsZone>();
+    try {
+      final it = made.ref;
+      it.body = id;
+      it.overrides = fields;
+      it.priority = priority;
+      if (gravity != null) _write3(it.gravity, gravity);
+      it.damping[0] = linearDamping ?? 0.0;
+      it.damping[1] = angularDamping ?? 0.0;
+      return native.physicsZone(_alive, made);
+    } finally {
+      calloc.free(made);
+    }
+  }
+
+  /// Makes `rule` hold whenever bodies `a` and `b` touch, until it is removed
+  /// or either body goes, and wakes both. False, and nothing changed, for a
+  /// body that is not there, a body against itself, a number that is not a
+  /// number or a negative move scale.
+  ///
+  /// The order matters only to the move scales, which follow `a` and `b`
+  /// however the world keeps them.
+  bool setRule(int a, int b, PhysicsRule rule) {
+    var fields = 0;
+    if (rule.friction != null) fields |= 1;
+    if (rule.restitution != null) fields |= 2;
+    if (rule.moveScaleA != 1.0 || rule.moveScaleB != 1.0) fields |= 4;
+    return _sendRule(a, b, fields, rule);
+  }
+
+  /// Takes away the rule between two bodies, waking both. False if there was
+  /// none.
+  bool removeRule(int a, int b) => _sendRule(a, b, 0, null);
+
+  bool _sendRule(int a, int b, int fields, PhysicsRule? rule) {
+    _requireAlive();
+    _flush();
+    final made = calloc<native.OrblitPhysicsRule>();
+    try {
+      final it = made.ref;
+      it.a = a;
+      it.b = b;
+      it.overrides = fields;
+      it.friction = rule?.friction ?? 0.0;
+      it.restitution = rule?.restitution ?? 0.0;
+      it.moveScale[0] = rule?.moveScaleA ?? 1.0;
+      it.moveScale[1] = rule?.moveScaleB ?? 1.0;
+      return native.physicsRule(_alive, made);
+    } finally {
+      calloc.free(made);
+    }
+  }
 
   // --- joints --------------------------------------------------------------
 
@@ -892,6 +1087,10 @@ class Physics {
   /// direction happened to be. A plane cannot be cast, because a half-space
   /// reaches everywhere along any line and the answer would be meaningless;
   /// asking for one gives null.
+  ///
+  /// It sees solid bodies and never a trigger, which is what a bullet or a
+  /// camera wants. With `triggers` it sees triggers and nothing solid, which is
+  /// how a game asks which zone a ray runs through.
   PhysicsHit? cast({
     required List<double> from,
     required List<double> direction,
@@ -900,38 +1099,134 @@ class Physics {
     List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
     Layers layers = Layers.everything,
     int ignore = 0,
+    bool triggers = false,
   }) {
     _flush();
     final query = calloc<native.OrblitPhysicsCast>();
     final found = calloc<native.OrblitPhysicsHit>();
     try {
-      final it = query.ref;
-      it.shape = shape?.kind ?? 0;
-      if (shape != null) {
-        it.size[0] = shape.x;
-        it.size[1] = shape.y;
-        it.size[2] = shape.z;
-        it.size[3] = shape.w;
-      }
-      _write3(it.from, from);
-      for (var i = 0; i < 4; i++) {
-        it.rotation[i] = rotation[i];
-      }
-      _write3(it.direction, direction);
-      it.distance = distance;
-      it.layerIs = layers.is_;
-      it.layerCares = layers.cares;
-      it.ignore = ignore;
-
-      if (!native.physicsCast(_alive, query, found)) return null;
-      final hit = found.ref;
-      return PhysicsHit(
-        body: hit.body,
-        at: [hit.at[0], hit.at[1], hit.at[2]],
-        normal: [hit.normal[0], hit.normal[1], hit.normal[2]],
-        distance: hit.distance,
-        started: hit.started,
+      _writeQuery(
+        query.ref,
+        from: from,
+        direction: direction,
+        distance: distance,
+        shape: shape,
+        rotation: rotation,
+        layers: layers,
+        ignore: ignore,
+        triggers: triggers,
       );
+      if (!native.physicsCast(_alive, query, found)) return null;
+      return _hitOf(found.ref);
+    } finally {
+      calloc.free(query);
+      calloc.free(found);
+    }
+  }
+
+  /// Every body [cast] would meet along its way, nearest first, each once, up
+  /// to `limit` of them. A full list keeps the nearest, not the first found. A
+  /// body the cast begins inside is one of them, with `started` set.
+  List<PhysicsHit> castAll({
+    required List<double> from,
+    required List<double> direction,
+    required double distance,
+    Shape? shape,
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    Layers layers = Layers.everything,
+    int ignore = 0,
+    bool triggers = false,
+    int limit = 32,
+  }) {
+    _flush();
+    if (limit <= 0) return const [];
+    final query = calloc<native.OrblitPhysicsCast>();
+    final found = calloc<native.OrblitPhysicsHit>(limit);
+    try {
+      _writeQuery(
+        query.ref,
+        from: from,
+        direction: direction,
+        distance: distance,
+        shape: shape,
+        rotation: rotation,
+        layers: layers,
+        ignore: ignore,
+        triggers: triggers,
+      );
+      final written = native.physicsCastAll(_alive, query, found, limit);
+      return List<PhysicsHit>.generate(written, (i) => _hitOf(found[i]));
+    } finally {
+      calloc.free(query);
+      calloc.free(found);
+    }
+  }
+
+  /// Whether [cast] would meet anything at all, found without working out
+  /// which was nearest: the cheap way to ask whether there is a wall in the
+  /// way.
+  bool castAny({
+    required List<double> from,
+    required List<double> direction,
+    required double distance,
+    Shape? shape,
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    Layers layers = Layers.everything,
+    int ignore = 0,
+    bool triggers = false,
+  }) {
+    _flush();
+    final query = calloc<native.OrblitPhysicsCast>();
+    try {
+      _writeQuery(
+        query.ref,
+        from: from,
+        direction: direction,
+        distance: distance,
+        shape: shape,
+        rotation: rotation,
+        layers: layers,
+        ignore: ignore,
+        triggers: triggers,
+      );
+      return native.physicsCastAny(_alive, query);
+    } finally {
+      calloc.free(query);
+    }
+  }
+
+  /// The bodies `shape` overlaps where it stands at `at`, in no order, up to
+  /// `limit` of them. Leaving `shape` out asks about a point: every body that
+  /// contains it, a plane included, which contains everything below its
+  /// surface. A plane cannot be asked about, and that finds nothing.
+  ///
+  /// Solid bodies unless `triggers` is set, and then only triggers, as for
+  /// [cast]. Nothing is moved and nothing woken.
+  List<int> overlap({
+    required List<double> at,
+    Shape? shape,
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    Layers layers = Layers.everything,
+    int ignore = 0,
+    bool triggers = false,
+    int limit = 32,
+  }) {
+    _flush();
+    if (limit <= 0) return const [];
+    final query = calloc<native.OrblitPhysicsCast>();
+    final found = calloc<Uint64>(limit);
+    try {
+      _writeQuery(
+        query.ref,
+        from: at,
+        shape: shape,
+        rotation: rotation,
+        layers: layers,
+        ignore: ignore,
+        triggers: triggers,
+      );
+      final written = native.physicsOverlap(_alive, query, found, limit);
+      return List<int>.generate(written, (i) => found[i]);
     } finally {
       calloc.free(query);
       calloc.free(found);
@@ -1051,6 +1346,44 @@ class Physics {
     into[2] = from[2];
   }
 
+  static void _writeQuery(
+    native.OrblitPhysicsCast into, {
+    required List<double> from,
+    List<double> direction = const [0.0, 0.0, 0.0],
+    double distance = 0.0,
+    required Shape? shape,
+    required List<double> rotation,
+    required Layers layers,
+    required int ignore,
+    required bool triggers,
+  }) {
+    into.shape = shape?.kind ?? 0;
+    if (shape != null) {
+      into.size[0] = shape.x;
+      into.size[1] = shape.y;
+      into.size[2] = shape.z;
+      into.size[3] = shape.w;
+    }
+    _write3(into.from, from);
+    for (var i = 0; i < 4; i++) {
+      into.rotation[i] = rotation[i];
+    }
+    _write3(into.direction, direction);
+    into.distance = distance;
+    into.layerIs = layers.is_;
+    into.layerCares = layers.cares;
+    into.ignore = ignore;
+    into.triggers = triggers;
+  }
+
+  static PhysicsHit _hitOf(native.OrblitPhysicsHit hit) => PhysicsHit(
+    body: hit.body,
+    at: [hit.at[0], hit.at[1], hit.at[2]],
+    normal: [hit.normal[0], hit.normal[1], hit.normal[2]],
+    distance: hit.distance,
+    started: hit.started,
+  );
+
   static void _zero(native.OrblitPhysicsCommand command) {
     command.kind = 0;
     command.shape = 0;
@@ -1073,5 +1406,7 @@ class Physics {
     command.layerIs = 0;
     command.layerCares = 0;
     command.asleep = false;
+    command.sensor = false;
+    command.stay = false;
   }
 }

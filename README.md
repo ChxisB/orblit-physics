@@ -63,7 +63,9 @@ That is a teleport: a crate that is dragged mid-fall stops falling. Entities
 are named by strings and bodies by numbers, so the bridge keeps the pairing
 (`bodyOf`, `entityOf`) and never gives a number to a second entity. An entity
 with a joint component joins two bodies, [below](#joints), and `jointOf` and
-`entityOfJoint` pair joints with entities the same way. The world itself is
+`entityOfJoint` pair joints with entities the same way. A body's `trigger`,
+`stay` and `surface`, and a zone component on an entity with a body, are read
+the same way, [below](#questions-and-places). The world itself is
 `scene.physics`, for pushing and casting. What touched what is `scene.events`,
 gathered over every step the last `advance` took; the world's own list keeps
 only its last step.
@@ -119,6 +121,35 @@ can never step past one. A cast that starts inside a body says so rather than
 reporting a distance of nothing and leaving the caller to guess — a character
 who begins in a wall wants pushing out of it, not stopping where they already
 are.
+
+### Questions and places
+
+`castAll`, `castAny` and `overlap` join `cast`. They ask for every body along a
+line, nearest first, whether anything is there at all, and what a shape or a
+point is inside. Each takes the same filters, `layers` and `ignore`, and a way
+to stop early: `castAny` stops at the first body it finds and the others take a
+`limit`. Nothing they ask moves or wakes anything.
+
+A body added with `trigger` is a place. Nothing bounces off it, and solid casts,
+overlaps and characters do not see it. The world reports `entered` and
+`exited` for each body that comes in and goes out, and `inside` every step when
+either asked for `stay`. A trigger reads positions, not touches, so a body
+asleep inside one is still inside. It has to stay where it is, because the
+solver has to move a free body. `triggers: true` on a question asks about
+triggers and nothing else.
+
+A zone is a trigger that changes the gravity and damping of the free bodies
+inside it. Each field is left to the body unless the zone sets it, and where
+zones overlap each field goes to the highest `priority`, then the lower id. A
+belt is `setSurface`: a velocity in the world that friction drags whatever
+stands on it towards, along the surface it touches and no faster.
+
+`setRule` is the contact hook. It changes the friction, restitution and move
+scales of one pair of bodies. It is data rather than a callback, because a Dart
+function called from inside the solver for every contact on every step would
+put a trip across the boundary in the hottest loop there is. A move scale says
+how much of a contact's push a body takes, so a lift carries a crate without
+the crate slowing it.
 
 ### Characters
 

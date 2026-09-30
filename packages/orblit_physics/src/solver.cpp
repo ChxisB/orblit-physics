@@ -60,6 +60,36 @@ void Solver::solvePositions(Bodies &bodies, Manifold *manifolds, Joints &joints,
   }
 }
 
+Solver::Pair Solver::pairOf(const Bodies &bodies, const Manifold &manifold) {
+  Pair pair;
+  pair.a = manifold.a;
+  pair.b = manifold.b;
+
+  const Rule &rule = manifold.rule;
+  // Two slippery things together are slipperier than either against
+  // something grippy, which a geometric mean gives and an average does not.
+  pair.friction =
+      (rule.overrides & ORBLIT_PHYSICS_RULE_FRICTION) != 0
+          ? rule.friction
+          : std::sqrt(bodies.friction(pair.a) * bodies.friction(pair.b));
+  pair.bounciness =
+      (rule.overrides & ORBLIT_PHYSICS_RULE_RESTITUTION) != 0
+          ? rule.restitution
+          : std::fmax(bodies.restitution(pair.a), bodies.restitution(pair.b));
+  pair.belt = bodies.surface(pair.a) - bodies.surface(pair.b);
+
+  // A body the solver will not move contributes nothing, whether that is
+  // because it is static or because it is asleep. A rule scales what is left,
+  // which makes a body heavier or lighter for this contact and no other.
+  const float moveA = bodies.solved(pair.a) ? rule.move[0] : 0.0f;
+  const float moveB = bodies.solved(pair.b) ? rule.move[1] : 0.0f;
+  pair.inverseMassA = bodies.inverseMass(pair.a) * moveA;
+  pair.inverseMassB = bodies.inverseMass(pair.b) * moveB;
+  pair.inertiaA = bodies.inverseInertia(pair.a) * moveA;
+  pair.inertiaB = bodies.inverseInertia(pair.b) * moveB;
+  return pair;
+}
+
 void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
                      uint32_t count,
                      const SolverSettings &settings) {
@@ -70,27 +100,10 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
     const Manifold &manifold = manifolds[m];
     if (manifold.count == 0) continue;
 
-    Pair pair;
+    Pair pair = pairOf(bodies, manifold);
     pair.manifold = m;
-    pair.a = manifold.a;
-    pair.b = manifold.b;
-    // Two slippery things together are slipperier than either against
-    // something grippy, which a geometric mean gives and an average does not.
-    pair.friction =
-        std::sqrt(bodies.friction(pair.a) * bodies.friction(pair.b));
-    // A body the solver will not move contributes nothing, whether that is
-    // because it is static or because it is asleep.
-    pair.inverseMassA = bodies.solved(pair.a) ? bodies.inverseMass(pair.a) : 0.0f;
-    pair.inverseMassB = bodies.solved(pair.b) ? bodies.inverseMass(pair.b) : 0.0f;
-    pair.inertiaA =
-        bodies.solved(pair.a) ? bodies.inverseInertia(pair.a) : Mat3::zero();
-    pair.inertiaB =
-        bodies.solved(pair.b) ? bodies.inverseInertia(pair.b) : Mat3::zero();
     pair.first = static_cast<uint32_t>(rows_.size());
     pair.count = manifold.count;
-
-    const float bounciness =
-        std::fmax(bodies.restitution(pair.a), bodies.restitution(pair.b));
 
     const uint32_t index = static_cast<uint32_t>(pairs_.size());
     for (uint32_t c = 0; c < manifold.count; ++c) {
@@ -125,7 +138,8 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
                             bodies.velocity(pair.b) -
                             cross(bodies.spin(pair.b), row.leverB);
       const float closing = dot(relative, row.normal);
-      row.bounce = closing < -settings.bounceThreshold ? -bounciness * closing : 0.0f;
+      row.bounce =
+          closing < -settings.bounceThreshold ? -pair.bounciness * closing : 0.0f;
 
       rows_.push_back(row);
     }
@@ -153,7 +167,8 @@ void Solver::correctVelocities(Bodies &bodies) {
     // is why one velocity step is not enough for anything to grip.
     const float bound = pair.friction * row.normalImpulse;
     for (int t = 0; t < 2; ++t) {
-      const float sliding = dot(relative(bodies, pair, row), row.tangent[t]);
+      const float sliding =
+          dot(relative(bodies, pair, row) + pair.belt, row.tangent[t]);
       const float was = row.frictionImpulse[t];
       row.frictionImpulse[t] =
           clamped(was - row.tangentMass[t] * sliding, -bound, bound);

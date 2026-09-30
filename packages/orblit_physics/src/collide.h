@@ -28,6 +28,7 @@
 #include <cstdint>
 
 #include "maths.h"
+#include "rule.h"
 #include "shape.h"
 
 namespace orblit {
@@ -59,7 +60,22 @@ struct Manifold {
 
   Contact points[kMaxContacts];
   uint32_t count = 0;
+
+  /// What the game has said about this pair, if anything, with the two move
+  /// scales in the order of `a` and `b`. The world fills it in between the
+  /// narrowphase and the solver, which read it and change nothing.
+  Rule rule;
 };
+
+/// The point of a touching manifold that overlaps most. `count` must not be
+/// zero.
+inline const Contact &deepest(const Manifold &manifold) {
+  const Contact *best = &manifold.points[0];
+  for (uint32_t i = 1; i < manifold.count; ++i) {
+    if (manifold.points[i].depth > best->depth) best = &manifold.points[i];
+  }
+  return *best;
+}
 
 /// Fills `out.normal` and `out.points` for two placed shapes, and returns
 /// whether they touch at all. `out.a` and `out.b` are left alone.

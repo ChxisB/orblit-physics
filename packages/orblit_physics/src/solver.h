@@ -76,6 +76,11 @@ class Solver {
     uint32_t a = 0;
     uint32_t b = 0;
     float friction = 0.0f;
+    float bounciness = 0.0f;
+    /// How much faster `a`'s surface moves than `b`'s, in the world. Friction
+    /// pulls the two bodies towards this rather than towards standing still
+    /// against each other, which is all a conveyor is.
+    Vec3 belt;
     float inverseMassA = 0.0f;
     float inverseMassB = 0.0f;
     Mat3 inertiaA;
@@ -104,6 +109,9 @@ class Solver {
     float normalImpulse = 0.0f;
     float frictionImpulse[2] = {0.0f, 0.0f};
   };
+
+  /// What one manifold means for the passes, without its rows.
+  static Pair pairOf(const Bodies &bodies, const Manifold &manifold);
 
   void prepare(Bodies &bodies, const Manifold *manifolds, uint32_t count,
                const SolverSettings &settings);

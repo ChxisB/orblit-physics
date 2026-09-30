@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
 #include "orblit_physics.h"
@@ -2112,6 +2113,732 @@ void chains() {
   orblit_physics_destroy(physics);
 }
 
+// --- asking the world ------------------------------------------------------ //
+//
+// Triggers, zones, belts and per-pair rules, and the queries that go with
+// them: what a game asks of a world beyond where everything is now.
+
+OrblitPhysicsCommand triggerAt(OrblitPhysicsId id, float half, float x, float y,
+                               float z) {
+  OrblitPhysicsCommand made = boxAt(id, half, x, y, z);
+  made.motion = ORBLIT_PHYSICS_STATIC;
+  made.sensor = true;
+  return made;
+}
+
+/// A query for whatever contains one point: a ray's shape is a sphere of no
+/// size, cast nowhere.
+OrblitPhysicsCast pointAt(float x, float y, float z) {
+  return rayFrom(x, y, z, 0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+/// Steps a world and keeps every event it reported, since a step drops the
+/// ones before it.
+struct Watch {
+  explicit Watch(OrblitPhysics *world) : physics(world) {}
+
+  void collect() {
+    uint32_t count = 0;
+    const OrblitPhysicsEvent *events = orblit_physics_events(physics, &count);
+    seen.insert(seen.end(), events, events + count);
+  }
+
+  void run(float seconds) {
+    const int steps = static_cast<int>(seconds / kStep + 0.5f);
+    for (int i = 0; i < steps; ++i) {
+      orblit_physics_step(physics, kStep);
+      collect();
+    }
+  }
+
+  /// How many events of `kind` named exactly `a` then `b`.
+  int count(uint32_t kind, OrblitPhysicsId a, OrblitPhysicsId b) const {
+    int found = 0;
+    for (const OrblitPhysicsEvent &event : seen) {
+      if (event.kind == kind && event.a == a && event.b == b) found++;
+    }
+    return found;
+  }
+
+  OrblitPhysics *physics;
+  std::vector<OrblitPhysicsEvent> seen;
+};
+
+std::vector<OrblitPhysicsId> overlapping(OrblitPhysics *physics,
+                                         const OrblitPhysicsCast &query,
+                                         uint32_t capacity) {
+  std::vector<OrblitPhysicsId> ids(capacity);
+  ids.resize(orblit_physics_overlap(physics, &query, ids.data(), capacity));
+  return ids;
+}
+
+std::vector<OrblitPhysicsHit> hitsAlong(OrblitPhysics *physics,
+                                        const OrblitPhysicsCast &query,
+                                        uint32_t capacity) {
+  std::vector<OrblitPhysicsHit> hits(capacity);
+  hits.resize(orblit_physics_cast_all(physics, &query, hits.data(), capacity));
+  return hits;
+}
+
+bool holds(const std::vector<OrblitPhysicsId> &ids,
+           std::initializer_list<OrblitPhysicsId> wanted) {
+  return ids == std::vector<OrblitPhysicsId>(wanted);
+}
+
+void surfaceOf(OrblitPhysics *physics, OrblitPhysicsId id, float along, float up) {
+  OrblitPhysicsCommand set{};
+  set.kind = ORBLIT_PHYSICS_SURFACE;
+  set.id = id;
+  set.vector[0] = along;
+  set.vector[1] = up;
+  submit(physics, set);
+}
+
+void destroyBody(OrblitPhysics *physics, OrblitPhysicsId id) {
+  OrblitPhysicsCommand gone{};
+  gone.kind = ORBLIT_PHYSICS_DESTROY;
+  gone.id = id;
+  submit(physics, gone);
+}
+
+void triggering() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand floor = groundPlane(9);
+  floor.size[3] = -6.0f; // Surface at y = -6.
+  submit(physics, floor);
+  submit(physics, triggerAt(1, 1.0f, 0.0f, 0.0f, 0.0f));
+  submit(physics, sphereAt(2, 0.25f, 0.0f, 3.0f, 0.0f));
+
+  Watch watch(physics);
+  watch.run(2.0f);
+  check(watch.count(ORBLIT_PHYSICS_ENTERED, 1, 2) == 1,
+        "a body falling into a trigger reports entering it once, trigger first");
+  check(watch.count(ORBLIT_PHYSICS_EXITED, 1, 2) == 1, "and leaving it once");
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_BEGAN, 1, 2) == 0,
+        "a trigger is overlapped and never touched");
+  check(near(heightOf(physics, 2), -5.75f, 0.1f),
+        "and it pushes nothing: the body falls straight through to the floor");
+
+  // A trigger is a fact about where things are, so it holds for a body that
+  // is asleep, and does not wake it.
+  OrblitPhysicsCommand sleeper = sphereAt(3, 0.25f, 0.0f, 0.0f, 0.0f);
+  sleeper.asleep = true;
+  submit(physics, sleeper);
+  submit(physics, slabAt(4, 0.25f, 0.25f, 0.25f, 0.5f, 0.0f, 0.0f));
+  watch.run(0.2f);
+  check(watch.count(ORBLIT_PHYSICS_ENTERED, 1, 3) == 1,
+        "a body created asleep inside a trigger is reported in it");
+  check(orblit_physics_asleep(physics, 3), "and stays asleep");
+  check(watch.count(ORBLIT_PHYSICS_ENTERED, 1, 4) == 0,
+        "a static body in a trigger is not reported, since nothing about it changes");
+
+  destroyBody(physics, 1);
+  watch.run(0.1f);
+  check(watch.count(ORBLIT_PHYSICS_EXITED, 1, 3) == 1,
+        "destroying a trigger reports everything in it leaving");
+  orblit_physics_destroy(physics);
+}
+
+void triggeringCharacters() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, triggerAt(2, 0.5f, 1.5f, 1.0f, 0.0f));
+  addCharacter(physics, 3, 0.0f, 0.0f, 0.0f);
+
+  // Walked by hand rather than with `walk`, which steps past the events.
+  Watch watch(physics);
+  for (int i = 0; i < 90; ++i) {
+    OrblitPhysicsCommand ask{};
+    ask.kind = ORBLIT_PHYSICS_VELOCITY;
+    ask.id = 3;
+    ask.vector[0] = 2.0f;
+    ask.vector[1] = footingOf(physics, 3).velocity[1] - 9.81f * kStep;
+    submit(physics, ask);
+    orblit_physics_step(physics, kStep);
+    watch.collect();
+  }
+  check(coordinateOf(physics, 3, 0) > 2.5f,
+        "a character walks straight through a trigger in its way");
+  check(watch.count(ORBLIT_PHYSICS_ENTERED, 2, 3) == 1 &&
+            watch.count(ORBLIT_PHYSICS_EXITED, 2, 3) == 1,
+        "and sets it off, which is what a trigger is for");
+  orblit_physics_destroy(physics);
+}
+
+void staying() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  OrblitPhysicsCommand resting = boxAt(2, 0.5f, 0.0f, 0.49f, 0.0f);
+  resting.stay = true;
+  submit(physics, resting);
+  submit(physics, boxAt(3, 0.5f, 5.0f, 0.49f, 0.0f));
+
+  Watch watch(physics);
+  watch.run(0.3f);
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_BEGAN, 1, 2) == 1, "a touch begins once");
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_STAY, 1, 2) >= 15,
+        "and a body that asks is told every step it goes on");
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_ENDED, 1, 2) == 0, "without it ending");
+  check(watch.count(ORBLIT_PHYSICS_TOUCH_STAY, 1, 3) == 0,
+        "one that has not asked is only told when it begins and ends");
+  orblit_physics_destroy(physics);
+}
+
+void stayingInside() {
+  // `stay` on a trigger asks for everything in it. On a body it asks for every
+  // trigger that body is in.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand asking = triggerAt(1, 1.0f, 0.0f, 0.0f, 0.0f);
+  asking.stay = true;
+  submit(physics, asking);
+  submit(physics, triggerAt(2, 1.0f, 0.0f, 0.0f, 0.0f));
+
+  OrblitPhysicsCommand keen = sphereAt(3, 0.25f, 0.0f, 0.0f, 0.0f);
+  keen.motion = ORBLIT_PHYSICS_KINEMATIC;
+  keen.stay = true;
+  submit(physics, keen);
+  OrblitPhysicsCommand quiet = sphereAt(4, 0.25f, 0.5f, 0.0f, 0.0f);
+  quiet.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, quiet);
+
+  Watch watch(physics);
+  watch.run(0.2f);
+  check(watch.count(ORBLIT_PHYSICS_INSIDE, 1, 3) >= 10 &&
+            watch.count(ORBLIT_PHYSICS_INSIDE, 1, 4) >= 10,
+        "a trigger that asks is told every step of everything inside it");
+  check(watch.count(ORBLIT_PHYSICS_INSIDE, 2, 3) >= 10,
+        "and so is one holding a body that asks");
+  check(watch.count(ORBLIT_PHYSICS_ENTERED, 2, 4) == 1 &&
+            watch.count(ORBLIT_PHYSICS_INSIDE, 2, 4) == 0,
+        "while neither asking is told when things enter and leave only");
+  orblit_physics_destroy(physics);
+}
+
+OrblitPhysicsZone zoneOn(OrblitPhysicsId body, uint32_t overrides, int32_t priority,
+                         float gravity) {
+  OrblitPhysicsZone made{};
+  made.body = body;
+  made.overrides = overrides;
+  made.priority = priority;
+  made.gravity[1] = gravity;
+  return made;
+}
+
+struct Outcome {
+  float height;
+  float speed;
+};
+
+/// A sphere hung at rest ten metres up and thrown along x at `throwing`, inside
+/// each of `zones`. The zones are all cubes forty metres across, so the sphere
+/// never leaves one in the second it is watched for.
+Outcome inZones(const std::vector<OrblitPhysicsZone> &zones, float throwing) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  for (const OrblitPhysicsZone &zone : zones) {
+    submit(physics, triggerAt(zone.body, 20.0f, 0.0f, 10.0f, 0.0f));
+    orblit_physics_zone(physics, &zone);
+  }
+  submit(physics, sphereAt(100, 0.25f, 0.0f, 10.0f, 0.0f));
+  drive(physics, 100, throwing, 0.0f, 0.0f, 0.0f);
+  run(physics, 1.0f);
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, 100, motion);
+  const Outcome outcome{heightOf(physics, 100), motion[0]};
+  orblit_physics_destroy(physics);
+  return outcome;
+}
+
+void zoning() {
+  const uint32_t gravity = ORBLIT_PHYSICS_ZONE_GRAVITY;
+
+  check(inZones({}, 0.0f).height < 6.0f, "with no zone a sphere falls");
+  check(near(inZones({zoneOn(1, gravity, 0, 0.0f)}, 0.0f).height, 10.0f, 0.05f),
+        "a zone with no gravity holds it where it is");
+  check(inZones({zoneOn(1, gravity, 0, 9.81f)}, 0.0f).height > 12.0f,
+        "and one with gravity upwards lifts it");
+
+  check(inZones({zoneOn(1, gravity, 0, 0.0f), zoneOn(2, gravity, 5, 9.81f)}, 0.0f)
+                .height > 12.0f,
+        "where zones overlap, the higher priority speaks");
+  check(inZones({zoneOn(1, gravity, 5, 9.81f), zoneOn(2, gravity, 0, 0.0f)}, 0.0f)
+                .height > 12.0f,
+        "whichever was made first");
+  check(inZones({zoneOn(2, gravity, 3, -9.81f), zoneOn(1, gravity, 3, 9.81f)}, 0.0f)
+                .height > 12.0f,
+        "and at equal priority the lower id does, whichever was made first");
+
+  const uint32_t damping = ORBLIT_PHYSICS_ZONE_LINEAR_DAMPING;
+  OrblitPhysicsZone thick = zoneOn(2, damping, 9, 0.0f);
+  thick.damping[0] = 5.0f;
+  check(inZones({zoneOn(1, gravity, 0, 0.0f)}, 5.0f).speed > 4.5f,
+        "a zone that holds only gravity leaves damping as it was");
+  const Outcome both = inZones({zoneOn(1, gravity, 0, 0.0f), thick}, 5.0f);
+  check(near(both.height, 10.0f, 0.05f) && both.speed < 0.5f,
+        "and each field takes its answer from its own zone");
+}
+
+void zoneEdits() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, triggerAt(1, 20.0f, 0.0f, 10.0f, 0.0f));
+  OrblitPhysicsCommand napping = sphereAt(2, 0.25f, 0.0f, 10.0f, 0.0f);
+  napping.asleep = true;
+  submit(physics, napping);
+  OrblitPhysicsZone lift = zoneOn(1, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 9.81f);
+  check(orblit_physics_zone(physics, &lift), "a zone is set on a trigger");
+
+  run(physics, 1.0f);
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, 2, motion);
+  check(heightOf(physics, 2) > 12.0f && motion[1] > 8.0f,
+        "a sleeper inside a new zone wakes and is lifted");
+
+  OrblitPhysicsZone removed{};
+  removed.body = 1;
+  check(orblit_physics_zone(physics, &removed),
+        "a zone is removed by naming none of its fields");
+  check(!orblit_physics_zone(physics, &removed),
+        "and removing it again says there was none");
+  run(physics, 1.0f);
+  orblit_physics_velocity(physics, 2, motion);
+  check(motion[1] < 2.0f, "and what was in it stops being lifted");
+
+  OrblitPhysicsZone solid = zoneOn(2, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 0.0f);
+  check(!orblit_physics_zone(physics, &solid), "a zone on a body that is not a trigger is refused");
+  OrblitPhysicsZone nowhere = zoneOn(77, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 0.0f);
+  check(!orblit_physics_zone(physics, &nowhere), "and so is one on no body");
+  OrblitPhysicsZone nan = zoneOn(1, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, std::nanf(""));
+  check(!orblit_physics_zone(physics, &nan), "and one with NaN in it");
+  check(!orblit_physics_zone(nullptr, &lift), "and a zone in no world is survivable");
+  orblit_physics_destroy(physics);
+}
+
+/// A belt sixteen metres long with its top at half a metre and a box on it,
+/// its surface moving at `along`. Nothing about the belt itself moves.
+OrblitPhysics *beltWith(float friction, float along) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand belt = slabAt(1, 8.0f, 0.25f, 1.0f, 0.0f, 0.25f, 0.0f);
+  belt.friction = friction;
+  submit(physics, belt);
+  OrblitPhysicsCommand box = boxAt(2, 0.5f, 0.0f, 1.0f, 0.0f);
+  box.friction = friction;
+  submit(physics, box);
+  surfaceOf(physics, 1, along, 0.0f);
+  return physics;
+}
+
+float alongOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, id, motion);
+  return motion[0];
+}
+
+void conveying() {
+  OrblitPhysics *physics = beltWith(0.5f, 2.0f);
+  run(physics, 2.0f);
+  check(near(alongOf(physics, 2), 2.0f, 0.2f), "a box on a belt is carried at the belt's speed");
+  check(coordinateOf(physics, 2, 0) > 1.5f, "and goes somewhere");
+  check(near(heightOf(physics, 2), 1.0f, 0.02f), "without being lifted or sunk");
+
+  surfaceOf(physics, 1, -2.0f, 0.0f);
+  run(physics, 2.0f);
+  check(near(alongOf(physics, 2), -2.0f, 0.2f), "and carried back when the belt is reversed");
+
+  surfaceOf(physics, 1, 0.0f, 0.0f);
+  run(physics, 2.0f);
+  check(speedOf(physics, 2) < 0.1f, "and left at rest when it is stopped");
+  orblit_physics_destroy(physics);
+
+  OrblitPhysics *slippery = beltWith(0.0f, 2.0f);
+  run(slippery, 1.0f);
+  check(std::fabs(alongOf(slippery, 2)) < 0.2f, "a belt with no friction carries nothing");
+  orblit_physics_destroy(slippery);
+
+  // Only the part along the surface counts, so a belt that moves into itself
+  // stands still.
+  OrblitPhysics *into = beltWith(0.5f, 0.0f);
+  surfaceOf(into, 1, 0.0f, 5.0f);
+  run(into, 1.0f);
+  check(near(heightOf(into, 2), 1.0f, 0.02f) && speedOf(into, 2) < 0.1f,
+        "a surface speed straight into the surface does nothing");
+  orblit_physics_destroy(into);
+}
+
+void wakingBelts() {
+  OrblitPhysics *physics = beltWith(0.5f, 0.0f);
+  run(physics, 3.0f);
+  check(orblit_physics_asleep(physics, 2), "a box left on a belt that is stopped goes to sleep");
+  surfaceOf(physics, 1, 2.0f, 0.0f);
+  check(!orblit_physics_asleep(physics, 2), "and is woken by the belt starting");
+  run(physics, 1.5f);
+  check(alongOf(physics, 2) > 1.5f, "and carried off");
+  orblit_physics_destroy(physics);
+}
+
+void pinnedBelts() {
+  // A box a belt pushes into a wall is at rest against the world, but only
+  // because the wall is in the way. Asleep it would stay where it is when the
+  // wall went.
+  OrblitPhysics *physics = beltWith(0.5f, 2.0f);
+  submit(physics, slabAt(3, 0.25f, 1.0f, 1.0f, 2.0f, 1.0f, 0.0f));
+  run(physics, 3.0f);
+  check(speedOf(physics, 2) < 0.1f, "a box a belt pushes into a wall is held there");
+  check(!orblit_physics_asleep(physics, 2), "and is not put to sleep by it");
+  destroyBody(physics, 3);
+  run(physics, 1.0f);
+  check(alongOf(physics, 2) > 1.5f, "so when the wall goes the belt carries it on");
+  orblit_physics_destroy(physics);
+}
+
+OrblitPhysicsRule ruleFor(OrblitPhysicsId a, OrblitPhysicsId b, uint32_t overrides) {
+  OrblitPhysicsRule made{};
+  made.a = a;
+  made.b = b;
+  made.overrides = overrides;
+  made.moveScale[0] = 1.0f;
+  made.moveScale[1] = 1.0f;
+  return made;
+}
+
+/// A box given a shove across ground, with or without a rule that this box and
+/// this ground have no friction, and the speed it still has a second later.
+float slidBy(bool ruled) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.5f, 0.0f, 0.49f, 0.0f));
+  drive(physics, 2, 3.0f, 0.0f, 0.0f, 0.0f);
+  if (ruled) {
+    OrblitPhysicsRule ice = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_FRICTION);
+    ice.friction = 0.0f;
+    check(orblit_physics_rule(physics, &ice), "a rule between two bodies is made");
+  }
+  run(physics, 1.0f);
+  const float speed = speedOf(physics, 2);
+  orblit_physics_destroy(physics);
+  return speed;
+}
+
+/// The highest a ball dropped from two metres gets on its second rise, with or
+/// without a rule that it and the ground bounce.
+float bouncedBy(bool ruled) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 2.0f, 0.0f));
+  if (ruled) {
+    OrblitPhysicsRule springy = ruleFor(2, 1, ORBLIT_PHYSICS_RULE_RESTITUTION);
+    springy.restitution = 0.9f;
+    orblit_physics_rule(physics, &springy);
+  }
+  run(physics, 0.7f);
+  float highest = 0.0f;
+  for (int i = 0; i < 72; ++i) {
+    orblit_physics_step(physics, kStep);
+    highest = std::fmax(highest, heightOf(physics, 2));
+  }
+  orblit_physics_destroy(physics);
+  return highest;
+}
+
+/// Box 9 slid at 4 m/s into a box 4 at rest on ice, with box 9's move scale set to
+/// `scale` for that pair. Box 9's id is the larger, so this also reads the
+/// scales the way round they were given rather than the way round they are
+/// keyed. Returns box 9's speed after the shove, and box 4's through `pushed`.
+float shovedBy(float scale, float *pushed) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand ice = groundPlane(1);
+  ice.friction = 0.0f;
+  submit(physics, ice);
+  for (const OrblitPhysicsId id : {OrblitPhysicsId{9}, OrblitPhysicsId{4}}) {
+    OrblitPhysicsCommand box = boxAt(id, 0.5f, id == 9 ? 0.0f : 1.2f, 0.49f, 0.0f);
+    box.friction = 0.0f;
+    box.damping[0] = 0.0f;
+    submit(physics, box);
+  }
+  drive(physics, 9, 4.0f, 0.0f, 0.0f, 0.0f);
+  OrblitPhysicsRule heavy = ruleFor(9, 4, ORBLIT_PHYSICS_RULE_MOVE_SCALE);
+  heavy.moveScale[0] = scale;
+  orblit_physics_rule(physics, &heavy);
+  run(physics, 0.5f);
+  *pushed = alongOf(physics, 4);
+  const float mover = alongOf(physics, 9);
+  orblit_physics_destroy(physics);
+  return mover;
+}
+
+void ruling() {
+  check(slidBy(false) < 1.0f, "a box slides to a stop on grippy ground");
+  check(slidBy(true) > 2.5f,
+        "and does not once the friction of that one pair is nought");
+
+  check(bouncedBy(false) < 0.6f, "a ball with no restitution lands dead");
+  check(bouncedBy(true) > 1.0f,
+        "and bounces when its pair's restitution is raised, named either way round");
+
+  float pushed = 0.0f;
+  check(shovedBy(1.0f, &pushed) < 3.0f, "a box that shoves another is slowed by it");
+  const float held = shovedBy(0.0f, &pushed);
+  check(held > 3.9f && pushed > 3.9f,
+        "and is not when it takes none of the push in that pair, so the other takes all of it");
+}
+
+void ruleEdits() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  OrblitPhysicsRule made = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_FRICTION);
+  check(orblit_physics_rule(physics, &made), "a rule is made");
+  OrblitPhysicsRule none = ruleFor(2, 1, 0);
+  check(orblit_physics_rule(physics, &none),
+        "and removed by naming none of its fields, in either order");
+  check(!orblit_physics_rule(physics, &none), "and removing it again says there was none");
+
+  OrblitPhysicsRule alone = ruleFor(2, 2, ORBLIT_PHYSICS_RULE_FRICTION);
+  check(!orblit_physics_rule(physics, &alone), "a rule between a body and itself is refused");
+  OrblitPhysicsRule nowhere = ruleFor(2, 55, ORBLIT_PHYSICS_RULE_FRICTION);
+  check(!orblit_physics_rule(physics, &nowhere), "and so is one naming a body that is not there");
+  OrblitPhysicsRule nan = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_FRICTION);
+  nan.friction = std::nanf("");
+  check(!orblit_physics_rule(physics, &nan), "and one with NaN in it");
+
+  // A new body with a dead one's id must not inherit what was said about it.
+  orblit_physics_rule(physics, &made);
+  destroyBody(physics, 2);
+  submit(physics, boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  check(!orblit_physics_rule(physics, &none), "a rule ends with either body");
+  check(!orblit_physics_rule(nullptr, &made), "and a rule in no world is survivable");
+  orblit_physics_destroy(physics);
+}
+
+void hiding() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand floor = groundPlane(2);
+  floor.size[3] = -3.0f;
+  submit(physics, floor);
+  submit(physics, triggerAt(1, 1.0f, 0.0f, 0.0f, 0.0f));
+
+  OrblitPhysicsHit hit{};
+  OrblitPhysicsCast down = rayFrom(0.0f, 10.0f, 0.0f, 0.0f, -1.0f, 0.0f, 100.0f);
+  check(orblit_physics_cast(physics, &down, &hit) && hit.body == 2 &&
+            near(hit.distance, 13.0f, 0.01f),
+        "a ray passes through a trigger to what is behind it");
+  down.triggers = true;
+  check(orblit_physics_cast(physics, &down, &hit) && hit.body == 1 &&
+            near(hit.distance, 9.0f, 0.01f),
+        "and meets it only when asked for triggers");
+  check(hitsAlong(physics, down, 4).size() == 1, "which are then all it meets");
+
+  const OrblitPhysicsCast here = pointAt(0.0f, 0.0f, 0.0f);
+  check(overlapping(physics, here, 4).empty(), "a point inside a trigger is in no solid body");
+  OrblitPhysicsCast zones = here;
+  zones.triggers = true;
+  check(holds(overlapping(physics, zones, 4), {1}),
+        "and is in the trigger when asked for triggers");
+  orblit_physics_destroy(physics);
+
+  // A character's own sweeps do not meet one either.
+  OrblitPhysics *walked = orblit_physics_create(nullptr);
+  submit(walked, groundPlane(1));
+  OrblitPhysicsCommand wall = slabAt(2, 0.1f, 2.0f, 1.5f, 2.0f, 2.0f, 0.0f);
+  wall.sensor = true;
+  submit(walked, wall);
+  addCharacter(walked, 3, 0.0f, 0.0f, 0.0f);
+  walk(walked, 3, 2.0f, 0.0f, 1.5f);
+  check(coordinateOf(walked, 3, 0) > 2.5f,
+        "a character walks through a trigger as if it were not there");
+  orblit_physics_destroy(walked);
+}
+
+void overlaps() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, slabAt(1, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f));
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 1.4f, 0.0f, 0.0f);
+  ball.motion = ORBLIT_PHYSICS_STATIC;
+  submit(physics, ball);
+  OrblitPhysicsCommand capsule = capsuleAt(3, 0.3f, 0.6f, 10.0f, 0.0f, 0.0f);
+  capsule.motion = ORBLIT_PHYSICS_STATIC;
+  submit(physics, capsule);
+  OrblitPhysicsCommand floor = groundPlane(4);
+  floor.size[3] = -50.0f;
+  submit(physics, floor);
+
+  check(holds(overlapping(physics, pointAt(0.0f, 0.0f, 0.0f), 8), {1}),
+        "a point inside a box is in that box and nothing else");
+  check(holds(overlapping(physics, pointAt(1.8f, 0.0f, 0.0f), 8), {2}),
+        "and one inside the ball is in the ball");
+  check(holds(overlapping(physics, pointAt(0.0f, 0.99f, 0.0f), 8), {1}),
+        "however close to the surface, on the inside");
+  check(overlapping(physics, pointAt(0.0f, 1.2f, 0.0f), 8).empty(),
+        "and outside it is in nothing");
+  check(holds(overlapping(physics, pointAt(10.0f, 0.0f, 0.0f), 8), {3}),
+        "a point inside a capsule is in the capsule");
+  check(holds(overlapping(physics, pointAt(0.0f, -60.0f, 0.0f), 8), {4}),
+        "and one below a plane is in the plane");
+
+  OrblitPhysicsCast ballQuery = pointAt(1.2f, 0.0f, 0.0f);
+  ballQuery.shape = ORBLIT_PHYSICS_SPHERE;
+  ballQuery.size[0] = 0.3f;
+  check(overlapping(physics, ballQuery, 8).size() == 2, "a sphere between two bodies overlaps both");
+  check(overlapping(physics, ballQuery, 1).size() == 1, "and stops at the number asked for");
+  check(overlapping(physics, ballQuery, 0).empty(), "asking for none returns none");
+
+  OrblitPhysicsCast boxQuery = ballQuery;
+  boxQuery.shape = ORBLIT_PHYSICS_BOX;
+  boxQuery.size[0] = 0.1f;
+  boxQuery.size[1] = 0.1f;
+  boxQuery.size[2] = 0.1f;
+  boxQuery.from[0] = 10.0f;
+  boxQuery.from[1] = 0.5f;
+  check(holds(overlapping(physics, boxQuery, 8), {3}), "a box overlaps by its own shape");
+
+  OrblitPhysicsCast ignoring = ballQuery;
+  ignoring.ignore = 1;
+  check(holds(overlapping(physics, ignoring, 8), {2}), "a body may be ignored");
+
+  OrblitPhysicsCast flat = ballQuery;
+  flat.shape = ORBLIT_PHYSICS_PLANE;
+  flat.size[1] = 1.0f;
+  check(overlapping(physics, flat, 8).empty(), "a half-space cannot be asked about");
+  check(orblit_physics_overlap(nullptr, &ballQuery, nullptr, 0) == 0,
+        "and asking no world is survivable");
+  orblit_physics_destroy(physics);
+}
+
+void overlapLayers() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand shy = sphereAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+  shy.motion = ORBLIT_PHYSICS_STATIC;
+  shy.layerIs = 2;
+  shy.layerCares = 0;
+  submit(physics, shy);
+
+  OrblitPhysicsCast blind = pointAt(0.0f, 0.0f, 0.0f);
+  blind.layerIs = 4;
+  blind.layerCares = 0;
+  check(overlapping(physics, blind, 4).empty(),
+        "a query and a body that care about nothing do not meet");
+  blind.layerCares = 2;
+  check(holds(overlapping(physics, blind, 4), {1}), "and do when the query cares");
+
+  OrblitPhysicsCommand keen = shy;
+  keen.id = 2;
+  keen.layerCares = 4;
+  submit(physics, keen);
+  blind.layerCares = 0;
+  check(holds(overlapping(physics, blind, 4), {2}), "or when the body does");
+  orblit_physics_destroy(physics);
+}
+
+void askingAll() {
+  // Three boxes in a row along +x, made in the reverse of the order a ray
+  // meets them, so that meeting them in order is not an accident of storage.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  for (int i = 3; i >= 1; --i) {
+    submit(physics, slabAt(i, 0.5f, 0.5f, 0.5f, 3.0f * static_cast<float>(i), 0.0f, 0.0f));
+  }
+  const OrblitPhysicsCast along = rayFrom(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+
+  const std::vector<OrblitPhysicsHit> all = hitsAlong(physics, along, 8);
+  check(all.size() == 3 && all[0].body == 1 && all[1].body == 2 && all[2].body == 3,
+        "every body along a ray is met, nearest first");
+  check(near(all[0].distance, 2.5f, 0.01f) && near(all[2].distance, 8.5f, 0.01f) &&
+            near(all[1].normal[0], -1.0f, 0.01f),
+        "each with its own distance and the normal of the face it met");
+  const std::vector<OrblitPhysicsHit> two = hitsAlong(physics, along, 2);
+  check(two.size() == 2 && two[1].body == 2, "a limit keeps the nearest ones");
+  check(hitsAlong(physics, along, 0).empty(), "and none is none");
+
+  OrblitPhysicsCast brief = along;
+  brief.distance = 6.0f;
+  check(hitsAlong(physics, brief, 8).size() == 2, "a short ray stops before the third");
+
+  OrblitPhysicsCast skipping = along;
+  skipping.ignore = 2;
+  const std::vector<OrblitPhysicsHit> skipped = hitsAlong(physics, skipping, 8);
+  check(skipped.size() == 2 && skipped[1].body == 3, "an ignored body is passed through");
+
+  OrblitPhysicsCast within = along;
+  within.from[0] = 3.0f;
+  const std::vector<OrblitPhysicsHit> from = hitsAlong(physics, within, 8);
+  check(from.size() == 3 && from[0].body == 1 && from[0].started &&
+            from[0].distance == 0.0f && !from[1].started,
+        "a ray that starts inside a body reports it as begun, and goes on to the rest");
+  orblit_physics_destroy(physics);
+}
+
+void askingAny() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, slabAt(1, 0.5f, 0.5f, 0.5f, 3.0f, 0.0f, 0.0f));
+  submit(physics, triggerAt(2, 0.5f, 6.0f, 0.0f, 0.0f));
+  OrblitPhysicsCast along = rayFrom(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+
+  check(orblit_physics_cast_any(physics, &along), "any-hit says a ray meets something");
+  OrblitPhysicsCast back = along;
+  back.direction[0] = -1.0f;
+  check(!orblit_physics_cast_any(physics, &back), "and that a ray fired away meets nothing");
+  along.distance = 2.0f;
+  check(!orblit_physics_cast_any(physics, &along), "or one that stops short");
+  along.distance = 3.0f;
+  check(orblit_physics_cast_any(physics, &along), "or does when it just reaches");
+
+  OrblitPhysicsCast beyond = rayFrom(4.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+  check(!orblit_physics_cast_any(physics, &beyond), "a trigger alone is not a hit");
+  beyond.triggers = true;
+  check(orblit_physics_cast_any(physics, &beyond), "unless triggers are what is asked for");
+  check(!orblit_physics_cast_any(nullptr, &along), "and asking no world is survivable");
+  orblit_physics_destroy(physics);
+}
+
+/// The whole of M1 in one world: a ramp, a trigger, a zone and a belt with a
+/// box on it, and each of the five questions asked of it.
+void askingTheWorld() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, rampFrom(2, 10.0f, 0.5f));
+  submit(physics, triggerAt(3, 1.0f, 4.0f, 1.0f, 0.0f));
+  submit(physics, triggerAt(4, 2.0f, -20.0f, 2.0f, 0.0f));
+  OrblitPhysicsZone weightless = zoneOn(4, ORBLIT_PHYSICS_ZONE_GRAVITY, 0, 0.0f);
+  check(orblit_physics_zone(physics, &weightless), "a zone is set on a trigger");
+  submit(physics, slabAt(5, 4.0f, 0.25f, 1.0f, -5.0f, 0.25f, 0.0f));
+  submit(physics, boxAt(6, 0.5f, -5.0f, 1.0f, 0.0f));
+  submit(physics, sphereAt(7, 0.25f, -20.0f, 2.0f, 0.0f));
+  surfaceOf(physics, 5, 2.0f, 0.0f);
+
+  // Overlap and point: which trigger is this in, and is it in anything solid.
+  OrblitPhysicsCast atTrigger = pointAt(4.0f, 1.0f, 0.0f);
+  check(overlapping(physics, atTrigger, 4).empty(), "point: nothing solid is at the trigger");
+  atTrigger.triggers = true;
+  check(holds(overlapping(physics, atTrigger, 4), {3}), "point: the trigger is");
+  OrblitPhysicsCast atZone = pointAt(-20.0f, 2.0f, 0.0f);
+  atZone.triggers = true;
+  check(holds(overlapping(physics, atZone, 4), {4}), "point: and the zone is where it was put");
+  OrblitPhysicsCast small = pointAt(-5.0f, 1.0f, 0.0f);
+  small.shape = ORBLIT_PHYSICS_SPHERE;
+  small.size[0] = 0.1f;
+  check(holds(overlapping(physics, small, 4), {6}),
+        "overlap: a small sphere at the box is in the box");
+
+  // Closest, all and any, down onto the ramp.
+  const OrblitPhysicsCast down = rayFrom(13.0f, 10.0f, 0.0f, 0.0f, -1.0f, 0.0f, 100.0f);
+  OrblitPhysicsHit hit{};
+  check(orblit_physics_cast(physics, &down, &hit) && hit.body == 2,
+        "closest: a ray fired down onto the ramp meets the ramp");
+  check(near(hit.normal[0], -std::sin(0.5f), 0.01f) && near(hit.normal[1], std::cos(0.5f), 0.01f),
+        "ray with normal: and the normal is the ramp's, tilted");
+  const std::vector<OrblitPhysicsHit> both = hitsAlong(physics, down, 8);
+  check(both.size() == 2 && both[0].body == 2 && both[1].body == 1 &&
+            near(both[1].distance, 10.0f, 0.01f),
+        "all: and goes on to the ground beneath it");
+  OrblitPhysicsCast brief = down;
+  brief.distance = 5.0f;
+  check(!orblit_physics_cast_any(physics, &brief) && orblit_physics_cast_any(physics, &down),
+        "any: and stops as soon as it knows");
+
+  // The world, run: the belt carries its box and the zone holds its ball.
+  run(physics, 2.0f);
+  check(near(alongOf(physics, 6), 2.0f, 0.2f), "hook: a conveyor contact carries the box");
+  check(near(heightOf(physics, 7), 2.0f, 0.05f), "zone: and the ball in the zone has not fallen");
+  orblit_physics_destroy(physics);
+}
+
 } // namespace
 
 int main() {
@@ -2159,6 +2886,23 @@ int main() {
   refusingJoints();
   ragdoll();
   chains();
+  triggering();
+  triggeringCharacters();
+  staying();
+  stayingInside();
+  zoning();
+  zoneEdits();
+  conveying();
+  wakingBelts();
+  pinnedBelts();
+  ruling();
+  ruleEdits();
+  hiding();
+  overlaps();
+  overlapLayers();
+  askingAll();
+  askingAny();
+  askingTheWorld();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

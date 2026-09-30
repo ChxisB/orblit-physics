@@ -263,6 +263,25 @@ bool sweepGround(const Placed &moving, const Vec3 &direction, float distance,
   return true;
 }
 
+/// Whether the sieve lets the body in `row` be met at all, before any geometry.
+bool asks(const Bodies &bodies, uint32_t row, const Sieve &sieve) {
+  const OrblitPhysicsId id = bodies.id(row);
+  if (id == sieve.ignore || (sieve.alsoIgnore != 0 && id == sieve.alsoIgnore)) {
+    return false;
+  }
+  if (!interact(sieve.layerIs, sieve.layerCares, bodies.layerIs(row),
+                bodies.layerCares(row))) {
+    return false;
+  }
+  return bodies.sensor(row) == sieve.triggers;
+}
+
+/// An overlap the cast is moving away from, when its sieve lets it leave.
+bool leavingIt(const Journey &journey, const Impact &impact) {
+  return journey.sieve.leaving && impact.started &&
+         dot(journey.direction, impact.normal) >= 0.0f;
+}
+
 } // namespace
 
 Vec3 support(const Placed &of, const Vec3 &direction) {
@@ -311,14 +330,10 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
   if (collide(moving.shape, moving.at, moving.rotation, fixed.shape, fixed.at,
               fixed.rotation, inside) &&
       inside.count > 0) {
-    uint32_t deepest = 0;
-    for (uint32_t i = 1; i < inside.count; ++i) {
-      if (inside.points[i].depth > inside.points[deepest].depth) deepest = i;
-    }
     out.started = true;
     out.distance = 0.0f;
     out.normal = inside.normal;
-    out.at = inside.points[deepest].at;
+    out.at = deepest(inside).at;
     return true;
   }
 
@@ -331,48 +346,47 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
       [&](const Vec3 &along) { return support(fixed, along); }, out);
 }
 
-uint32_t nearest(const Bodies &bodies, const Placed &moving, const Vec3 &direction,
-                 float distance, const Sieve &sieve, Impact &out) {
-  if (moving.shape.kind == ShapeKind::plane) return Bodies::kNone;
-  if (moving.shape.kind == ShapeKind::heightField) return Bodies::kNone;
-  if (!(distance > 0.0f)) distance = 0.0f;
-
-  // Where the cast could possibly reach, as one box: the shape at each end of
-  // its travel and everything between. Grown by a hair so a body it meets
-  // exactly edge on is not filtered out before it is looked at properly.
+Journey::Journey(const Placed &moving, const Vec3 &direction, float distance,
+                 const Sieve &sieve)
+    : moving(moving),
+      direction(direction),
+      distance(distance > 0.0f ? distance : 0.0f),
+      sieve(sieve) {
   const Bounds begins = moving.shape.boundsAt(moving.at, moving.rotation);
-  const Bounds ends =
-      moving.shape.boundsAt(moving.at + direction * distance, moving.rotation);
-  const Bounds swept = Bounds{minPerAxis(begins.low, ends.low),
-                              maxPerAxis(begins.high, ends.high)}
-                           .grown(1.0e-3f);
+  const Bounds ends = moving.shape.boundsAt(
+      moving.at + direction * this->distance, moving.rotation);
+  reach = Bounds{minPerAxis(begins.low, ends.low), maxPerAxis(begins.high, ends.high)}
+              .grown(1.0e-3f);
+}
+
+bool meets(const Bodies &bodies, uint32_t row, const Journey &journey,
+           Impact &out) {
+  if (!asks(bodies, row, journey.sieve)) return false;
+
+  // A half-space has no bounds to test against, being half the world, so it is
+  // always asked properly, the way the broadphase treats it.
+  const bool half = bodies.shape(row).kind == ShapeKind::plane;
+  if (!half && !journey.reach.overlaps(bodies.bounds(row))) return false;
+
+  const Placed fixed{bodies.shape(row), bodies.at(row), bodies.rotation(row)};
+  if (!sweep(journey.moving, journey.direction, journey.distance, fixed, out)) {
+    return false;
+  }
+  return !leavingIt(journey, out);
+}
+
+uint32_t nearest(const Bodies &bodies, const Journey &journey, Impact &out) {
+  if (journey.moving.shape.kind == ShapeKind::plane) return Bodies::kNone;
+  if (journey.moving.shape.kind == ShapeKind::heightField) return Bodies::kNone;
 
   uint32_t hit = Bodies::kNone;
-  const uint32_t count = bodies.count();
-  for (uint32_t row = 0; row < count; ++row) {
-    const OrblitPhysicsId id = bodies.id(row);
-    if (id == sieve.ignore || (sieve.alsoIgnore != 0 && id == sieve.alsoIgnore)) {
-      continue;
+  forEachMeeting(bodies, journey, [&](uint32_t row, const Impact &impact) {
+    if (hit == Bodies::kNone || impact.distance < out.distance) {
+      out = impact;
+      hit = row;
     }
-    if (!interact(sieve.layerIs, sieve.layerCares, bodies.layerIs(row),
-                  bodies.layerCares(row))) {
-      continue;
-    }
-    // A half-space has no bounds to test against — it is half the world — so
-    // it is always asked properly, the way the broadphase treats it.
-    const bool half = bodies.shape(row).kind == ShapeKind::plane;
-    if (!half && !swept.overlaps(bodies.bounds(row))) continue;
-
-    const Placed fixed{bodies.shape(row), bodies.at(row), bodies.rotation(row)};
-    Impact impact;
-    if (!sweep(moving, direction, distance, fixed, impact)) continue;
-    if (sieve.leaving && impact.started && dot(direction, impact.normal) >= 0.0f) {
-      continue;
-    }
-    if (hit != Bodies::kNone && impact.distance >= out.distance) continue;
-    out = impact;
-    hit = row;
-  }
+    return true;
+  });
   return hit;
 }
 

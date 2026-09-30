@@ -177,6 +177,10 @@ struct Mat3 {
   constexpr Vec3 operator*(const Vec3 &v) const {
     return {dot(row[0], v), dot(row[1], v), dot(row[2], v)};
   }
+
+  constexpr Mat3 operator*(float s) const {
+    return {row[0] * s, row[1] * s, row[2] * s};
+  }
 };
 
 /// The inverse inertia of a body turned by `q`, from the diagonal `inverse`

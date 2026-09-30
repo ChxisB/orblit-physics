@@ -79,6 +79,12 @@ struct BodyDescription {
   uint32_t layerIs = 1;
   uint32_t layerCares = 0xFFFFFFFFu;
   bool asleep = false;
+
+  /// Reports overlaps and pushes nothing, and is invisible to solid casts.
+  bool sensor = false;
+
+  /// Reports a touch or an overlap every step it lasts, not only its ends.
+  bool stay = false;
 };
 
 class Bodies {
@@ -132,6 +138,14 @@ class Bodies {
   /// by nothing.
   float inverseMass(uint32_t row) const { return inverseMass_[row]; }
   const Mat3 &inverseInertia(uint32_t row) const { return inverseInertia_[row]; }
+
+  bool sensor(uint32_t row) const { return sensor_[row] != 0; }
+  bool stay(uint32_t row) const { return stay_[row] != 0; }
+
+  /// The velocity of the surface, in the world, that a contact with this body
+  /// carries whatever touches it along by. Zero for an ordinary body.
+  Vec3 &surface(uint32_t row) { return surface_[row]; }
+  const Vec3 &surface(uint32_t row) const { return surface_[row]; }
 
   bool asleep(uint32_t row) const { return asleep_[row] != 0; }
   bool movable(uint32_t row) const { return motion_[row] == Motion::free; }
@@ -204,6 +218,9 @@ class Bodies {
   std::vector<uint8_t> asleep_;
   std::vector<float> still_;
   std::vector<Bounds> bounds_;
+  std::vector<uint8_t> sensor_;
+  std::vector<uint8_t> stay_;
+  std::vector<Vec3> surface_;
 
   std::unordered_map<OrblitPhysicsId, uint32_t> index_;
 };
@@ -234,6 +251,9 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
   asleep_.push_back(from.asleep && free ? 1 : 0);
   still_.push_back(0.0f);
   bounds_.push_back({});
+  sensor_.push_back(from.sensor ? 1 : 0);
+  stay_.push_back(from.stay ? 1 : 0);
+  surface_.push_back({});
 
   index_.emplace(id, row);
   refresh(row);
@@ -268,6 +288,9 @@ inline void Bodies::remove(OrblitPhysicsId id) {
     asleep_[row] = asleep_[last];
     still_[row] = still_[last];
     bounds_[row] = bounds_[last];
+    sensor_[row] = sensor_[last];
+    stay_[row] = stay_[last];
+    surface_[row] = surface_[last];
     index_[id_[row]] = row;
   }
 
@@ -290,6 +313,9 @@ inline void Bodies::remove(OrblitPhysicsId id) {
   asleep_.pop_back();
   still_.pop_back();
   bounds_.pop_back();
+  sensor_.pop_back();
+  stay_.pop_back();
+  surface_.pop_back();
 }
 
 } // namespace orblit

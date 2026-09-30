@@ -3,9 +3,9 @@
 // The order is the part worth stating, because every other choice follows
 // from it. One step is:
 //
-//   find contacts -> integrate velocity -> solve velocity
+//   find contacts -> feel zones -> integrate velocity -> solve velocity
 //                 -> integrate position -> solve position -> break joints
-//                 -> move characters -> sleep
+//                 -> move characters -> report touches and triggers -> sleep
 //
 // Contacts are found on the positions the last step left, so a caller reading
 // transforms and a caller reading events are looking at the same instant.
@@ -13,6 +13,11 @@
 // collision in it rather than needing to be undone. Position is solved last,
 // on the overlap that survived, so the correction is never spent on overlap
 // that integration was about to remove anyway.
+//
+// A zone is read on those same positions, before velocity is integrated,
+// because it changes what integration does. A trigger is read after everything
+// has moved, because it only reports where things ended up, and a body that
+// came to rest inside one should be in it by the time the caller looks.
 //
 // Characters move after everything else has, because they are the one kind
 // of body that looks at the world before moving through it. A lift has
@@ -30,6 +35,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,6 +45,7 @@
 #include "heightfield.h"
 #include "joint.h"
 #include "orblit_physics.h"
+#include "rule.h"
 #include "solver.h"
 
 namespace orblit {
@@ -63,6 +70,27 @@ class World {
   /// The nearest body `query` would meet, and whether it met one. Changes
   /// nothing: a world is the same after a cast as it was before.
   bool cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const;
+
+  /// Every body `query` would meet, nearest first, in `out` up to `capacity`.
+  /// Returns how many. A full list keeps the nearest, not the first found.
+  uint32_t castAll(const OrblitPhysicsCast &query, OrblitPhysicsHit *out,
+                   uint32_t capacity) const;
+
+  /// Whether `query` would meet anything, without finding what was nearest.
+  bool castAny(const OrblitPhysicsCast &query) const;
+
+  /// The bodies the query's shape overlaps where it stands, in no order, up to
+  /// `capacity`. Returns how many.
+  uint32_t overlap(const OrblitPhysicsCast &query, OrblitPhysicsId *out,
+                   uint32_t capacity) const;
+
+  /// Sets or removes the zone over a trigger, waking what is inside it. False,
+  /// and nothing changed, if it cannot be set or there was none to remove.
+  bool zone(const OrblitPhysicsZone &from);
+
+  /// Sets or removes the rule between two bodies, waking both. False, and
+  /// nothing changed, if it cannot be set or there was none to remove.
+  bool rule(const OrblitPhysicsRule &from);
 
   const Bodies &bodies() const { return bodies_; }
   const std::vector<OrblitPhysicsEvent> &events() const { return events_; }
@@ -101,12 +129,27 @@ class World {
   /// ground laid again under the same id is still what they were tied to.
   void unmake(OrblitPhysicsId id);
   void findContacts();
+
+  /// What `rules_` says about the pair, named the way round `first` and the
+  /// other body are, which is how a manifold names them.
+  Rule ruleFor(const PairKey &key, OrblitPhysicsId first) const;
+
+  /// Settles, for every body the solver moves, what each zone it is in says.
+  void feelZones();
   void integrateVelocities(float delta);
   void integratePositions(float delta);
   void moveCharacters(float delta);
   void moveCharacter(Character &character, uint32_t row, const Vec3 &up,
                      float delta);
   void updateSleep(float delta);
+
+  /// Stops a body that a moving surface is holding still from counting that as
+  /// rest. It is at rest against the surface and not against the world, and
+  /// asleep it would stay put when whatever held it in place was taken away.
+  void keepDragged();
+
+  /// Wakes every body whose bounds overlap `area`.
+  void wakeWithin(const Bounds &area);
 
   /// Puts every group of joined bodies to sleep that is still enough as a
   /// whole, and none that is not.
@@ -124,6 +167,20 @@ class World {
   /// Wakes the two ends of a joint, either of which may be the world.
   void wakeEnds(OrblitPhysicsId a, OrblitPhysicsId b);
   void reportTouches();
+
+  /// Reports which bodies came into and left each trigger since the step
+  /// before, and what is still in one that asked to hear about it.
+  void reportSensing();
+  void senseFrom(uint32_t trigger);
+
+  /// Whether `body` is in `trigger`, and the overlap if it is. Not a trigger
+  /// against a trigger and not a static body, which nothing changes about.
+  bool within(uint32_t trigger, uint32_t body, Manifold &inside) const;
+
+  /// The event a manifold amounts to, its normal turned to come out of the
+  /// key's second body towards its first.
+  OrblitPhysicsEvent pairEvent(uint32_t kind, const PairKey &key,
+                               const Manifold &manifold) const;
   void note(uint32_t kind, uint32_t row);
 
   /// Adds an impulse to a free body at a world point, waking it. Anything
@@ -153,6 +210,21 @@ class World {
   /// started. Swapped rather than copied at the end of a step.
   std::unordered_map<PairKey, Manifold, PairKeyHash> touching_;
   std::unordered_map<PairKey, Manifold, PairKeyHash> wasTouching_;
+
+  /// Which bodies are in which triggers, this step and the one before, keyed
+  /// trigger first rather than smaller id first. Only ever a trigger and a
+  /// body, so the two orders never collide.
+  std::unordered_set<PairKey, PairKeyHash> sensing_;
+  std::unordered_set<PairKey, PairKeyHash> wasSensing_;
+
+  /// What has been said about regions and pairs, by body id, so it survives
+  /// the row a body is in moving. A zone's key is the trigger it is over, and
+  /// a rule's is its pair, with the move scales in the key's order.
+  std::unordered_map<OrblitPhysicsId, Zone> zones_;
+  std::unordered_map<PairKey, Rule, PairKeyHash> rules_;
+
+  /// What each row feels from the zones, rebuilt every step there are any.
+  std::vector<Felt> felt_;
 
   std::vector<OrblitPhysicsEvent> events_;
 

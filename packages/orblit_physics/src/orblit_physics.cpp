@@ -109,6 +109,36 @@ bool orblit_physics_cast(const OrblitPhysics *physics,
   return physics->world.cast(*cast, *out);
 }
 
+uint32_t orblit_physics_cast_all(const OrblitPhysics *physics,
+                                 const OrblitPhysicsCast *cast,
+                                 OrblitPhysicsHit *out, uint32_t capacity) {
+  if (physics == nullptr || cast == nullptr || out == nullptr) return 0;
+  return physics->world.castAll(*cast, out, capacity);
+}
+
+bool orblit_physics_cast_any(const OrblitPhysics *physics,
+                             const OrblitPhysicsCast *cast) {
+  if (physics == nullptr || cast == nullptr) return false;
+  return physics->world.castAny(*cast);
+}
+
+uint32_t orblit_physics_overlap(const OrblitPhysics *physics,
+                                const OrblitPhysicsCast *cast,
+                                OrblitPhysicsId *out, uint32_t capacity) {
+  if (physics == nullptr || cast == nullptr || out == nullptr) return 0;
+  return physics->world.overlap(*cast, out, capacity);
+}
+
+bool orblit_physics_zone(OrblitPhysics *physics, const OrblitPhysicsZone *zone) {
+  if (physics == nullptr || zone == nullptr) return false;
+  return physics->world.zone(*zone);
+}
+
+bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule) {
+  if (physics == nullptr || rule == nullptr) return false;
+  return physics->world.rule(*rule);
+}
+
 bool orblit_physics_velocity(const OrblitPhysics *physics, OrblitPhysicsId id,
                              float *out) {
   if (physics == nullptr || out == nullptr) return false;

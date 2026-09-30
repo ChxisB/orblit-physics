@@ -94,16 +94,56 @@ struct Sieve {
   /// dead where it stands. With this set, an overlap the cast is moving away
   /// from is not an impact, and one it is moving further into still is.
   bool leaving = false;
+
+  /// Which of the two kinds of body it sees. False sees solid bodies and never
+  /// a sensor, which is what a character, a camera and a bullet want. True sees
+  /// sensors and nothing solid, which is how a game asks which zone a point is
+  /// in.
+  bool triggers = false;
 };
 
-/// The nearest body `moving` meets going `distance` along `direction`, which
-/// must be a unit vector, and where. The row, or Bodies::kNone for nothing.
-///
-/// Every body is asked, whatever it is and whether or not it is asleep: this
-/// is a question about where things are, and a crate that has settled is still
-/// in the way.
-uint32_t nearest(const Bodies &bodies, const Placed &moving, const Vec3 &direction,
-                 float distance, const Sieve &sieve, Impact &out);
+/// Everything one cast asks of the world: a shape, where it goes, and which
+/// bodies it may meet on the way.
+struct Journey {
+  Placed moving;
+
+  /// A unit vector.
+  Vec3 direction;
+
+  /// In metres. Never negative.
+  float distance = 0.0f;
+
+  Sieve sieve;
+
+  /// Where it could possibly reach, as one box: the shape at each end of its
+  /// travel and everything between. Grown by a hair so a body it meets exactly
+  /// edge on is not filtered out before it is looked at properly.
+  Bounds reach;
+
+  Journey(const Placed &moving, const Vec3 &direction, float distance,
+          const Sieve &sieve);
+};
+
+/// Whether `journey` meets the body in `row`, and where. Every body is asked,
+/// whatever it is and whether or not it is asleep: this is a question about
+/// where things are, and a crate that has settled is still in the way.
+bool meets(const Bodies &bodies, uint32_t row, const Journey &journey,
+           Impact &out);
+
+/// Calls `visit(row, impact)` for each body the journey meets, in no order,
+/// until it returns false. The way to stop early is to return false.
+template <typename Visit>
+void forEachMeeting(const Bodies &bodies, const Journey &journey, Visit &&visit) {
+  const uint32_t count = bodies.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    Impact impact;
+    if (meets(bodies, row, journey, impact) && !visit(row, impact)) return;
+  }
+}
+
+/// The nearest body the journey meets, and where. The row, or Bodies::kNone for
+/// nothing.
+uint32_t nearest(const Bodies &bodies, const Journey &journey, Impact &out);
 
 } // namespace orblit
 

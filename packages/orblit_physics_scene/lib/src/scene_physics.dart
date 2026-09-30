@@ -39,6 +39,12 @@ import 'pose.dart';
 /// joint numbers, which are counted apart from the bodies'. A joint that
 /// breaks stays broken, and in [broken], until its own entity is edited.
 ///
+/// A body with [BodyComponent.trigger] is a place: it reports what enters and
+/// leaves it, as [PhysicsEventKind.entered] and [PhysicsEventKind.exited] with
+/// the trigger's own number first. An entity with a [ZoneComponent] and a body
+/// is a trigger whose region changes how the free bodies in it move.
+/// [BodyComponent.surface] is a belt: what stands on the body is carried.
+///
 /// [physics] is the world itself, for everything a document cannot say:
 /// pushing, driving and casting. What touched what is [events], gathered over
 /// every step a frame took. Numbers from one upwards are this class's to hand
@@ -232,7 +238,13 @@ class ScenePhysics {
       final kept = number ?? _next++;
       _bodyOf[id] = kept;
       _entityOf[kept] = id;
-      _add(kept, body, worldOf(_document, id));
+      final zone = _document[id]?[SceneComponents.zone];
+      _add(
+        kept,
+        body,
+        worldOf(_document, id),
+        zone is ZoneComponent ? zone : null,
+      );
       added.add(kept);
     }
     _rejoin(ids, gone);
@@ -249,7 +261,12 @@ class ScenePhysics {
     }
   }
 
-  void _add(int number, BodyComponent body, Matrix4 world) {
+  void _add(
+    int number,
+    BodyComponent body,
+    Matrix4 world,
+    ZoneComponent? zone,
+  ) {
     final rotation = Quaternion.identity();
     final scale = Vector3.zero();
     world.decompose(Vector3.zero(), rotation, scale);
@@ -270,6 +287,25 @@ class ScenePhysics {
       angularDamping: body.angularDamping,
       layers: Layers(is_: body.layers, cares: body.cares),
       asleep: body.startsAsleep,
+      // A zone is a region, and only a trigger is one.
+      trigger: body.trigger || zone != null,
+      stay: body.stay,
+    );
+
+    final surface = body.surface;
+    if (surface.length2 > 0) {
+      physics.setSurface(number, velocity: [surface.x, surface.y, surface.z]);
+    }
+    if (zone != null) physics.setZone(number, _zoneFor(zone));
+  }
+
+  static PhysicsZone _zoneFor(ZoneComponent zone) {
+    final gravity = zone.gravity;
+    return PhysicsZone(
+      gravity: gravity == null ? null : [gravity.x, gravity.y, gravity.z],
+      linearDamping: zone.linearDamping,
+      angularDamping: zone.angularDamping,
+      priority: zone.priority,
     );
   }
 

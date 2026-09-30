@@ -57,7 +57,13 @@ final class OrblitPhysicsCommand extends Struct {
   @Bool()
   external bool asleep;
 
-  @Array(3)
+  @Bool()
+  external bool sensor;
+
+  @Bool()
+  external bool stay;
+
+  @Array(1)
   external Array<Uint8> reserved;
 }
 
@@ -96,8 +102,11 @@ final class OrblitPhysicsCast extends Struct {
   @Uint32()
   external int layerCares;
 
-  @Uint32()
-  external int pad;
+  @Bool()
+  external bool triggers;
+
+  @Array(3)
+  external Array<Uint8> reserved;
 
   @Array(4)
   external Array<Float> size;
@@ -273,6 +282,45 @@ final class OrblitPhysicsJointState extends Struct {
   external double torque;
 }
 
+/// `OrblitPhysicsZone`, field for field.
+final class OrblitPhysicsZone extends Struct {
+  @Uint64()
+  external int body;
+
+  @Uint32()
+  external int overrides;
+
+  @Int32()
+  external int priority;
+
+  @Array(3)
+  external Array<Float> gravity;
+
+  @Array(2)
+  external Array<Float> damping;
+}
+
+/// `OrblitPhysicsRule`, field for field.
+final class OrblitPhysicsRule extends Struct {
+  @Uint64()
+  external int a;
+
+  @Uint64()
+  external int b;
+
+  @Uint32()
+  external int overrides;
+
+  @Float()
+  external double friction;
+
+  @Float()
+  external double restitution;
+
+  @Array(2)
+  external Array<Float> moveScale;
+}
+
 /// `OrblitPhysicsSettings`, field for field.
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
@@ -424,6 +472,60 @@ external bool physicsCast(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsCast> cast,
   Pointer<OrblitPhysicsHit> out,
+);
+
+@Native<
+  Uint32 Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsCast>,
+    Pointer<OrblitPhysicsHit>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_cast_all', assetId: kOrblitPhysicsAsset)
+external int physicsCastAll(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsCast> cast,
+  Pointer<OrblitPhysicsHit> out,
+  int capacity,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsCast>)
+>(symbol: 'orblit_physics_cast_any', assetId: kOrblitPhysicsAsset)
+external bool physicsCastAny(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsCast> cast,
+);
+
+@Native<
+  Uint32 Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsCast>,
+    Pointer<Uint64>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_overlap', assetId: kOrblitPhysicsAsset)
+external int physicsOverlap(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsCast> cast,
+  Pointer<Uint64> out,
+  int capacity,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsZone>)
+>(symbol: 'orblit_physics_zone', assetId: kOrblitPhysicsAsset)
+external bool physicsZone(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsZone> zone,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Pointer<OrblitPhysicsRule>)
+>(symbol: 'orblit_physics_rule', assetId: kOrblitPhysicsAsset)
+external bool physicsRule(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsRule> rule,
 );
 
 @Native<

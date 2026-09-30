@@ -21,5 +21,7 @@ export 'src/world.dart'
         PhysicsFooting,
         PhysicsHit,
         PhysicsMotion,
+        PhysicsRule,
         PhysicsSettings,
+        PhysicsZone,
         Shape;

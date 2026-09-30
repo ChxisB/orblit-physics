@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 #include "cast.h"
 
@@ -50,6 +51,148 @@ constexpr float kThinnest = 1.0e-3f;
 /// 25 degrees. Loose enough that a crate rocking on a slope keeps its warm
 /// start, tight enough that a corner that has slid across a crease does not.
 constexpr float kSameWay = 0.9f;
+
+/// How near a body must be to a surface to count as resting on it, in metres.
+/// A little over the solver's slop, which is how far into it a resting body
+/// sits.
+constexpr float kResting = 0.05f;
+
+/// Carries last step's impulse onto whichever of this step's points is
+/// nearest. No distance limit, deliberately: an old manifold only exists
+/// because the pair was already touching, so the worst a bad match can do is
+/// start a pass from a number that is merely close, and the passes then
+/// correct it within the same step.
+///
+/// A limit on direction, though. Against ground the points of one pair can
+/// face different ways, and the push that held a corner against one slope is
+/// no start at all for a corner now against the other.
+void carryImpulses(const Manifold &old, Manifold &manifold) {
+  // The rows a manifold names can swap between steps; the impulse is along a
+  // normal that flips with them.
+  const float sign = old.a != manifold.a ? -1.0f : 1.0f;
+  for (uint32_t c = 0; c < manifold.count; ++c) {
+    uint32_t nearest = Bodies::kNone;
+    float best = 3.0e38f;
+    for (uint32_t o = 0; o < old.count; ++o) {
+      if (dot(old.points[o].normal, manifold.points[c].normal) * sign < kSameWay) {
+        continue;
+      }
+      const float away = lengthSquared(old.points[o].at - manifold.points[c].at);
+      if (away < best) {
+        best = away;
+        nearest = o;
+      }
+    }
+    if (nearest == Bodies::kNone) continue;
+    manifold.points[c].normalImpulse = old.points[nearest].normalImpulse;
+    manifold.points[c].frictionImpulse[0] =
+        old.points[nearest].frictionImpulse[0] * sign;
+    manifold.points[c].frictionImpulse[1] =
+        old.points[nearest].frictionImpulse[1] * sign;
+  }
+}
+
+/// The path a query describes. A ray is a sphere of no size, which is what it
+/// is, and means one routine in the cast rather than two that differ by a
+/// radius of zero.
+Journey journeyOf(const OrblitPhysicsCast &query, const Vec3 &direction,
+                  float distance) {
+  Sieve sieve;
+  sieve.layerIs = query.layerIs;
+  sieve.layerCares = query.layerCares;
+  sieve.ignore = query.ignore;
+  sieve.triggers = query.triggers;
+
+  const Shape shape = query.shape == 0
+                          ? Shape::sphere(0.0f)
+                          : Shape::fromCommand(query.shape, query.size);
+  return Journey{Placed{shape, vectorOf(query.from), rotationOf(query.rotation)},
+                 direction, distance, sieve};
+}
+
+OrblitPhysicsHit hitOf(OrblitPhysicsId body, const Impact &impact) {
+  OrblitPhysicsHit hit{};
+  hit.body = body;
+  hit.at[0] = impact.at.x;
+  hit.at[1] = impact.at.y;
+  hit.at[2] = impact.at.z;
+  hit.normal[0] = impact.normal.x;
+  hit.normal[1] = impact.normal.y;
+  hit.normal[2] = impact.normal.z;
+  hit.distance = impact.distance;
+  hit.started = impact.started;
+  return hit;
+}
+
+/// Whether a query goes anywhere. Ground cannot be cast, and a direction of no
+/// length goes nowhere.
+bool castable(const OrblitPhysicsCast &query) {
+  return query.shape != ORBLIT_PHYSICS_HEIGHT_FIELD &&
+         lengthSquared(normalised(vectorOf(query.direction))) >= kTiny;
+}
+
+/// The journey a castable query describes.
+Journey castOf(const OrblitPhysicsCast &query) {
+  return journeyOf(query, normalised(vectorOf(query.direction)),
+                   std::fmax(query.distance, 0.0f));
+}
+
+/// Puts `hit` into the `written` hits in `out`, which are nearest first and
+/// which `out` has room for `capacity` of, and drops the furthest if that
+/// leaves too many. Returns how many are there now.
+uint32_t keepNearest(OrblitPhysicsHit *out, uint32_t written, uint32_t capacity,
+                     const OrblitPhysicsHit &hit) {
+  uint32_t at = written;
+  while (at > 0 && out[at - 1].distance > hit.distance) --at;
+  if (at == capacity) return written;
+
+  const uint32_t length = std::min(written + 1, capacity);
+  for (uint32_t i = length - 1; i > at; --i) out[i] = out[i - 1];
+  out[at] = hit;
+  return length;
+}
+
+bool anyNan(std::initializer_list<float> values) {
+  return std::any_of(values.begin(), values.end(),
+                     [](float v) { return std::isnan(v); });
+}
+
+constexpr uint32_t kZoneFields = ORBLIT_PHYSICS_ZONE_GRAVITY |
+                                 ORBLIT_PHYSICS_ZONE_LINEAR_DAMPING |
+                                 ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING;
+
+constexpr uint32_t kRuleFields = ORBLIT_PHYSICS_RULE_FRICTION |
+                                 ORBLIT_PHYSICS_RULE_RESTITUTION |
+                                 ORBLIT_PHYSICS_RULE_MOVE_SCALE;
+
+Zone zoneOf(const OrblitPhysicsZone &from) {
+  Zone zone;
+  zone.overrides = from.overrides & kZoneFields;
+  zone.priority = from.priority;
+  zone.gravity = vectorOf(from.gravity);
+  zone.linearDamping = from.damping[0];
+  zone.angularDamping = from.damping[1];
+  return zone;
+}
+
+/// Whether the numbers of a rule mean anything. A move scale that is NaN fails
+/// the comparison, so only the two that clamp need asking about.
+bool meaningful(const OrblitPhysicsRule &from) {
+  return !anyNan({from.friction, from.restitution}) && from.moveScale[0] >= 0.0f &&
+         from.moveScale[1] >= 0.0f;
+}
+
+/// The rule with its move scales in the key's order, and the two values a body
+/// is made with held to the range a body is made with.
+Rule ruleOf(const OrblitPhysicsRule &from, const PairKey &key) {
+  Rule rule;
+  rule.overrides = from.overrides & kRuleFields;
+  rule.friction = std::fmax(from.friction, 0.0f);
+  rule.restitution = clamped(from.restitution, 0.0f, 1.0f);
+  rule.move[0] = from.moveScale[0];
+  rule.move[1] = from.moveScale[1];
+  return key.a == from.a ? rule : rule.turned();
+}
 
 } // namespace
 
@@ -108,6 +251,10 @@ void World::apply(const OrblitPhysicsCommand &command) {
     made.layerIs = command.layerIs;
     made.layerCares = command.layerCares;
     made.asleep = command.asleep;
+    // A body the solver moves is pushed by what it touches, which is the one
+    // thing a trigger is not.
+    made.sensor = command.sensor && made.motion != Motion::free;
+    made.stay = command.stay;
     bodies_.add(command.id, made);
     return;
   }
@@ -176,12 +323,28 @@ void World::apply(const OrblitPhysicsCommand &command) {
       return;
     }
 
+    case ORBLIT_PHYSICS_SURFACE:
+      // Kept whole. Which part of it runs along a surface depends on the
+      // surface a contact is with, which is only known when there is one.
+      bodies_.surface(row) = vectorOf(command.vector);
+      // What rests on it, and the surface's own row, which wakes whatever is
+      // joined to a belt that is itself being driven.
+      wakeWithin(bodies_.bounds(row).grown(kResting));
+      return;
+
     default:
       return;
   }
 }
 
 void World::destroy(OrblitPhysicsId id) {
+  // A zone that goes leaves what was asleep in it at rest in air it no longer
+  // feels.
+  const uint32_t row = bodies_.rowOf(id);
+  if (row != Bodies::kNone && zones_.count(id) != 0) {
+    wakeWithin(bodies_.bounds(row));
+  }
+
   // What it was joined to is let go of, not left holding a joint to nothing,
   // and woken, because what was hanging from it should now fall.
   partners_.clear();
@@ -190,6 +353,13 @@ void World::destroy(OrblitPhysicsId id) {
   for (const OrblitPhysicsId partner : partners_) {
     const uint32_t row = bodies_.rowOf(partner);
     if (row != Bodies::kNone) wake(row);
+  }
+
+  // A rule is about two particular bodies. A new body that is given a dead
+  // one's id is not them and must not inherit what was said about them.
+  for (auto rule = rules_.begin(); rule != rules_.end();) {
+    rule = (rule->first.a == id || rule->first.b == id) ? rules_.erase(rule)
+                                                        : std::next(rule);
   }
 }
 
@@ -203,6 +373,7 @@ void World::unmake(OrblitPhysicsId id) {
                     characters_.end());
   // After the body, which points into it.
   fields_.erase(id);
+  zones_.erase(id);
 }
 
 bool World::ground(const OrblitPhysicsGround &from) {
@@ -243,11 +414,52 @@ bool World::ground(const OrblitPhysicsGround &from) {
       replacing ? Bounds{minPerAxis(before.low, after.low),
                          maxPerAxis(before.high, after.high)}
                 : after;
-  const uint32_t count = bodies_.count();
-  for (uint32_t other = 0; other < count; ++other) {
-    if (bodies_.bounds(other).overlaps(area)) wake(other);
-  }
+  wakeWithin(area);
   return true;
+}
+
+bool World::zone(const OrblitPhysicsZone &from) {
+  const uint32_t row = bodies_.rowOf(from.body);
+  if (row == Bodies::kNone || !bodies_.sensor(row)) return false;
+  if (anyNan({from.gravity[0], from.gravity[1], from.gravity[2], from.damping[0],
+              from.damping[1]})) {
+    return false;
+  }
+
+  if ((from.overrides & kZoneFields) == 0) {
+    if (zones_.erase(from.body) == 0) return false;
+  } else {
+    zones_[from.body] = zoneOf(from);
+  }
+  // What is in it now feels something else, so what was asleep in it is not
+  // at rest any more.
+  wakeWithin(bodies_.bounds(row));
+  return true;
+}
+
+bool World::rule(const OrblitPhysicsRule &from) {
+  if (from.a == 0 || from.b == 0 || from.a == from.b) return false;
+  if (bodies_.rowOf(from.a) == Bodies::kNone ||
+      bodies_.rowOf(from.b) == Bodies::kNone) {
+    return false;
+  }
+  if (!meaningful(from)) return false;
+
+  const PairKey key = PairKey::of(from.a, from.b);
+  if ((from.overrides & kRuleFields) == 0) {
+    if (rules_.erase(key) == 0) return false;
+  } else {
+    rules_[key] = ruleOf(from, key);
+  }
+  wakeEnds(from.a, from.b);
+  return true;
+}
+
+void World::wakeWithin(const Bounds &area) {
+  const uint32_t count = bodies_.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    if (bodies_.bounds(row).overlaps(area)) wake(row);
+  }
 }
 
 void World::push(uint32_t row, const Vec3 &impulse, const Vec3 &point) {
@@ -405,6 +617,7 @@ void World::step(float delta) {
   if (!(delta > 0.0f)) return;
 
   findContacts();
+  feelZones();
   integrateVelocities(delta);
   solver_.solveVelocities(bodies_, manifolds_.data(),
                           static_cast<uint32_t>(manifolds_.size()), joints_,
@@ -416,9 +629,11 @@ void World::step(float delta) {
   bodies_.refreshAll();
   moveCharacters(delta);
   reportTouches();
+  reportSensing();
   updateSleep(delta);
 
   wasTouching_.swap(touching_);
+  wasSensing_.swap(sensing_);
 }
 
 void World::findContacts() {
@@ -448,6 +663,9 @@ void World::findContacts() {
   });
 
   const auto consider = [this](uint32_t a, uint32_t b) {
+    // A trigger is somewhere to be, not something to hit. It is read once the
+    // step is over, in `reportSensing`.
+    if (bodies_.sensor(a) || bodies_.sensor(b)) return;
     // Nothing the solver would move means nothing worth looking at. That is
     // static against static, and it is also a pair that is entirely asleep —
     // which is the whole point of sleeping, and why a settled stack costs
@@ -495,43 +713,12 @@ void World::findContacts() {
     manifold.a = a;
     manifold.b = b;
 
-    // Warm starting: carry last step's impulse onto whichever of this step's
-    // points is nearest. No distance limit, deliberately — an old manifold
-    // only exists because the pair was already touching, so the worst a bad
-    // match can do is start a pass from a number that is merely close, and
-    // the passes then correct it within the same step.
-    //
-    // A limit on direction, though. Against ground the points of one pair
-    // can face different ways, and the push that held a corner against one
-    // slope is no start at all for a corner now against the other.
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
+    manifold.rule = ruleFor(key, bodies_.id(a));
+
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
-      const Manifold &old = before->second;
-      // The rows a manifold names can swap between steps; the impulse is
-      // along a normal that flips with them.
-      const float sign = old.a != a ? -1.0f : 1.0f;
-      for (uint32_t c = 0; c < manifold.count; ++c) {
-        uint32_t nearest = Bodies::kNone;
-        float best = 3.0e38f;
-        for (uint32_t o = 0; o < old.count; ++o) {
-          if (dot(old.points[o].normal, manifold.points[c].normal) * sign <
-              kSameWay) {
-            continue;
-          }
-          const float away = lengthSquared(old.points[o].at - manifold.points[c].at);
-          if (away < best) {
-            best = away;
-            nearest = o;
-          }
-        }
-        if (nearest == Bodies::kNone) continue;
-        manifold.points[c].normalImpulse = old.points[nearest].normalImpulse;
-        manifold.points[c].frictionImpulse[0] =
-            old.points[nearest].frictionImpulse[0] * sign;
-        manifold.points[c].frictionImpulse[1] =
-            old.points[nearest].frictionImpulse[1] * sign;
-      }
+      carryImpulses(before->second, manifold);
     }
 
     manifolds_.push_back(manifold);
@@ -539,13 +726,42 @@ void World::findContacts() {
   }
 }
 
+Rule World::ruleFor(const PairKey &key, OrblitPhysicsId first) const {
+  const auto found = rules_.find(key);
+  if (found == rules_.end()) return Rule{};
+  return first == key.a ? found->second : found->second.turned();
+}
+
+void World::feelZones() {
+  felt_.clear();
+  if (zones_.empty()) return;
+
+  const uint32_t count = bodies_.count();
+  felt_.resize(count);
+  Manifold inside;
+  for (const auto &entry : zones_) {
+    const uint32_t trigger = bodies_.rowOf(entry.first);
+    for (uint32_t row = 0; row < count; ++row) {
+      if (bodies_.solved(row) && within(trigger, row, inside)) {
+        felt_[row].add(entry.first, entry.second);
+      }
+    }
+  }
+}
+
 void World::integrateVelocities(float delta) {
+  const Felt unfelt;
   const uint32_t count = bodies_.count();
   for (uint32_t row = 0; row < count; ++row) {
     if (!bodies_.solved(row)) continue;
-    bodies_.velocity(row) += gravity_ * delta;
-    bodies_.velocity(row) *= damped(bodies_.linearDamping(row), delta);
-    bodies_.spin(row) *= damped(bodies_.angularDamping(row), delta);
+    // No zones means nothing was built to read, and every body feels only
+    // the world.
+    const Felt &felt = felt_.empty() ? unfelt : felt_[row];
+    bodies_.velocity(row) += felt.gravity(gravity_) * delta;
+    bodies_.velocity(row) *=
+        damped(felt.linearDamping(bodies_.linearDamping(row)), delta);
+    bodies_.spin(row) *=
+        damped(felt.angularDamping(bodies_.angularDamping(row)), delta);
   }
 }
 
@@ -567,6 +783,7 @@ void World::integratePositions(float delta) {
 void World::updateSleep(float delta) {
   if (!settings_.sleeping) return;
 
+  keepDragged();
   const uint32_t count = bodies_.count();
   for (uint32_t row = 0; row < count; ++row) {
     if (!bodies_.solved(row)) continue;
@@ -590,6 +807,16 @@ void World::updateSleep(float delta) {
   }
 
   sleepJoined();
+}
+
+void World::keepDragged() {
+  for (const Manifold &manifold : manifolds_) {
+    const bool moving = lengthSquared(bodies_.surface(manifold.a)) > 0.0f ||
+                        lengthSquared(bodies_.surface(manifold.b)) > 0.0f;
+    if (!moving) continue;
+    bodies_.still(manifold.a) = 0.0f;
+    bodies_.still(manifold.b) = 0.0f;
+  }
 }
 
 void World::sleepJoined() {
@@ -658,38 +885,12 @@ void World::reportTouches() {
     const Manifold &manifold = manifolds_[i];
     const PairKey &key = keys_[i];
     touching_.emplace(key, manifold);
-    if (wasTouching_.find(key) != wasTouching_.end()) continue;
 
-    // How hard, in newton-seconds along the normal — the number a collision
-    // sound scales with. Summed over the points, because a box landing flat
-    // on four corners hit as hard as the four of them together.
-    float force = 0.0f;
-    Vec3 at;
-    float deepest = -1.0f;
-    for (uint32_t c = 0; c < manifold.count; ++c) {
-      force += manifold.points[c].normalImpulse;
-      if (manifold.points[c].depth > deepest) {
-        deepest = manifold.points[c].depth;
-        at = manifold.points[c].at;
-      }
+    if (wasTouching_.find(key) == wasTouching_.end()) {
+      events_.push_back(pairEvent(ORBLIT_PHYSICS_TOUCH_BEGAN, key, manifold));
+    } else if (bodies_.stay(manifold.a) || bodies_.stay(manifold.b)) {
+      events_.push_back(pairEvent(ORBLIT_PHYSICS_TOUCH_STAY, key, manifold));
     }
-
-    OrblitPhysicsEvent event{};
-    event.kind = ORBLIT_PHYSICS_TOUCH_BEGAN;
-    event.a = key.a;
-    event.b = key.b;
-    event.at[0] = at.x;
-    event.at[1] = at.y;
-    event.at[2] = at.z;
-    // The manifold's normal points out of its own `b`, which is not always
-    // the key's. Turn it so the event means what it says.
-    const Vec3 normal =
-        bodies_.id(manifold.b) == key.b ? manifold.normal : -manifold.normal;
-    event.normal[0] = normal.x;
-    event.normal[1] = normal.y;
-    event.normal[2] = normal.z;
-    event.force = force;
-    events_.push_back(event);
   }
 
   for (const auto &was : wasTouching_) {
@@ -700,6 +901,107 @@ void World::reportTouches() {
     event.b = was.first.b;
     events_.push_back(event);
   }
+}
+
+OrblitPhysicsEvent World::pairEvent(uint32_t kind, const PairKey &key,
+                                    const Manifold &manifold) const {
+  // How hard, in newton-seconds along the normal, the number a collision sound
+  // scales with. Summed over the points, because a box landing flat on four
+  // corners hit as hard as the four of them together.
+  float force = 0.0f;
+  Vec3 at;
+  float deepest = -1.0f;
+  for (uint32_t c = 0; c < manifold.count; ++c) {
+    force += manifold.points[c].normalImpulse;
+    if (manifold.points[c].depth > deepest) {
+      deepest = manifold.points[c].depth;
+      at = manifold.points[c].at;
+    }
+  }
+
+  OrblitPhysicsEvent event{};
+  event.kind = kind;
+  event.a = key.a;
+  event.b = key.b;
+  event.at[0] = at.x;
+  event.at[1] = at.y;
+  event.at[2] = at.z;
+  // The manifold's normal points out of its own `b`, which is not always the
+  // key's. Turn it so the event means what it says.
+  const Vec3 normal =
+      bodies_.id(manifold.b) == key.b ? manifold.normal : -manifold.normal;
+  event.normal[0] = normal.x;
+  event.normal[1] = normal.y;
+  event.normal[2] = normal.z;
+  event.force = force;
+  return event;
+}
+
+void World::reportSensing() {
+  sensing_.clear();
+  const uint32_t count = bodies_.count();
+  for (uint32_t row = 0; row < count; ++row) {
+    if (bodies_.sensor(row)) senseFrom(row);
+  }
+
+  // Found by what is missing rather than by anything the body did, so a body
+  // that was destroyed, or a trigger that was, leaves in the same way as one
+  // that walked out.
+  for (const PairKey &was : wasSensing_) {
+    if (sensing_.find(was) != sensing_.end()) continue;
+    OrblitPhysicsEvent event{};
+    event.kind = ORBLIT_PHYSICS_EXITED;
+    event.a = was.a;
+    event.b = was.b;
+    events_.push_back(event);
+  }
+}
+
+void World::senseFrom(uint32_t trigger) {
+  const OrblitPhysicsId id = bodies_.id(trigger);
+  const uint32_t count = bodies_.count();
+  Manifold inside;
+  for (uint32_t body = 0; body < count; ++body) {
+    if (!within(trigger, body, inside)) continue;
+
+    const PairKey key{id, bodies_.id(body)};
+    sensing_.insert(key);
+    const bool began = wasSensing_.find(key) == wasSensing_.end();
+    if (began || bodies_.stay(trigger) || bodies_.stay(body)) {
+      events_.push_back(pairEvent(
+          began ? ORBLIT_PHYSICS_ENTERED : ORBLIT_PHYSICS_INSIDE, key, inside));
+    }
+  }
+}
+
+bool World::within(uint32_t trigger, uint32_t body, Manifold &inside) const {
+  // Neither of two triggers sees the other, and a static body is where it was
+  // made for ever, so what it says about a trigger is never news.
+  if (bodies_.sensor(body) || bodies_.motion(body) == Motion::fixed) return false;
+  if (!interact(bodies_.layerIs(trigger), bodies_.layerCares(trigger),
+                bodies_.layerIs(body), bodies_.layerCares(body))) {
+    return false;
+  }
+
+  // A plane has no bounds worth asking, being half the world.
+  const bool unbounded = bodies_.shape(trigger).kind == ShapeKind::plane ||
+                         bodies_.shape(body).kind == ShapeKind::plane;
+  if (!unbounded && !bodies_.bounds(trigger).overlaps(bodies_.bounds(body))) {
+    return false;
+  }
+
+  // Asleep or not: a trigger is a fact about where things are.
+  if (!collide(bodies_.shape(trigger), bodies_.at(trigger),
+               bodies_.rotation(trigger), bodies_.shape(body), bodies_.at(body),
+               bodies_.rotation(body), inside) ||
+      inside.count == 0) {
+    return false;
+  }
+  // Named the way round a pair event reads them: out of the body, towards the
+  // trigger.
+  inside.a = trigger;
+  inside.b = body;
+  return true;
 }
 
 // --------------------------------------------------------------- reading ---
@@ -729,39 +1031,52 @@ uint32_t World::read(const OrblitPhysicsId *ids, uint32_t count, float *out,
 }
 
 bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
-  if (query.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return false;
-  const Vec3 direction = normalised(vectorOf(query.direction));
-  if (lengthSquared(direction) < kTiny) return false;
-
-  Placed moving;
-  // A ray is a sphere of no size, which is what it is, and means one routine
-  // below rather than two that differ by a radius of zero.
-  moving.shape = query.shape == 0 ? Shape::sphere(0.0f)
-                                  : Shape::fromCommand(query.shape, query.size);
-  moving.at = vectorOf(query.from);
-  moving.rotation = rotationOf(query.rotation);
-
-  Sieve sieve;
-  sieve.layerIs = query.layerIs;
-  sieve.layerCares = query.layerCares;
-  sieve.ignore = query.ignore;
+  if (!castable(query)) return false;
 
   Impact impact;
-  const uint32_t hit = nearest(bodies_, moving, direction,
-                               std::fmax(query.distance, 0.0f), sieve, impact);
+  const uint32_t hit = nearest(bodies_, castOf(query), impact);
   if (hit == Bodies::kNone) return false;
 
-  out = OrblitPhysicsHit{};
-  out.body = bodies_.id(hit);
-  out.at[0] = impact.at.x;
-  out.at[1] = impact.at.y;
-  out.at[2] = impact.at.z;
-  out.normal[0] = impact.normal.x;
-  out.normal[1] = impact.normal.y;
-  out.normal[2] = impact.normal.z;
-  out.distance = impact.distance;
-  out.started = impact.started;
+  out = hitOf(bodies_.id(hit), impact);
   return true;
+}
+
+uint32_t World::castAll(const OrblitPhysicsCast &query, OrblitPhysicsHit *out,
+                        uint32_t capacity) const {
+  if (!castable(query) || out == nullptr || capacity == 0) return 0;
+
+  uint32_t written = 0;
+  forEachMeeting(bodies_, castOf(query), [&](uint32_t row, const Impact &impact) {
+    written = keepNearest(out, written, capacity, hitOf(bodies_.id(row), impact));
+    return true;
+  });
+  return written;
+}
+
+bool World::castAny(const OrblitPhysicsCast &query) const {
+  if (!castable(query)) return false;
+
+  bool found = false;
+  forEachMeeting(bodies_, castOf(query), [&](uint32_t, const Impact &) {
+    found = true;
+    return false;
+  });
+  return found;
+}
+
+uint32_t World::overlap(const OrblitPhysicsCast &query, OrblitPhysicsId *out,
+                        uint32_t capacity) const {
+  if (query.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return 0;
+  if (out == nullptr || capacity == 0) return 0;
+
+  // A cast that goes nowhere. Only what it already overlaps can be met.
+  const Journey stay = journeyOf(query, Vec3{}, 0.0f);
+  uint32_t written = 0;
+  forEachMeeting(bodies_, stay, [&](uint32_t row, const Impact &) {
+    out[written++] = bodies_.id(row);
+    return written < capacity;
+  });
+  return written;
 }
 
 uint32_t World::footing(const OrblitPhysicsId *ids, uint32_t count,
