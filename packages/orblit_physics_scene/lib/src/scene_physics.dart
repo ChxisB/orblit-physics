@@ -27,6 +27,9 @@ final class ScenePhysicsSnapshot {
       _latest = _copyOf(from._latest),
       _sharp = Set.of(from._sharp),
       _next = from._next,
+      _hullIdOf = Map.of(from._hullIdOf),
+      _hullKeyOf = Map.of(from._hullKeyOf),
+      _nextHull = from._nextHull,
       _jointOf = Map.of(from._jointOf),
       _entityOfJoint = Map.of(from._entityOfJoint),
       _held = Map.of(from._held),
@@ -46,6 +49,9 @@ final class ScenePhysicsSnapshot {
   final Map<int, Float32List> _latest;
   final Set<String> _sharp;
   final int _next;
+  final Map<String, int> _hullIdOf;
+  final Map<int, String> _hullKeyOf;
+  final int _nextHull;
   final Map<String, int> _jointOf;
   final Map<int, String> _entityOfJoint;
   final Map<String, ({int a, int b})> _held;
@@ -190,6 +196,18 @@ class ScenePhysics {
   final Set<String> _sharp = {};
 
   int _next = 1;
+
+  /// The world's hull for each distinct set of corners at each size, so a
+  /// hundred crates cut from one mesh share one. The key is the corners as the
+  /// world is given them, scaled and joined.
+  final Map<String, int> _hullIdOf = {};
+
+  /// The key of the hull each body is made of, for the bodies that have one.
+  final Map<int, String> _hullKeyOf = {};
+
+  /// Counted apart from the bodies', and never handed out twice, like them. A
+  /// hull laid directly through [physics] wants a negative number.
+  int _nextHull = 1;
 
   final Map<String, int> _jointOf = {};
   final Map<int, String> _entityOfJoint = {};
@@ -445,6 +463,13 @@ class ScenePhysics {
       ..clear()
       ..addAll(snapshot._sharp);
     _next = snapshot._next;
+    _hullIdOf
+      ..clear()
+      ..addAll(snapshot._hullIdOf);
+    _hullKeyOf
+      ..clear()
+      ..addAll(snapshot._hullKeyOf);
+    _nextHull = snapshot._nextHull;
     _jointOf
       ..clear()
       ..addAll(snapshot._jointOf);
@@ -482,6 +507,7 @@ class ScenePhysics {
       if (number != null) {
         physics.remove(number);
         gone.add(number);
+        _hullKeyOf.remove(number);
       }
 
       final body = _document[id]?[SceneComponents.body];
@@ -510,6 +536,7 @@ class ScenePhysics {
     }
     _rejoin(ids, gone);
     _reignore(gone);
+    _dropIdleHulls();
     if (added.isEmpty) return;
 
     // Read back rather than remembered from what was sent: the world keeps
@@ -542,10 +569,11 @@ class ScenePhysics {
     scale.absolute();
     final at = world.transform3(body.centre.clone());
     final plane = body.shape == BodyShape.plane;
+    if (body.shape == BodyShape.hull) _layHull(number, body, scale);
 
     physics.add(
       number,
-      shape: _shapeOf(body, scale),
+      shape: _shapeOf(number, body, scale),
       motion: plane ? PhysicsMotion.fixed : _motionOf(body.motion),
       at: [at.x, at.y, at.z],
       rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
@@ -618,11 +646,43 @@ class ScenePhysics {
     );
   }
 
-  /// [body]'s shape at the size [scale] makes it. A ball and a capsule cannot
-  /// be stretched, only grown, so each takes the scale that makes it biggest
-  /// in the directions it has: every one for a ball, the sideways ones for a
-  /// capsule's radius and the upright one for its height.
-  static Shape _shapeOf(BodyComponent body, Vector3 scale) {
+  /// Lays the hull [body] is made of, at the size [scale] makes it, unless the
+  /// world already has it, and notes that body [number] is made of it.
+  ///
+  /// Corners that are not a whole number of points are not a hull, and neither
+  /// are ones the world cannot cook: no hull is noted, and the body is not
+  /// made.
+  void _layHull(int number, BodyComponent body, Vector3 scale) {
+    final corners = body.hull;
+    if (corners.length % 3 != 0) return;
+
+    final scaled = [
+      for (var i = 0; i < corners.length; i++) corners[i] * scale[i % 3],
+    ];
+    final key = scaled.join(',');
+    _hullKeyOf[number] = key;
+    if (_hullIdOf.containsKey(key)) return;
+
+    final id = _nextHull++;
+    if (physics.layHull(id, points: scaled)) _hullIdOf[key] = id;
+  }
+
+  /// Takes out of the world the hulls no body is made of any more. A hull is
+  /// cooked once and kept while any body names it, and it goes with the last.
+  void _dropIdleHulls() {
+    final used = _hullKeyOf.values.toSet();
+    // A copy, because a hull that goes is taken out of the map being read.
+    for (final MapEntry(:key, :value) in _hullIdOf.entries.toList()) {
+      if (!used.contains(key) && physics.dropHull(value)) _hullIdOf.remove(key);
+    }
+  }
+
+  /// Body [number]'s shape, made of [body] at the size [scale] makes it. A
+  /// ball, a capsule and a cylinder cannot be stretched, only grown, so each
+  /// takes the scale that makes it biggest in the directions it has: every one
+  /// for a ball, the sideways ones for a radius and the upright one for a
+  /// height. A hull is stretched along each axis.
+  Shape _shapeOf(int number, BodyComponent body, Vector3 scale) {
     final size = body.size;
     switch (body.shape) {
       case BodyShape.box:
@@ -642,6 +702,14 @@ class ScenePhysics {
         return straight > 0
             ? Shape.capsule(radius, straight)
             : Shape.sphere(radius);
+      case BodyShape.cylinder:
+        return Shape.cylinder(
+          body.radius.abs() * math.max(scale.x, scale.z),
+          body.height.abs() * scale.y / 2,
+        );
+      case BodyShape.hull:
+        // Zero names no hull, so corners that enclose nothing make no body.
+        return Shape.hull(_hullIdOf[_hullKeyOf[number]] ?? 0);
       case BodyShape.plane:
         // The entity's own up, through the body's centre. The world turns and
         // places the normal by the body's pose, so it is given unturned here.

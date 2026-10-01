@@ -1,3 +1,21 @@
+## 0.7.0
+
+- A body can be a `BodyShape.cylinder` or a `BodyShape.hull`. A cylinder
+  grows with its entity like a capsule: the larger sideways scale for the
+  radius and the upright one for the height. A hull is stretched by the
+  entity's scale along each axis, and its corners are measured from
+  `BodyComponent.centre`.
+- Bodies cut from the same corners at the same size share one cooked hull.
+  A hull is laid when a body first needs it and taken out when the last body
+  made of it goes or is edited to other corners. A scene numbers its hulls
+  from one, as it numbers bodies, and a hull laid directly through `physics`
+  wants a negative number.
+- A hull body whose corners enclose nothing, such as four on one plane or a
+  list that is not a whole number of points, is given no body in the world.
+  Its entity keeps its number and never moves.
+- A snapshot keeps which hull each body is made of, and `restore` goes back
+  to it, so a rollback brings the hulls with it.
+
 ## 0.6.0
 
 - Smooth display: `ScenePhysics(document, smooth: true)` shows each body
