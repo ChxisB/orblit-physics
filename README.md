@@ -70,6 +70,14 @@ the same way, [below](#questions-and-places). The world itself is
 gathered over every step the last `advance` took; the world's own list keeps
 only its last step.
 
+On a screen faster than 60 Hz a body stands still on the frames that take no
+step. `ScenePhysics(document, smooth: true)` shows each body blended between
+its last two steps, so it moves on every frame. The document is then up to one
+step behind `scene.physics`, which still answers casts and events for where
+bodies are now. After a move made straight on the world, call
+`scene.resetSmoothing(entity)` so the body is not drawn crossing the gap. An
+edit through `apply` needs nothing.
+
 It depends on `orblit_scene` over git. To work against a checkout of the engine
 beside this one:
 

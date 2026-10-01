@@ -1,3 +1,30 @@
+## 0.6.0
+
+- Smooth display: `ScenePhysics(document, smooth: true)` shows each body
+  blended between where the world had it after the last but one step and
+  after the last, by the fraction of a step still owed. A body moves on
+  every `advance`, including a call that takes no step. Without it a body
+  under 60 Hz physics stands still for 7 frames in 12 on a 144 Hz screen.
+  It is off by default, and a scene that does not smooth behaves as it
+  did.
+- The scene shows a body up to one step behind the world. `physics`, and so
+  casts, queries, events and contacts, still say where bodies are now.
+- Translation blends in a straight line and rotation along the short arc.
+  A body at rest is shown exactly where it is.
+- An edit through `apply` is a teleport: the body is shown at its new
+  place with nothing to blend from. After a move made directly through
+  `physics.place`, call `resetSmoothing(entity)` so the body does not
+  slide there.
+- `resetSmoothing(entity)` takes the entity and everything under it to
+  where the world has them now. `stopSmoothing(entity)` does that and keeps
+  the subtree sharp until `startSmoothing(entity)`, for a body that must be
+  shown where it is, such as one a camera follows. Each answers `false` for
+  an entity the document does not have.
+- A snapshot of a scene that smooths keeps how each body was moving in the
+  blend, and which entities were switched off. `restore` throws
+  `ArgumentError` for a snapshot taken by a scene that smooths differently.
+- Needs `orblit_scene` 0.11.0 and `orblit_physics` 0.8.0, as 0.5.0 did.
+
 ## 0.5.0
 
 - Snapshots: `snapshot()` copies the simulation and `restore(snapshot)` goes

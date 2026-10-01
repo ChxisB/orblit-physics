@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:orblit_scene/orblit_scene.dart';
 import 'package:vector_math/vector_math_64.dart';
@@ -94,6 +95,62 @@ Vector3 eulerOf(Matrix3 rotation, {Vector3? near}) {
   final a = _unwrapped(found, near);
   final b = _unwrapped(other, near);
   return _apart(a, near) <= _apart(b, near) ? a : b;
+}
+
+/// Writes into [out] the pose [alpha] of the way from [from] to [to], where
+/// [alpha] is 0 to 1. A pose is seven floats: translation xyz then rotation
+/// xyzw, as the world reports it.
+///
+/// The translation goes in a straight line. The rotation goes the short way
+/// round along the arc, so a body turns at an even rate across the blend.
+///
+/// A rotation that has not changed is copied as it is. A body at rest is the
+/// same pose in both, and rounding in the blend must not be read as movement.
+void blendPose(
+  Float32List from,
+  Float32List to,
+  double alpha,
+  Float32List out,
+) {
+  for (var i = 0; i < 3; i++) {
+    out[i] = from[i] + (to[i] - from[i]) * alpha;
+  }
+  if (_sameTurn(from, to)) {
+    out.setRange(3, 7, to, 3);
+    return;
+  }
+
+  // A turn and its negative are the same turn. Take the one that is near.
+  final dot =
+      from[3] * to[3] + from[4] * to[4] + from[5] * to[5] + from[6] * to[6];
+  final cosine = dot.abs();
+  var weightFrom = 1 - alpha;
+  var weightTo = alpha;
+  // Close together the arc is a line, and its sine is too small to divide by.
+  if (cosine < 0.9995) {
+    final angle = math.acos(cosine);
+    final sine = math.sin(angle);
+    weightFrom = math.sin((1 - alpha) * angle) / sine;
+    weightTo = math.sin(alpha * angle) / sine;
+  }
+  if (dot < 0) weightTo = -weightTo;
+
+  final turn = Quaternion(from[3], from[4], from[5], from[6])
+    ..scale(weightFrom);
+  turn
+    ..add(Quaternion(to[3], to[4], to[5], to[6])..scale(weightTo))
+    ..normalize();
+  out[3] = turn.x;
+  out[4] = turn.y;
+  out[5] = turn.z;
+  out[6] = turn.w;
+}
+
+bool _sameTurn(Float32List a, Float32List b) {
+  for (var i = 3; i < 7; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 /// [angles] with whole turns added to each until it is within half a turn of

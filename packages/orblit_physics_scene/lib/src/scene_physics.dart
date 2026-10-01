@@ -13,17 +13,19 @@ import 'pose.dart';
 /// memory and is let go of with [dispose]. Beside the world it keeps what this
 /// class knows and the world does not: the document, which entity is which
 /// body and joint, the numbers still to hand out, and what has broken or been
-/// told to pass through.
+/// told to pass through. In a scene that smooths, it also keeps how each body
+/// was moving in the blend.
 final class ScenePhysicsSnapshot {
   ScenePhysicsSnapshot._(ScenePhysics from)
     : _world = from.physics.snapshot(),
+      _smooth = from.smooth,
       _document = from._document,
       _bodyOf = Map.of(from._bodyOf),
       _entityOf = Map.of(from._entityOf),
-      _known = {
-        for (final MapEntry(:key, :value) in from._known.entries)
-          key: Float32List.fromList(value),
-      },
+      _known = _copyOf(from._known),
+      _previous = _copyOf(from._previous),
+      _latest = _copyOf(from._latest),
+      _sharp = Set.of(from._sharp),
       _next = from._next,
       _jointOf = Map.of(from._jointOf),
       _entityOfJoint = Map.of(from._entityOfJoint),
@@ -35,10 +37,14 @@ final class ScenePhysicsSnapshot {
       _events = List.of(from._events);
 
   final PhysicsSnapshot _world;
+  final bool _smooth;
   final SceneDocument _document;
   final Map<String, int> _bodyOf;
   final Map<int, String> _entityOf;
   final Map<int, Float32List> _known;
+  final Map<int, Float32List> _previous;
+  final Map<int, Float32List> _latest;
+  final Set<String> _sharp;
   final int _next;
   final Map<String, int> _jointOf;
   final Map<int, String> _entityOfJoint;
@@ -53,6 +59,13 @@ final class ScenePhysicsSnapshot {
 
   void dispose() => _world.dispose();
 }
+
+/// A copy of [poses] that shares nothing with it, because a step writes into
+/// these in place.
+Map<int, Float32List> _copyOf(Map<int, Float32List> poses) => {
+  for (final MapEntry(:key, :value) in poses.entries)
+    key: Float32List.fromList(value),
+};
 
 /// The bodies in a scene document, simulated.
 ///
@@ -103,6 +116,14 @@ final class ScenePhysicsSnapshot {
 /// the last step, contacts and counts, is [Physics.contacts] and
 /// [Physics.stats] on [physics], and [entityOf] says which entity a body is.
 ///
+/// The world steps by a fixed [step], so a body only moves when a step ends.
+/// A render that runs faster shows it standing still for some frames and
+/// jumping on others. With [smooth], [document] shows each body a step behind
+/// the world, at the blend of its last two steps, and so moves on every
+/// [advance]. An edit is a teleport and does not blend. [resetSmoothing] says
+/// the same of a body moved through [physics], and [stopSmoothing] shows a
+/// subtree as the world has it.
+///
 /// [physics] is the world itself, for everything a document cannot say:
 /// pushing, driving and casting. What touched what is [events], gathered over
 /// every step a frame took. Numbers from one upwards are this class's to hand
@@ -114,6 +135,7 @@ class ScenePhysics {
     PhysicsSettings settings = const PhysicsSettings(),
     this.step = 1 / 60,
     this.maxSteps = 8,
+    this.smooth = false,
   }) : physics = Physics(settings: settings),
        _document = document {
     _rebuild([for (final entity in document.entities) entity.id]);
@@ -133,15 +155,39 @@ class ScenePhysics {
   /// simulation slows down rather than seizing up.
   final int maxSteps;
 
+  /// Whether [document] shows each body blended between its last two steps,
+  /// rather than where the last step left it.
+  ///
+  /// A body is then shown one step behind the world, part of the way from
+  /// where it was to where it is, by the time owed to the next step. It moves
+  /// on every [advance], including one that took no step. [physics] keeps the
+  /// truth, so a cast, a query, an event or a contact is about where the body
+  /// is now, which is up to one step ahead of what the document shows.
+  ///
+  /// Fixed for the life of the scene. A snapshot restores only into a scene
+  /// that smooths as the one it came from did.
+  final bool smooth;
+
   SceneDocument _document;
   final Map<String, int> _bodyOf = {};
   final Map<int, String> _entityOf = {};
 
-  /// Where each body was when the document was last told, exactly as the world
-  /// reported it. A body is written back when the world disagrees with this
-  /// rather than with the document, so the rounding in a trip from a pose to
-  /// three angles and back is never mistaken for movement.
+  /// Where each body was when the document was last told. Without [smooth] it
+  /// is exactly as the world reported it. A body is written back when the
+  /// world disagrees with this rather than with the document, so the rounding
+  /// in a trip from a pose to three angles and back is never mistaken for
+  /// movement.
   final Map<int, Float32List> _known = {};
+
+  /// With [smooth], where the world had each body after the last two steps. A
+  /// body is shown at [_latest] when the two are the same, so one at rest is
+  /// never moved by the rounding in a blend.
+  final Map<int, Float32List> _previous = {};
+  final Map<int, Float32List> _latest = {};
+
+  /// The entities [stopSmoothing] has switched off. Everything under one is
+  /// shown as the world has it.
+  final Set<String> _sharp = {};
 
   int _next = 1;
 
@@ -217,20 +263,61 @@ class ScenePhysics {
     return physics.removeRule(_bodyOf[a]!, _bodyOf[b]!);
   }
 
+  /// Shows [entity] and everything under it as the world has it, with no
+  /// blend, until [startSmoothing]. For a body that must not trail a step
+  /// behind what it is attached to, or one that [physics] places each frame.
+  /// A body switches at once, so one on screen jumps by what it had trailed.
+  ///
+  /// Returns false, changing nothing, for an entity the document does not
+  /// have. It does nothing to a scene that is not [smooth].
+  bool stopSmoothing(String entity) {
+    if (!_document.contains(entity)) return false;
+    _sharp.add(entity);
+    _collapse(_bodiesUnder(entity));
+    return true;
+  }
+
+  /// Blends [entity] again, after [stopSmoothing] for the same entity. The
+  /// blend starts from where the body stands, so it does not jump. Returns
+  /// false if [entity] was not stopped. An entity under a stopped one stays
+  /// stopped until that one starts.
+  bool startSmoothing(String entity) => _sharp.remove(entity);
+
+  /// Forgets how [entity] and everything under it were moving, so the next
+  /// [advance] shows them where the world has them and the blend starts again
+  /// from there.
+  ///
+  /// Call it after moving a body through [physics], such as with
+  /// [Physics.place]. An edit through [apply] does it by itself. Without it, a
+  /// body that was moved slides from where it was to where it went, across the
+  /// next step.
+  ///
+  /// Returns false, changing nothing, for an entity the document does not
+  /// have. It does nothing to a scene that is not [smooth].
+  bool resetSmoothing(String entity) {
+    if (!_document.contains(entity)) return false;
+    _collapse(_bodiesUnder(entity));
+    return true;
+  }
+
   /// Moves the simulation on by [seconds] and says what moved.
   ///
-  /// Takes as many whole [step]s as are owed — none, when less than a step has
-  /// built up since the last call — and answers with a diff that takes every
-  /// entity whose body moved, and every body under one that did, to where the
-  /// world now has it. Empty when nothing moved. The diff is already in
-  /// [document].
+  /// Takes as many whole [step]s as are owed, none when less than a step has
+  /// built up since the last call. Answers with a diff that takes every entity
+  /// whose body moved, and every body under one that did, to where the world
+  /// now has it. Empty when nothing moved. The diff is already in [document].
+  ///
+  /// With [smooth] the bodies are shown blended, so a call that took no step
+  /// still moves them.
   SceneDiff advance(double seconds) {
     if (seconds > 0) _owed += seconds;
     var taken = 0;
     final events = <PhysicsEvent>[];
+    final sharp = smooth ? _sharpBodies() : const <int>{};
     while (_owed >= step && taken < maxSteps) {
       physics.step(step);
       events.addAll(physics.events);
+      if (smooth) _carry(sharp);
       _owed -= step;
       taken++;
     }
@@ -246,7 +333,7 @@ class ScenePhysics {
       _broken.add(id);
       _held.remove(id);
     }
-    return taken == 0 ? SceneDiff.none : _writeBack();
+    return taken == 0 && !smooth ? SceneDiff.none : _writeBack();
   }
 
   /// Tells the world about an edit to [document].
@@ -277,6 +364,7 @@ class ScenePhysics {
 
     final before = _document;
     _document = diff.applyTo(before);
+    _sharp.removeWhere((id) => !_document.contains(id));
 
     // Editing a broken joint is asking for it back. Moving what is above it
     // is not, or dragging the door would mend the hinge it tore off.
@@ -316,11 +404,23 @@ class ScenePhysics {
   /// names nothing, or something else, in the run that follows.
   ///
   /// A snapshot keeps to the [step] it was taken at. One restored into a
-  /// simulation that steps by another does not replay.
+  /// simulation that steps by another does not replay. It also keeps to
+  /// [smooth]: one restored into a scene that smooths differently throws an
+  /// [ArgumentError], because it has no blend to go back to or no use for one.
   SceneDiff restore(ScenePhysicsSnapshot snapshot) {
+    if (snapshot._smooth != smooth) {
+      throw ArgumentError.value(
+        snapshot,
+        'snapshot',
+        snapshot._smooth
+            ? 'was taken by a scene that smooths'
+            : 'was taken by a scene that does not smooth',
+      );
+    }
+
     final before = _document;
-    // First, because a snapshot that has been disposed throws here, and
-    // nothing is left half changed.
+    // Before anything changes, because a snapshot that has been disposed
+    // throws here, and nothing is left half changed.
     physics.restore(snapshot._world);
 
     _document = snapshot._document;
@@ -334,10 +434,16 @@ class ScenePhysics {
     // snapshot has to stay as it was for the next restore.
     _known
       ..clear()
-      ..addEntries([
-        for (final MapEntry(:key, :value) in snapshot._known.entries)
-          MapEntry(key, Float32List.fromList(value)),
-      ]);
+      ..addAll(_copyOf(snapshot._known));
+    _previous
+      ..clear()
+      ..addAll(_copyOf(snapshot._previous));
+    _latest
+      ..clear()
+      ..addAll(_copyOf(snapshot._latest));
+    _sharp
+      ..clear()
+      ..addAll(snapshot._sharp);
     _next = snapshot._next;
     _jointOf
       ..clear()
@@ -384,6 +490,8 @@ class ScenePhysics {
           _bodyOf.remove(id);
           _entityOf.remove(number);
           _known.remove(number);
+          _previous.remove(number);
+          _latest.remove(number);
         }
         continue;
       }
@@ -411,7 +519,14 @@ class ScenePhysics {
     final read = Float32List(added.length * 7);
     physics.readInto(added, read);
     for (var i = 0; i < added.length; i++) {
-      _known[added[i]] = Float32List.fromList(read.sublist(i * 7, i * 7 + 7));
+      final pose = read.sublist(i * 7, i * 7 + 7);
+      _known[added[i]] = Float32List.fromList(pose);
+      // Both ends of the blend are the new place, so a body that was put
+      // somewhere does not slide there from where it was.
+      if (smooth) {
+        _previous[added[i]] = Float32List.fromList(pose);
+        _latest[added[i]] = Float32List.fromList(pose);
+      }
     }
   }
 
@@ -684,13 +799,7 @@ class ScenePhysics {
 
   SceneDiff _writeBack() {
     final bodies = _known.keys.toList(growable: false);
-    final now = Float32List(bodies.length * 7);
-    // Filled with what is known first, so a body the world has lost — taken
-    // out through [physics] directly — reads as not having moved.
-    for (var i = 0; i < bodies.length; i++) {
-      now.setAll(i * 7, _known[bodies[i]]!);
-    }
-    physics.readInto(bodies, now);
+    final now = smooth ? _blended(bodies) : _read(bodies, _known);
 
     final moved = <String>{};
     for (var i = 0; i < bodies.length; i++) {
@@ -756,6 +865,73 @@ class ScenePhysics {
     );
     return SceneDiff(operations);
   }
+
+  /// Where the world has [bodies], seven floats each. A body it has lost, taken
+  /// out through [physics] directly, is read as [kept] has it, so it reads as
+  /// not having moved.
+  Float32List _read(List<int> bodies, Map<int, Float32List> kept) {
+    final poses = Float32List(bodies.length * 7);
+    for (var i = 0; i < bodies.length; i++) {
+      poses.setAll(i * 7, kept[bodies[i]]!);
+    }
+    physics.readInto(bodies, poses);
+    return poses;
+  }
+
+  /// Where [bodies] are shown: each one the time owed to the next step of the
+  /// way from where it was after the last but one step to where it is after the
+  /// last. Seven floats each.
+  Float32List _blended(List<int> bodies) {
+    final alpha = _owed / step;
+    final poses = Float32List(bodies.length * 7);
+    for (var i = 0; i < bodies.length; i++) {
+      blendPose(
+        _previous[bodies[i]]!,
+        _latest[bodies[i]]!,
+        alpha,
+        Float32List.sublistView(poses, i * 7, i * 7 + 7),
+      );
+    }
+    return poses;
+  }
+
+  /// Takes where the world has every body as the end of the blend, and the end
+  /// it had as the start. A body in [sharp] has no start: it is shown as the
+  /// world has it.
+  void _carry(Set<int> sharp) {
+    final bodies = _latest.keys.toList(growable: false);
+    final now = _read(bodies, _latest);
+    for (var i = 0; i < bodies.length; i++) {
+      final latest = _latest[bodies[i]]!;
+      final pose = Float32List.sublistView(now, i * 7, i * 7 + 7);
+      final start = sharp.contains(bodies[i]) ? pose : latest;
+      _previous[bodies[i]]!.setAll(0, start);
+      latest.setAll(0, pose);
+    }
+  }
+
+  /// Makes [bodies] stand still in the blend, where the world has them now.
+  void _collapse(List<int> bodies) {
+    if (!smooth) return;
+    final now = _read(bodies, _latest);
+    for (var i = 0; i < bodies.length; i++) {
+      final pose = Float32List.sublistView(now, i * 7, i * 7 + 7);
+      _previous[bodies[i]]!.setAll(0, pose);
+      _latest[bodies[i]]!.setAll(0, pose);
+    }
+  }
+
+  /// The bodies of every entity [stopSmoothing] has switched off, and of every
+  /// entity under one.
+  Set<int> _sharpBodies() => {
+    for (final id in _sharp) ..._bodiesUnder(id),
+  };
+
+  /// The bodies of [entity] and of everything under it.
+  List<int> _bodiesUnder(String entity) => [
+    for (final under in _document.subtreeOf(entity))
+      if (_bodyOf[under.id] case final body?) body,
+  ];
 
   /// The transform that puts [entity]'s body at [pose] — its local position
   /// and rotation under its parent, keeping the scale it already had — or null
