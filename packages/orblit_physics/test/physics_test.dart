@@ -2011,6 +2011,164 @@ void main() {
     expect(physics.readInto([2], out, stride: 6), 0);
   });
 
+  group('convex shapes', () {
+    /// The eight corners of a cube reaching `half` either side of the origin.
+    List<double> cube(double half) => [
+      for (var i = 0; i < 8; i++) ...[
+        i & 1 == 0 ? -half : half,
+        i & 2 == 0 ? -half : half,
+        i & 4 == 0 ? -half : half,
+      ],
+    ];
+
+    test('a cylinder crosses as a cylinder, flat at both ends', () {
+      floor();
+      // 0.3 of radius and 0.5 of half length, on its end. A capsule of the
+      // same two numbers would rest at 0.8, and a sphere at 0.3.
+      physics.add(
+        2,
+        shape: const Shape.cylinder(0.3, 0.5),
+        at: const [0.0, 2.0, 0.0],
+      );
+      run(3);
+      expect(heightOf(2), closeTo(0.5, 0.02));
+      expect(physics.asleep(2), isTrue);
+    });
+
+    test('a hull is cooked once and shared by the bodies that name it', () {
+      floor();
+      expect(physics.layHull(7, points: cube(0.5)), isTrue);
+      physics.add(2, shape: const Shape.hull(7), at: const [0.0, 2.0, 0.0]);
+      physics.add(3, shape: const Shape.hull(7), at: const [3.0, 3.0, 0.0]);
+      run(3);
+      expect(heightOf(2), closeTo(0.5, 0.03));
+      expect(heightOf(3), closeTo(0.5, 0.03));
+    });
+
+    test('a hull refuses points it cannot make a solid of', () {
+      bool lay(List<double> points, {int id = 7}) =>
+          physics.layHull(id, points: points);
+
+      expect(lay(cube(0.5), id: 0), isFalse, reason: 'nameless');
+      expect(lay(const [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]), isFalse, reason: 'two');
+      expect(
+        lay(cube(0.5).sublist(0, 11)),
+        isFalse,
+        reason: 'not whole points',
+      );
+      expect(
+        lay(const [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]),
+        isFalse,
+        reason: 'all on one plane',
+      );
+      expect(lay([...cube(0.5).take(21), double.nan]), isFalse);
+      expect(lay(cube(0.5)), isTrue);
+      expect(lay(cube(1.0)), isFalse, reason: 'the id is taken');
+    });
+
+    test('a body naming a hull that was not laid is not made', () {
+      physics.add(2, shape: const Shape.hull(7), at: const [0.0, 2.0, 0.0]);
+      expect(physics.alive(2), isFalse);
+      expect(physics.count, 0);
+
+      // Laid afterwards does not bring it back, and does not stop a new one.
+      physics.layHull(7, points: cube(0.5));
+      expect(physics.alive(2), isFalse);
+      physics.add(2, shape: const Shape.hull(7), at: const [0.0, 2.0, 0.0]);
+      expect(physics.alive(2), isTrue);
+    });
+
+    test('a hull stays until the last body that uses it has gone', () {
+      physics.layHull(7, points: cube(0.5));
+      physics.add(2, shape: const Shape.hull(7), at: const [0.0, 2.0, 0.0]);
+      expect(physics.dropHull(7), isFalse, reason: 'a body uses it');
+      expect(physics.dropHull(8), isFalse, reason: 'no such hull');
+
+      physics.remove(2);
+      expect(physics.dropHull(7), isTrue);
+      expect(physics.dropHull(7), isFalse, reason: 'already gone');
+      expect(physics.layHull(7, points: cube(1.0)), isTrue, reason: 'reusable');
+    });
+
+    test('a cast meets a hull and a cylinder, and can be one', () {
+      physics.layHull(7, points: cube(0.5));
+      physics.add(
+        2,
+        shape: const Shape.hull(7),
+        motion: PhysicsMotion.fixed,
+        at: const [0.0, 0.5, 0.0],
+      );
+      physics.add(
+        3,
+        shape: const Shape.cylinder(0.5, 0.5),
+        motion: PhysicsMotion.fixed,
+        at: const [10.0, 0.5, 0.0],
+      );
+
+      final onHull = physics.cast(
+        from: const [0.1, 5.0, 0.2],
+        direction: const [0.0, -1.0, 0.0],
+        distance: 20.0,
+      )!;
+      expect(onHull.body, 2);
+      expect(onHull.distance, closeTo(4.0, 0.01));
+      expect(onHull.normal[1], closeTo(1.0, 0.01));
+
+      final onCylinder = physics.cast(
+        from: const [10.3, 0.5, -5.0],
+        direction: const [0.0, 0.0, 1.0],
+        distance: 20.0,
+      )!;
+      expect(onCylinder.body, 3);
+      expect(onCylinder.distance, closeTo(4.6, 0.01));
+
+      // A hull cast onto a hull: its bottom starts at 4.5 and meets the top at 1.
+      final sweptHull = physics.cast(
+        from: const [0.0, 5.0, 0.0],
+        direction: const [0.0, -1.0, 0.0],
+        distance: 20.0,
+        shape: const Shape.hull(7),
+      )!;
+      expect(sweptHull.body, 2);
+      expect(sweptHull.distance, closeTo(3.5, 0.01));
+
+      expect(
+        physics.cast(
+          from: const [0.0, 5.0, 0.0],
+          direction: const [0.0, -1.0, 0.0],
+          distance: 20.0,
+          shape: const Shape.hull(99),
+        ),
+        isNull,
+        reason: 'a hull that was not laid meets nothing',
+      );
+      expect(
+        physics.overlap(
+          at: const [0.1, 0.5, 0.1],
+          shape: const Shape.sphere(0.2),
+        ),
+        [2],
+      );
+    });
+
+    test('a snapshot keeps a hull body, and a world restored from it', () {
+      floor();
+      physics.layHull(7, points: cube(0.5));
+      physics.add(2, shape: const Shape.hull(7), at: const [0.0, 2.0, 0.0]);
+      run(0.5);
+      final falling = heightOf(2);
+      final snapshot = physics.snapshot();
+      run(2.5);
+      final settled = heightOf(2);
+
+      physics.restore(snapshot);
+      expect(heightOf(2), falling, reason: 'back where it was');
+      run(2.5);
+      expect(heightOf(2), settled);
+      snapshot.dispose();
+    });
+  });
+
   test('the world refuses a nameless or repeated body', () {
     physics.add(0, shape: const Shape.sphere(0.5));
     physics.add(2, shape: const Shape.sphere(0.5));

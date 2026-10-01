@@ -5,6 +5,7 @@
 #include <limits>
 
 #include "collide.h"
+#include "convex_collide.h"
 
 namespace orblit {
 namespace {
@@ -19,9 +20,6 @@ constexpr float kOnEdge = 1.0e-4f;
 /// How far a push may lean over an edge, as a cosine, before it counts as
 /// leaving over it. Flat ground's own rounding leans a push by about this.
 constexpr float kLean = 1.0e-3f;
-
-/// Two candidates nearer than this are one point, in metres.
-constexpr float kSamePoint = 1.0e-3f;
 
 /// How far below everything a box is measured against a triangle's column
 /// ends, in metres. A column is bottomless, but one with a bottom a long way
@@ -67,16 +65,9 @@ bool within(const Facet &f, const Vec3 out[3], const Vec3 &p) {
 //
 // Every triangle a shape is over is asked on its own, and each answers with
 // however many points it has. The four that go to the solver are chosen from
-// all of them at the end, rather than kept as they arrive, because which four
-// is a question about all of them: the deepest first, then the three that
-// spread furthest from it, so a box across four cells is held at its corners
-// and not at four points bunched in one cell.
-
-struct Candidate {
-  Vec3 normal;
-  Vec3 at;
-  float depth;
-};
+// all of them at the end by `reduce`, rather than kept as they arrive, so a
+// box across four cells is held at its corners and not at four points bunched
+// in one cell.
 
 std::vector<Candidate> &pool() {
   // Kept between calls so a step does not allocate. One per thread, because
@@ -88,76 +79,6 @@ std::vector<Candidate> &pool() {
 void add(std::vector<Candidate> &into, const Vec3 &normal, const Vec3 &at,
          float depth) {
   into.push_back({normal, at, depth});
-}
-
-void place(Manifold &out, const Candidate &c) {
-  Contact &point = out.points[out.count++];
-  point.at = c.at;
-  point.normal = c.normal;
-  point.depth = c.depth;
-  point.normalImpulse = 0.0f;
-  point.frictionImpulse[0] = 0.0f;
-  point.frictionImpulse[1] = 0.0f;
-}
-
-/// The deepest candidate and the three that spread furthest from it. A point
-/// that adds no spread is not added, which is also how the same point found
-/// by two triangles is kept once.
-void reduce(const std::vector<Candidate> &from, Manifold &out) {
-  out.count = 0;
-  if (from.empty()) return;
-
-  size_t first = 0;
-  for (size_t i = 1; i < from.size(); ++i) {
-    if (from[i].depth > from[first].depth) first = i;
-  }
-  place(out, from[first]);
-  out.normal = from[first].normal;
-  const Vec3 a = from[first].at;
-
-  size_t second = first;
-  float furthest = kSamePoint * kSamePoint;
-  for (size_t i = 0; i < from.size(); ++i) {
-    const float away = lengthSquared(from[i].at - a);
-    if (away > furthest) {
-      furthest = away;
-      second = i;
-    }
-  }
-  if (second == first) return;
-  place(out, from[second]);
-  const Vec3 b = from[second].at;
-
-  size_t third = first;
-  float widest = kSamePoint * kSamePoint * kSamePoint * kSamePoint;
-  for (size_t i = 0; i < from.size(); ++i) {
-    const float area = lengthSquared(cross(b - a, from[i].at - a));
-    if (area > widest) {
-      widest = area;
-      third = i;
-    }
-  }
-  if (third == first) return;
-  place(out, from[third]);
-  const Vec3 c = from[third].at;
-
-  // The fourth is whichever lies furthest outside the triangle of the other
-  // three, measured by the area it would add on its most outward side.
-  const Vec3 facing = cross(b - a, c - a);
-  size_t fourth = first;
-  float most = -kSamePoint * kSamePoint * length(facing);
-  for (size_t i = 0; i < from.size(); ++i) {
-    const Vec3 &p = from[i].at;
-    const float outside =
-        std::fmin(dot(facing, cross(a - p, b - p)),
-                  std::fmin(dot(facing, cross(b - p, c - p)),
-                            dot(facing, cross(c - p, a - p))));
-    if (outside < most) {
-      most = outside;
-      fourth = i;
-    }
-  }
-  if (fourth != first) place(out, from[fourth]);
 }
 
 // --- round shapes --------------------------------------------------------- //
@@ -457,6 +378,94 @@ void boxAgainst(const Facet &f, const Box &box, float floor,
   }
 }
 
+/// A cylinder or a hull over one triangle. The part of it that looks down the
+/// triangle's normal is cut to the triangle's column, and what is left below
+/// the surface is touching.
+///
+/// Every push is along the triangle's normal. A triangle's column walls never
+/// push, so a shape sliding over flat ground cannot catch on the edges between
+/// its triangles. The cost is that a shape tunnelled into a cliff comes out
+/// along the nearest face rather than the shortest way.
+void convexOnFace(const Facet &f, const Convex &convex,
+                  std::vector<Candidate> &into) {
+  Surface surface;
+  surface.normal = f.normal;
+  surface.offset = dot(f.normal, f.v[0]);
+  for (int k = 0; k < 3; ++k) {
+    surface.sides[k] = {f.wall[k], dot(f.wall[k], f.v[k])};
+  }
+  surface.sideCount = 3;
+
+  Candidate found[kMostClip];
+  const uint32_t n =
+      press(surface, convex.feature(-f.normal), convex.radius(), found);
+  into.insert(into.end(), found, found + n);
+}
+
+/// The shape being held against ground, placed in the field's own frame, with
+/// whichever view of it its kind is asked about.
+struct Probe {
+  Probe(const Shape &s, const Vec3 &place, const Quat &rotation)
+      : shape(s),
+        at(place),
+        half(s.axisAt(rotation)),
+        area(s.boundsAt(place, rotation).grown(kOnEdge)),
+        convex(s, place, rotation) {
+    if (s.kind != ShapeKind::box) return;
+    box.centre = place;
+    box.axis[0] = rotate(rotation, {1.0f, 0.0f, 0.0f});
+    box.axis[1] = rotate(rotation, {0.0f, 1.0f, 0.0f});
+    box.axis[2] = rotate(rotation, {0.0f, 0.0f, 1.0f});
+    box.half = s.size;
+  }
+
+  const Shape &shape;
+  Vec3 at;
+  Vec3 half;
+  Bounds area;
+  Convex convex;
+  Box box;
+};
+
+void touch(const Facet &f, const Probe &probe, float floor,
+           std::vector<Candidate> &into) {
+  switch (probe.shape.kind) {
+    case ShapeKind::box: boxAgainst(f, probe.box, floor, into); break;
+    case ShapeKind::cylinder:
+    case ShapeKind::hull: convexOnFace(f, probe.convex, into); break;
+    case ShapeKind::sphere:
+    case ShapeKind::capsule:
+      round(f, probe.at, probe.half, probe.shape.radius(), into);
+      break;
+    case ShapeKind::plane:
+    case ShapeKind::heightField: break;
+  }
+}
+
+void touchCell(const HeightField &field, int64_t c, int64_t r,
+               const Probe &probe, std::vector<Candidate> &into) {
+  float low, high;
+  if (!field.cellHeights(c, r, low, high)) return;
+  // Entirely above this cell's highest corner, it cannot be touching either of
+  // its triangles. Below is never skipped: below is inside.
+  if (probe.area.low.y > high) return;
+
+  const float floor = std::fmin(probe.area.low.y, low) - kBottom;
+  Facet f;
+  for (int which = 0; which < 2; ++which) {
+    if (field.facet(c, r, which, f)) touch(f, probe, floor, into);
+  }
+}
+
+/// Out of the field's frame and into the world.
+void toWorld(Manifold &out, const Vec3 &at, const Quat &rotation) {
+  for (uint32_t i = 0; i < out.count; ++i) {
+    out.points[i].normal = rotate(rotation, out.points[i].normal);
+    out.points[i].at = at + rotate(rotation, out.points[i].at);
+  }
+  out.normal = out.points[0].normal;
+}
+
 } // namespace
 
 // --- the field ------------------------------------------------------------ //
@@ -693,54 +702,20 @@ bool collideGround(const Shape &a, const Vec3 &atA, const Quat &rotA,
   // Everything below happens in the field's own frame, where sample (c, r)
   // is at (c * spacing, height, r * spacing).
   const Quat back = conjugate(rotB);
-  const Vec3 at = rotate(back, atA - atB);
-  const Quat rotation = back * rotA;
-  const Bounds area = a.boundsAt(at, rotation).grown(kOnEdge);
+  const Probe probe(a, rotate(back, atA - atB), back * rotA);
 
   int64_t c0, r0, c1, r1;
-  if (!field->cellsUnder(area, c0, r0, c1, r1)) return false;
+  if (!field->cellsUnder(probe.area, c0, r0, c1, r1)) return false;
 
   std::vector<Candidate> &found = pool();
   found.clear();
-
-  Box box;
-  if (a.kind == ShapeKind::box) {
-    box.centre = at;
-    box.axis[0] = rotate(rotation, {1.0f, 0.0f, 0.0f});
-    box.axis[1] = rotate(rotation, {0.0f, 1.0f, 0.0f});
-    box.axis[2] = rotate(rotation, {0.0f, 0.0f, 1.0f});
-    box.half = a.size;
-  }
-  const Vec3 half = a.axisAt(rotation);
-
-  Facet f;
   for (int64_t r = r0; r <= r1; ++r) {
-    for (int64_t c = c0; c <= c1; ++c) {
-      float low, high;
-      if (!field->cellHeights(c, r, low, high)) continue;
-      // Entirely above this cell's highest corner, it cannot be touching
-      // either of its triangles. Below is never skipped: below is inside.
-      if (area.low.y > high) continue;
-      for (int which = 0; which < 2; ++which) {
-        if (!field->facet(c, r, which, f)) continue;
-        if (a.kind == ShapeKind::box) {
-          boxAgainst(f, box, std::fmin(area.low.y, low) - kBottom, found);
-        } else {
-          round(f, at, half, a.radius(), found);
-        }
-      }
-    }
+    for (int64_t c = c0; c <= c1; ++c) touchCell(*field, c, r, probe, found);
   }
 
-  reduce(found, out);
+  reduce(found.data(), found.size(), out);
   if (out.count == 0) return false;
-
-  // Back into the world.
-  for (uint32_t i = 0; i < out.count; ++i) {
-    out.points[i].normal = rotate(rotB, out.points[i].normal);
-    out.points[i].at = atB + rotate(rotB, out.points[i].at);
-  }
-  out.normal = out.points[0].normal;
+  toWorld(out, atB, rotB);
   return true;
 }
 

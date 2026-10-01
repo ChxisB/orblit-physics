@@ -40,6 +40,7 @@ Snapshot World::snapshot() const {
   copy.bodies = bodies_;
   copy.joints = joints_;
   copy.fields = fields_;
+  copy.hulls = hulls_;
   // A step ends by swapping this step's contacts into the "was" sets, so what
   // the next step reads, and what the last one found, are the same thing.
   copy.touching = wasTouching_;
@@ -59,6 +60,7 @@ void World::restore(const Snapshot &from) {
   bodies_ = from.bodies;
   joints_ = from.joints;
   fields_ = from.fields;
+  hulls_ = from.hulls;
   wasTouching_ = from.touching;
   wasSensing_ = from.sensing;
   zones_ = from.zones;

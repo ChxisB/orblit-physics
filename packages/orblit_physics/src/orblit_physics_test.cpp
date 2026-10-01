@@ -69,6 +69,50 @@ void layDown(OrblitPhysicsCommand &command) {
   command.rotation[3] = 0.70710678f;
 }
 
+OrblitPhysicsCommand cylinderAt(OrblitPhysicsId id, float radius,
+                                float halfHeight, float x, float y, float z) {
+  OrblitPhysicsCommand made = sphereAt(id, radius, x, y, z);
+  made.shape = ORBLIT_PHYSICS_CYLINDER;
+  made.size[0] = radius;
+  made.size[1] = halfHeight;
+  return made;
+}
+
+/// A body made from a hull that `layHull` has laid. The size is the shape's
+/// own business, so none is given.
+OrblitPhysicsCommand hullAt(OrblitPhysicsId id, OrblitPhysicsId hull, float x,
+                            float y, float z) {
+  OrblitPhysicsCommand made = sphereAt(id, 0.0f, x, y, z);
+  made.shape = ORBLIT_PHYSICS_HULL;
+  made.hull = hull;
+  return made;
+}
+
+/// The eight corners of the box from `low` to `high`, as the triples a hull is
+/// cooked from.
+std::vector<float> cornersOf(const float low[3], const float high[3]) {
+  std::vector<float> points;
+  for (int corner = 0; corner < 8; ++corner) {
+    points.push_back(corner & 1 ? high[0] : low[0]);
+    points.push_back(corner & 2 ? high[1] : low[1]);
+    points.push_back(corner & 4 ? high[2] : low[2]);
+  }
+  return points;
+}
+
+/// The corners of a cube of side `2 * half` about the origin.
+std::vector<float> cubeOf(float half) {
+  const float low[3] = {-half, -half, -half};
+  const float high[3] = {half, half, half};
+  return cornersOf(low, high);
+}
+
+bool layHull(OrblitPhysics *physics, OrblitPhysicsId id,
+             const std::vector<float> &points) {
+  return orblit_physics_hull(physics, id, points.data(),
+                             static_cast<uint32_t>(points.size() / 3));
+}
+
 OrblitPhysicsCast rayFrom(float x, float y, float z, float dx, float dy,
                           float dz, float distance) {
   OrblitPhysicsCast made{};
@@ -3441,6 +3485,11 @@ bool same(const std::vector<float> &a, const std::vector<float> &b) {
 /// a body asleep, a ball on ground that is not flat, two joints, a trigger
 /// inside a zone, a rule and a character. Returns the ids worth watching.
 std::vector<OrblitPhysicsId> richWorld(OrblitPhysics *physics) {
+  // A hull whose origin is at its foot, so its weight is not where it is placed.
+  const float foot[3] = {-0.3f, 0.0f, -0.3f};
+  const float top[3] = {0.3f, 0.8f, 0.3f};
+  layHull(physics, 70, cornersOf(foot, top));
+
   OrblitPhysicsCommand bottom = boxAt(2, 0.5f, 0.0f, 0.5f, 0.0f);
   bottom.stay = true;
   OrblitPhysicsCommand sleeper = sphereAt(7, 0.3f, 2.0f, 0.3f, 2.0f);
@@ -3464,6 +3513,10 @@ std::vector<OrblitPhysicsId> richWorld(OrblitPhysics *physics) {
       sphereAt(21, 0.25f, -3.0f, 6.0f, 0.0f),
       boxAt(22, 0.3f, -4.0f, 0.3f, -2.0f),
       sphereAt(40, 0.3f, 9.0f, 4.0f, 0.0f),
+      hullAt(60, 70, -6.0f, 2.0f, -2.0f),
+      cylinderAt(61, 0.3f, 0.4f, -6.0f, 4.0f, 2.0f),
+      hullAt(62, 70, 11.0f, 5.0f, 1.0f),
+      cylinderAt(63, 0.3f, 0.4f, 7.0f, 5.0f, 2.0f),
   };
   std::vector<OrblitPhysicsId> ids;
   for (const OrblitPhysicsCommand &command : made) {
@@ -3775,6 +3828,465 @@ void endingInOrder() {
 
 } // namespace
 
+// --- convex shapes -------------------------------------------------------- //
+//
+// Cylinders and hulls: laid, made, rested on each kind of thing, rolled,
+// weighed, cast, and put back by a snapshot. Every check goes through the
+// header, so the narrowphase under it is judged by what the solver does with it.
+
+OrblitPhysicsCommand fixedBody(OrblitPhysicsCommand command) {
+  command.motion = ORBLIT_PHYSICS_STATIC;
+  return command;
+}
+
+/// How many points a pair touched at.
+uint32_t pointsOf(const Listed &listed, OrblitPhysicsId a, OrblitPhysicsId b) {
+  uint32_t count = 0;
+  for (const OrblitPhysicsContact &point : listed.points) {
+    if (point.a == a && point.b == b) ++count;
+  }
+  return count;
+}
+
+/// The distance between the closest two points a pair touched at, which is how
+/// well they hold a body up: four at the corners of a face hold it, four heaped
+/// in one place hold nothing but one point.
+float spreadOf(const Listed &listed, OrblitPhysicsId a, OrblitPhysicsId b) {
+  float least = 1.0e9f;
+  for (size_t i = 0; i < listed.points.size(); ++i) {
+    for (size_t j = i + 1; j < listed.points.size(); ++j) {
+      const OrblitPhysicsContact &p = listed.points[i];
+      const OrblitPhysicsContact &q = listed.points[j];
+      if (p.a != a || p.b != b || q.a != a || q.b != b) continue;
+      const float dx = p.at[0] - q.at[0];
+      const float dy = p.at[1] - q.at[1];
+      const float dz = p.at[2] - q.at[2];
+      least = std::fmin(least, std::sqrt(dx * dx + dy * dy + dz * dz));
+    }
+  }
+  return least;
+}
+
+void layingHulls() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const std::vector<float> cube = cubeOf(0.5f);
+  check(layHull(physics, 1, cube), "a hull is laid from the corners of a cube");
+  check(!layHull(physics, 1, cube), "and not again under the same id");
+  check(!layHull(physics, 0, cube), "or under no id");
+  check(!orblit_physics_hull(nullptr, 2, cube.data(), 8), "or into no world");
+  check(!orblit_physics_hull(physics, 2, nullptr, 8), "or from no points");
+  check(!orblit_physics_hull(physics, 2, cube.data(), 3), "or from fewer than four");
+
+  const float square[12] = {0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1};
+  check(!orblit_physics_hull(physics, 2, square, 4), "or from points on one plane");
+  const float row[12] = {0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0};
+  check(!orblit_physics_hull(physics, 2, row, 4), "or on one line");
+  std::vector<float> broken = cube;
+  broken[4] = std::nanf("");
+  check(!layHull(physics, 2, broken), "or from a point that is not a number");
+  std::vector<float> crowd;
+  for (size_t i = 0; i < 3 * 100001; ++i) crowd.push_back(cube[i % cube.size()]);
+  check(!layHull(physics, 2, crowd), "or from more than a hundred thousand points");
+  check(!orblit_physics_alive(physics, 2), "and a refused hull makes no body either");
+
+  submit(physics, hullAt(5, 99, 0.0f, 1.0f, 0.0f));
+  check(!orblit_physics_alive(physics, 5), "a body that names a hull never laid is not made");
+  submit(physics, hullAt(6, 1, 0.0f, 1.0f, 0.0f));
+  check(orblit_physics_alive(physics, 6), "and one that names a hull that was is");
+
+  check(!orblit_physics_hull_drop(physics, 1), "a hull a body is made from is not taken away");
+  destroyBody(physics, 6);
+  check(!orblit_physics_hull_drop(nullptr, 1) && !orblit_physics_hull_drop(physics, 77),
+        "nor a hull in no world, nor one that was never laid");
+  check(orblit_physics_hull_drop(physics, 1), "but once the body is gone it is");
+  check(!orblit_physics_hull_drop(physics, 1), "and only once");
+  submit(physics, hullAt(7, 1, 0.0f, 1.0f, 0.0f));
+  check(!orblit_physics_alive(physics, 7), "a body that names a hull taken away is not made");
+  check(layHull(physics, 1, cubeOf(0.25f)), "and the id is free to name another");
+  orblit_physics_destroy(physics);
+}
+
+void refusingCylinders() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const float nothing = std::nanf("");
+  const float endless = HUGE_VALF;
+  submit(physics, cylinderAt(1, 0.5f, 0.5f, 0.0f, 1.0f, 0.0f));
+  submit(physics, cylinderAt(2, 0.0f, 0.5f, 3.0f, 1.0f, 0.0f));
+  submit(physics, cylinderAt(3, 0.5f, 0.0f, 6.0f, 1.0f, 0.0f));
+  submit(physics, cylinderAt(4, -0.5f, 0.5f, 9.0f, 1.0f, 0.0f));
+  submit(physics, cylinderAt(5, 0.5f, nothing, 12.0f, 1.0f, 0.0f));
+  submit(physics, cylinderAt(6, endless, 0.5f, 15.0f, 1.0f, 0.0f));
+  check(orblit_physics_alive(physics, 1), "a cylinder with a radius and a length is made");
+  check(!orblit_physics_alive(physics, 2) && !orblit_physics_alive(physics, 3) &&
+            !orblit_physics_alive(physics, 4),
+        "one with no radius, no length or a negative one is not");
+  check(!orblit_physics_alive(physics, 5) && !orblit_physics_alive(physics, 6),
+        "nor one whose size is not a number or is not finite");
+
+  OrblitPhysicsCast thin = rayFrom(-5.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+  thin.shape = ORBLIT_PHYSICS_CYLINDER;
+  thin.size[0] = 0.0f;
+  thin.size[1] = 0.5f;
+  OrblitPhysicsHit hit{};
+  check(!orblit_physics_cast(physics, &thin, &hit), "a cast of one with no radius meets nothing");
+  thin.size[0] = 0.25f;
+  check(orblit_physics_cast(physics, &thin, &hit) && hit.body == 1,
+        "and the same cast with a radius meets the cylinder");
+  orblit_physics_destroy(physics);
+}
+
+void restingConvex() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  layHull(physics, 1, cubeOf(0.5f));
+  const float foot[3] = {-0.5f, 0.0f, -0.5f};
+  const float top[3] = {0.5f, 1.0f, 0.5f};
+  layHull(physics, 2, cornersOf(foot, top));
+
+  submit(physics, hullAt(2, 1, 0.0f, 0.51f, 0.0f));
+  submit(physics, cylinderAt(3, 0.5f, 0.5f, 4.0f, 0.51f, 0.0f));
+  OrblitPhysicsCommand lying = cylinderAt(4, 0.5f, 0.5f, -4.0f, 0.51f, 0.0f);
+  layDown(lying);
+  submit(physics, lying);
+  submit(physics, hullAt(5, 2, 8.0f, 0.01f, 0.0f));
+
+  run(physics, 0.3f);
+  const Listed listed = listContacts(physics);
+  check(pointsOf(listed, 1, 2) == 4 && spreadOf(listed, 1, 2) > 0.8f,
+        "a hull cube on the ground rests on four points, one at each corner");
+  check(pointsOf(listed, 1, 3) >= 3 && spreadOf(listed, 1, 3) > 0.5f,
+        "a cylinder on its end rests on points spread round the rim");
+  check(pointsOf(listed, 1, 4) >= 2 && spreadOf(listed, 1, 4) > 0.5f,
+        "and on its side on the two ends of a line");
+  bool downward = true;
+  for (const OrblitPhysicsContact &point : listed.points) {
+    downward = downward && point.a == 1 && point.normal[1] < -0.99f;
+  }
+  check(downward, "with the normal straight into the ground, never off to one side");
+
+  run(physics, 3.0f);
+  check(near(heightOf(physics, 2), 0.5f, 0.02f) && levelOf(physics, 2) > 0.999f,
+        "the cube comes to rest on its face at the height of its half-size");
+  check(near(heightOf(physics, 3), 0.5f, 0.02f) && levelOf(physics, 3) > 0.999f,
+        "the cylinder on its end at its half-length");
+  check(near(heightOf(physics, 4), 0.5f, 0.02f),
+        "and on its side at its radius, which is the same for this one");
+  check(near(heightOf(physics, 5), 0.0f, 0.02f) && levelOf(physics, 5) > 0.999f,
+        "a hull whose origin is at its foot is placed by its foot");
+  check(orblit_physics_asleep(physics, 2) && orblit_physics_asleep(physics, 3) &&
+            orblit_physics_asleep(physics, 4) && orblit_physics_asleep(physics, 5),
+        "and every one of them goes to sleep");
+  orblit_physics_destroy(physics);
+}
+
+void restingOnConvex() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  layHull(physics, 1, cubeOf(0.5f));
+  submit(physics, groundPlane(1));
+  submit(physics, fixedBody(hullAt(2, 1, 0.0f, 0.5f, 0.0f)));
+  submit(physics, fixedBody(cylinderAt(3, 0.5f, 0.5f, 6.0f, 0.5f, 0.0f)));
+  submit(physics, fixedBody(boxAt(4, 1.0f, -6.0f, 1.0f, 0.0f)));
+
+  // A cube turned half a radian about its own up, on another's top face.
+  OrblitPhysicsCommand turned = hullAt(5, 1, 0.2f, 2.0f, 0.1f);
+  turned.rotation[1] = std::sin(0.3f);
+  turned.rotation[3] = std::cos(0.3f);
+  submit(physics, turned);
+  submit(physics, cylinderAt(6, 0.5f, 0.5f, 6.3f, 2.5f, 0.1f));
+  submit(physics, cylinderAt(7, 0.5f, 0.5f, -5.7f, 4.0f, 0.1f));
+  submit(physics, sphereAt(8, 0.2f, 6.2f, 4.0f, 0.0f));
+  submit(physics, boxAt(9, 0.3f, 0.0f, 4.0f, 0.2f));
+  submit(physics, hullAt(10, 1, -5.8f, 5.0f, 0.0f));
+  run(physics, 4.0f);
+
+  check(near(heightOf(physics, 5), 1.5f, 0.03f) && levelOf(physics, 5) > 0.999f,
+        "a cube dropped twisted onto another lies flat on its top");
+  check(near(coordinateOf(physics, 5, 0), 0.2f, 0.03f) && orblit_physics_asleep(physics, 5),
+        "and stays where it landed");
+  check(near(heightOf(physics, 6), 1.5f, 0.03f) && levelOf(physics, 6) > 0.999f,
+        "a cylinder dropped onto a standing cylinder sits on its flat end");
+  check(near(heightOf(physics, 7), 2.5f, 0.03f) && levelOf(physics, 7) > 0.999f,
+        "and one dropped onto a box lies flat on the box's face");
+  check(heightOf(physics, 8) > 1.9f,
+        "and a ball dropped on the cylinder that sits on the other cylinder rests above it");
+  check(near(heightOf(physics, 9), 0.3f, 0.03f) || heightOf(physics, 9) > 1.0f,
+        "a box dropped beside the stack reaches the ground or the stack, not through it");
+  check(heightOf(physics, 10) > 3.0f && levelOf(physics, 10) > 0.999f,
+        "a hull dropped onto the cylinder that is on the box rests on top of it");
+  orblit_physics_destroy(physics);
+}
+
+void restingOnGround() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  lay(physics, 1, incline);
+  layHull(physics, 1, cubeOf(0.4f));
+  // Set down flush with the slope. Dropped on their ends they would topple, and
+  // a cylinder on its side would roll, which is the right answer to a different
+  // question.
+  const float lean = std::atan(0.3f);
+  const float outX = -std::sin(lean), outY = std::cos(lean);
+  OrblitPhysicsCommand cube = hullAt(2, 1, outX * 0.405f, outY * 0.405f, 0.0f);
+  OrblitPhysicsCommand standing = cylinderAt(3, 0.4f, 0.4f, outX * 0.405f, outY * 0.405f, 3.0f);
+  cube.rotation[2] = standing.rotation[2] = std::sin(lean / 2.0f);
+  cube.rotation[3] = standing.rotation[3] = std::cos(lean / 2.0f);
+  submit(physics, cube);
+  submit(physics, standing);
+  OrblitPhysicsCommand lying = cylinderAt(4, 0.4f, 0.4f, 0.0f, 1.0f, -3.0f);
+  layDown(lying);
+  submit(physics, lying);
+  run(physics, 5.0f);
+
+  // 0.3 in a metre: held by friction of one half, and level with the slope.
+  const float tilt = 1.0f / std::sqrt(1.09f);
+  check(speedOf(physics, 2) < 0.05f && near(levelOf(physics, 2), tilt, 0.01f),
+        "a cube on a slope of three in ten lies along it and stays");
+  check(speedOf(physics, 3) < 0.05f && near(levelOf(physics, 3), tilt, 0.01f),
+        "a cylinder on its end does the same");
+  check(near(coordinateOf(physics, 2, 0), -0.12f, 0.05f) &&
+            near(coordinateOf(physics, 3, 0), -0.12f, 0.05f),
+        "and neither has slid down it");
+  check(heightOf(physics, 4) > -0.2f && heightOf(physics, 4) < 1.0f,
+        "while one on its side is on the slope, not through it");
+  orblit_physics_destroy(physics);
+
+  // Through a crease, the way a box is, and across the seams of a flat field.
+  OrblitPhysics *vale = orblit_physics_create(nullptr);
+  lay(vale, 1, valley);
+  layHull(vale, 1, cubeOf(0.5f));
+  submit(vale, hullAt(2, 1, 0.0f, 3.0f, -1.7f));
+  submit(vale, cylinderAt(3, 0.4f, 0.5f, 0.0f, 3.0f, 1.8f));
+  run(vale, 4.0f);
+  check(heightOf(vale, 2) > 0.4f && speedOf(vale, 2) < 0.05f && near(coordinateOf(vale, 2, 0), 0.0f, 0.05f),
+        "a cube dropped in a valley sits across the crease, held up by both slopes");
+  check(heightOf(vale, 3) > 0.4f && speedOf(vale, 3) < 0.05f && near(coordinateOf(vale, 3, 0), 0.0f, 0.05f),
+        "and a cylinder does not catch on the crease or sink into either side");
+  orblit_physics_destroy(vale);
+
+  OrblitPhysics *seams = orblit_physics_create(nullptr);
+  lay(seams, 1, flat);
+  layHull(seams, 1, cubeOf(0.5f));
+  submit(seams, hullAt(2, 1, -3.0f, 0.5f, 0.0f));
+  submit(seams, cylinderAt(3, 0.5f, 0.5f, -3.0f, 0.5f, 2.0f));
+  run(seams, 0.5f);
+  drive(seams, 2, 4.0f, 0.0f, 0.0f, 0.0f);
+  drive(seams, 3, 4.0f, 0.0f, 0.0f, 0.0f);
+  float hopped = 0.0f;
+  float tripped = 1.0f;
+  for (int i = 0; i < 60; ++i) {
+    step(seams);
+    hopped = std::fmax(hopped, std::fmax(heightOf(seams, 2), heightOf(seams, 3)) - 0.5f);
+    tripped = std::fmin(tripped, std::fmin(levelOf(seams, 2), levelOf(seams, 3)));
+  }
+  check(hopped < 0.02f && tripped > 0.999f && coordinateOf(seams, 2, 0) > -2.0f &&
+            coordinateOf(seams, 3, 0) > -2.0f,
+        "a cube and a cylinder slid across the seams of flat ground neither hop nor trip");
+  orblit_physics_destroy(seams);
+}
+
+void rollingCylinders() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  OrblitPhysicsCommand roller = cylinderAt(2, 0.5f, 0.5f, 0.0f, 0.5f, 0.0f);
+  layDown(roller);
+  submit(physics, roller);
+  submit(physics, cylinderAt(3, 0.5f, 0.5f, 4.0f, 0.5f, 0.0f));
+  run(physics, 0.3f);
+
+  // On its side it rolls without slipping at v = w r. On its end it slides and
+  // friction stops it a few tenths of a metre on.
+  setMotion(physics, 2, 0.0f, 0.0f, 2.0f, 4.0f, 0.0f, 0.0f);
+  setMotion(physics, 3, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 2.0f);
+  check(coordinateOf(physics, 2, 2) > 3.0f && near(heightOf(physics, 2), 0.5f, 0.02f),
+        "a cylinder on its side rolls on, at its radius off the ground the whole way");
+  check(coordinateOf(physics, 3, 2) < 1.0f && speedOf(physics, 3) < 0.05f,
+        "while one on its end, pushed as hard, slides to a stop");
+  orblit_physics_destroy(physics);
+}
+
+void weighingConvex() {
+  // Torque over inertia, so what a push does shows the inertia the shape got.
+  // A unit cube is a sixth about any axis, however it was made.
+  OrblitPhysics *space = spaceWorld();
+  layHull(space, 1, cubeOf(0.5f));
+  submit(space, boxAt(2, 0.5f, 0.0f, 0.0f, 0.0f));
+  submit(space, hullAt(3, 1, 10.0f, 0.0f, 0.0f));
+  impulseAt(space, 2, 0.0f, 0.0f, 1.0f, 0.5f, 0.0f, 0.0f);
+  impulseAt(space, 3, 0.0f, 0.0f, 1.0f, 10.5f, 0.0f, 0.0f);
+  check(near(velocityOf(space, 3, 4), velocityOf(space, 2, 4), 0.02f) &&
+            near(velocityOf(space, 3, 4), -3.0f, 0.05f),
+        "a hull cube turns under a push just as a box does");
+
+  // The same cube given by its foot is placed by its foot and weighs from its
+  // middle: a push through the origin is half a metre below the weight.
+  const float foot[3] = {-0.5f, 0.0f, -0.5f};
+  const float top[3] = {0.5f, 1.0f, 0.5f};
+  layHull(space, 2, cornersOf(foot, top));
+  submit(space, hullAt(4, 2, 20.0f, 0.0f, 0.0f));
+  impulseAt(space, 4, 0.0f, 0.0f, 1.0f, 20.0f, 0.0f, 0.0f);
+  check(near(velocityOf(space, 4, 3), -3.0f, 0.05f) && near(velocityOf(space, 4, 2), 1.0f, 0.02f),
+        "and a push at the origin of one whose weight is above it turns it");
+  run(space, 0.5f);
+  float middle[3];
+  const float inside[3] = {0.0f, 0.5f, 0.0f};
+  worldPointOf(space, 4, inside, middle);
+  // Run keeps whole steps, so half a second is 29 of them, and damping takes a
+  // little more. The middle still keeps its height: it would not if the solid
+  // swung about its origin.
+  check(near(middle[2], 0.48f, 0.03f) && near(middle[1], 0.5f, 0.02f) &&
+            near(middle[0], 20.0f, 0.02f),
+        "about the middle of the solid, which goes straight on");
+
+  // A cylinder of radius a and half-length h, mass one: half a squared about
+  // its axis, and (3 a squared + 4 h squared) over twelve about a diameter.
+  submit(space, cylinderAt(5, 0.5f, 0.5f, 30.0f, 0.0f, 0.0f));
+  impulseAt(space, 5, 0.0f, 0.0f, 1.0f, 30.5f, 0.0f, 0.0f);
+  check(near(velocityOf(space, 5, 4), -0.5f / 0.125f, 0.05f),
+        "a cylinder turns about its axis against half its radius squared");
+  submit(space, cylinderAt(6, 0.5f, 0.5f, 40.0f, 0.0f, 0.0f));
+  impulseAt(space, 6, 0.0f, 0.0f, 1.0f, 40.0f, 0.5f, 0.0f);
+  check(near(velocityOf(space, 6, 3), 0.5f / (1.75f / 12.0f), 0.05f),
+        "and about a diameter against a twelfth of three radii squared and the length squared");
+  orblit_physics_destroy(space);
+}
+
+void walkingOnConvex() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  const float foot[3] = {-0.5f, 0.0f, -0.5f};
+  const float kerb[3] = {0.5f, 0.2f, 0.5f};
+  const float wall[3] = {0.5f, 1.0f, 0.5f};
+  layHull(physics, 1, cornersOf(foot, kerb));
+  layHull(physics, 2, cornersOf(foot, wall));
+  submit(physics, fixedBody(hullAt(20, 1, 2.0f, 0.0f, 0.0f)));
+  submit(physics, fixedBody(cylinderAt(21, 0.5f, 0.1f, 2.0f, 0.1f, 3.0f)));
+  submit(physics, fixedBody(hullAt(22, 2, 2.0f, 0.0f, 6.0f)));
+  submit(physics, fixedBody(cylinderAt(23, 0.5f, 1.0f, 2.0f, 1.0f, 9.0f)));
+  for (int lane = 0; lane < 4; ++lane) {
+    addCharacter(physics, 10 + lane, 0.0f, 0.0f, 3.0f * static_cast<float>(lane));
+  }
+
+  walk(physics, 10, 1.5f, 0.0f, 1.4f);
+  check(footingOf(physics, 10).ground == 20 && near(heightOf(physics, 10), 1.11f, 0.01f),
+        "a character steps up onto a hull kerb and stands on it");
+  walk(physics, 11, 1.5f, 0.0f, 1.4f);
+  check(footingOf(physics, 11).ground == 21 && near(heightOf(physics, 11), 1.11f, 0.01f),
+        "and onto a cylinder that is as low");
+  walk(physics, 12, 1.5f, 0.0f, 2.0f);
+  check(coordinateOf(physics, 12, 0) > 1.15f && coordinateOf(physics, 12, 0) < 1.22f &&
+            near(heightOf(physics, 12), 0.91f, 0.01f),
+        "but is stopped by a hull wall too high to climb, on the ground in front of it");
+  walk(physics, 13, 1.5f, 0.0f, 2.0f);
+  check(coordinateOf(physics, 13, 0) > 1.15f && coordinateOf(physics, 13, 0) < 1.22f &&
+            near(heightOf(physics, 13), 0.91f, 0.01f),
+        "and by a cylinder that tall");
+  orblit_physics_destroy(physics);
+}
+
+void castingConvex() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  layHull(physics, 1, cubeOf(0.5f));
+  submit(physics, fixedBody(hullAt(2, 1, 0.0f, 0.5f, 0.0f)));
+  submit(physics, fixedBody(cylinderAt(3, 0.5f, 0.5f, 10.0f, 0.5f, 0.0f)));
+
+  OrblitPhysicsHit hit{};
+  OrblitPhysicsCast ray = rayFrom(0.1f, 5.0f, 0.2f, 0.0f, -1.0f, 0.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && hit.body == 2 &&
+            near(hit.distance, 4.0f, 0.01f) && near(hit.normal[1], 1.0f, 0.01f),
+        "a ray down onto a hull meets its top face");
+  ray = rayFrom(-5.0f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && hit.body == 2 &&
+            near(hit.distance, 4.5f, 0.01f) && near(hit.normal[0], -1.0f, 0.01f),
+        "and a ray along the ground meets a side face");
+
+  ray = rayFrom(10.1f, 5.0f, 0.1f, 0.0f, -1.0f, 0.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && hit.body == 3 &&
+            near(hit.distance, 4.0f, 0.01f) && near(hit.normal[1], 1.0f, 0.01f),
+        "a ray down onto a cylinder meets its flat end");
+  ray = rayFrom(10.3f, 0.5f, -5.0f, 0.0f, 0.0f, 1.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && hit.body == 3 &&
+            near(hit.distance, 4.6f, 0.01f) && near(hit.normal[0], 0.6f, 0.01f) &&
+            near(hit.normal[2], -0.8f, 0.01f),
+        "and one across it meets the round side, with the normal out of the axis");
+  ray = rayFrom(10.55f, 0.5f, -5.0f, 0.0f, 0.0f, 1.0f, 20.0f);
+  check(!orblit_physics_cast(physics, &ray, &hit), "a ray past the side of it meets nothing");
+
+  OrblitPhysicsCast ball = rayFrom(0.1f, 5.0f, 0.2f, 0.0f, -1.0f, 0.0f, 20.0f);
+  ball.shape = ORBLIT_PHYSICS_SPHERE;
+  ball.size[0] = 0.25f;
+  check(orblit_physics_cast(physics, &ball, &hit) && near(hit.distance, 3.75f, 0.01f),
+        "a ball cast down onto a hull stops a radius above it");
+
+  OrblitPhysicsCast drum = rayFrom(0.0f, 5.0f, 0.0f, 0.0f, -1.0f, 0.0f, 20.0f);
+  drum.shape = ORBLIT_PHYSICS_CYLINDER;
+  drum.size[0] = 0.25f;
+  drum.size[1] = 0.25f;
+  check(orblit_physics_cast(physics, &drum, &hit) && near(hit.distance, 3.75f, 0.01f),
+        "and so does a cylinder cast, by its half-length");
+
+  OrblitPhysicsCast crate = rayFrom(-4.0f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f, 20.0f);
+  crate.shape = ORBLIT_PHYSICS_HULL;
+  crate.hull = 1;
+  check(orblit_physics_cast(physics, &crate, &hit) && hit.body == 2 &&
+            near(hit.distance, 3.0f, 0.01f) && near(hit.normal[0], -1.0f, 0.01f),
+        "a hull cast along the ground stops where its face meets the hull's");
+  crate.from[0] = 4.0f;
+  check(orblit_physics_cast(physics, &crate, &hit) && hit.body == 3 &&
+            near(hit.distance, 5.0f, 0.01f),
+        "and meets a cylinder by its round side");
+  crate.hull = 99;
+  check(!orblit_physics_cast(physics, &crate, &hit) &&
+            hitsAlong(physics, crate, 4).empty() && !orblit_physics_cast_any(physics, &crate),
+        "a cast of a hull that was never laid meets nothing");
+
+  OrblitPhysicsCast here = rayFrom(0.2f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+  here.shape = ORBLIT_PHYSICS_HULL;
+  here.hull = 1;
+  check(holds(overlapping(physics, here, 4), {2}),
+        "a hull standing where one is overlaps it");
+  here.from[0] = 5.0f;
+  check(overlapping(physics, here, 4).empty(), "and not one standing clear of it");
+  here.hull = 99;
+  here.from[0] = 0.2f;
+  check(overlapping(physics, here, 4).empty(), "nor one that was never laid");
+  orblit_physics_destroy(physics);
+}
+
+void snapshottingHulls() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  layHull(physics, 1, cubeOf(0.5f));
+  submit(physics, hullAt(2, 1, 0.0f, 3.0f, 0.0f));
+  run(physics, 0.5f);
+  OrblitPhysicsSnapshot *before = orblit_physics_snapshot(physics);
+
+  run(physics, 0.3f);
+  const float landed = heightOf(physics, 2);
+  destroyBody(physics, 2);
+  check(orblit_physics_hull_drop(physics, 1), "a hull with no body left is taken away");
+  check(orblit_physics_restore(physics, before), "a snapshot restores");
+  check(orblit_physics_alive(physics, 2), "with the body that was made from the hull");
+
+  check(!orblit_physics_hull_drop(physics, 1),
+        "and the hull the body stands on, which the world had let go of");
+  submit(physics, hullAt(3, 1, 4.0f, 3.0f, 0.0f));
+  check(orblit_physics_alive(physics, 3), "so another body may be made from it");
+  run(physics, 0.3f);
+  check(near(heightOf(physics, 2), landed, 1.0e-5f),
+        "and the body falls as it did before");
+
+  // Into another world, after the first is gone: the snapshot holds the hull
+  // itself, not a borrow of the world's.
+  orblit_physics_destroy(physics);
+  OrblitPhysics *other = orblit_physics_create(nullptr);
+  check(orblit_physics_restore(other, before), "a snapshot restores into another world");
+  orblit_physics_snapshot_destroy(before);
+  run(other, 0.3f);
+  check(near(heightOf(other, 2), landed, 1.0e-5f),
+        "which, with the snapshot let go of, still has the hull to stand on");
+  orblit_physics_destroy(other);
+}
+
 int main() {
   settling();
   capsules();
@@ -3855,6 +4367,16 @@ int main() {
   listingContacts();
   counting();
   endingInOrder();
+  layingHulls();
+  refusingCylinders();
+  restingConvex();
+  restingOnConvex();
+  restingOnGround();
+  rollingCylinders();
+  weighingConvex();
+  walkingOnConvex();
+  castingConvex();
+  snapshottingHulls();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

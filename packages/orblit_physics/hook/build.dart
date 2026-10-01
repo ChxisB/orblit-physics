@@ -21,6 +21,10 @@ void main(List<String> args) async {
         root.resolve('src/character.cpp').toFilePath(),
         root.resolve('src/heightfield.cpp').toFilePath(),
         root.resolve('src/inspect.cpp').toFilePath(),
+        root.resolve('src/hull.cpp').toFilePath(),
+        root.resolve('src/convex.cpp').toFilePath(),
+        root.resolve('src/gjk.cpp').toFilePath(),
+        root.resolve('src/convex_collide.cpp').toFilePath(),
       ],
       includes: [
         root.resolve('include/').toFilePath(),

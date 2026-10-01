@@ -65,6 +65,9 @@ final class OrblitPhysicsCommand extends Struct {
 
   @Array(1)
   external Array<Uint8> reserved;
+
+  @Uint64()
+  external int hull;
 }
 
 /// `OrblitPhysicsEvent`, field for field.
@@ -125,6 +128,9 @@ final class OrblitPhysicsCast extends Struct {
 
   @Uint64()
   external int ignore;
+
+  @Uint64()
+  external int hull;
 }
 
 /// `OrblitPhysicsHit`, field for field.
@@ -648,6 +654,22 @@ external bool physicsGround(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsGround> ground,
 );
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Uint64, Pointer<Float>, Uint32)
+>(symbol: 'orblit_physics_hull', assetId: kOrblitPhysicsAsset)
+external bool physicsHull(
+  Pointer<OrblitPhysicsStruct> physics,
+  int id,
+  Pointer<Float> xyz,
+  int count,
+);
+
+@Native<Bool Function(Pointer<OrblitPhysicsStruct>, Uint64)>(
+  symbol: 'orblit_physics_hull_drop',
+  assetId: kOrblitPhysicsAsset,
+)
+external bool physicsHullDrop(Pointer<OrblitPhysicsStruct> physics, int id);
 
 @Native<
   Uint32 Function(

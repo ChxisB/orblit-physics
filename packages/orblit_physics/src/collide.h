@@ -25,6 +25,7 @@
 #ifndef ORBLIT_PHYSICS_COLLIDE_H
 #define ORBLIT_PHYSICS_COLLIDE_H
 
+#include <cstddef>
 #include <cstdint>
 
 #include "maths.h"
@@ -126,6 +127,28 @@ void closestOnSegments(const Vec3 &p1, const Vec3 &d1, const Vec3 &p2,
 /// solver has the most work to do on, and dropping one of them for a point
 /// that is barely touching is how a corner sinks through a floor.
 void keepDeepest(Manifold &out, const Vec3 &normal, const Vec3 &at, float depth);
+
+/// A contact found on the way to a manifold. A shape over ground, or lying on
+/// a face, finds more of them than a manifold holds.
+struct Candidate {
+  Vec3 normal;
+  Vec3 at;
+  float depth;
+};
+
+/// Fills `out` with the deepest candidate and the three that spread furthest
+/// from it. A point that adds no spread is not added, which is also how the
+/// same point found twice is kept once.
+///
+/// Which four is a question about all of them, not about the order they
+/// arrive in: the deepest first, then the ones that hold the shape at its
+/// corners rather than at four points bunched in one place.
+void reduce(const Candidate *from, size_t count, Manifold &out);
+
+/// A plane body as a world normal and the value `dot(normal, x)` takes on its
+/// surface. Everything below the plane has a smaller value than that.
+void planeInWorld(const Shape &s, const Vec3 &at, const Quat &rot, Vec3 &normal,
+                  float &surface);
 
 } // namespace orblit
 

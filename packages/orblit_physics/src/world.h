@@ -44,6 +44,7 @@
 #include "character.h"
 #include "collide.h"
 #include "heightfield.h"
+#include "hull.h"
 #include "joint.h"
 #include "orblit_physics.h"
 #include "rule.h"
@@ -60,9 +61,9 @@ namespace orblit {
 /// events. Restoring it gives back a world that steps exactly as the one it
 /// was taken from would have, because a step reads nothing else.
 ///
-/// Ground is shared rather than copied. A height field never changes once it is
-/// laid, so a snapshot and the world it came from hold the same one, and laying
-/// it again makes a new one and lets go of the old.
+/// Ground and hulls are shared rather than copied. A height field or a hull
+/// never changes once it is laid, so a snapshot and the world it came from hold
+/// the same one, and laying it again makes a new one and lets go of the old.
 ///
 /// The fields here are the members of `World` that are not scratch. A member
 /// added to the world that a step reads from the step before belongs here too,
@@ -74,6 +75,7 @@ struct Snapshot {
   Bodies bodies;
   Joints joints;
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const HeightField>> fields;
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Hull>> hulls;
   std::unordered_map<PairKey, Manifold, PairKeyHash> touching;
   std::unordered_set<PairKey, PairKeyHash> sensing;
   std::unordered_map<OrblitPhysicsId, Zone> zones;
@@ -96,6 +98,14 @@ class World {
   /// Lays ground as a static body, replacing whatever had its id, and wakes
   /// everything over it. False, and nothing changed, if it cannot be laid.
   bool ground(const OrblitPhysicsGround &from);
+
+  /// Cooks `count` points into a hull and keeps it under `id`. False, and
+  /// nothing laid, if the id is zero or taken or the points enclose no volume.
+  bool hull(OrblitPhysicsId id, const float *xyz, uint32_t count);
+
+  /// Lets go of a hull. False, and nothing changed, if there is none under
+  /// `id` or a body is still made from it.
+  bool dropHull(OrblitPhysicsId id);
 
   uint32_t read(const OrblitPhysicsId *ids, uint32_t count, float *out,
                 uint32_t stride, uint32_t offset) const;
@@ -176,6 +186,16 @@ class World {
 
  private:
   void apply(const OrblitPhysicsCommand &command);
+
+  /// The shape a command or a cast names, and whether it names one. Not a
+  /// height field, which has its own call; not a hull that was never laid; not
+  /// a cylinder whose size is not a positive number.
+  bool shapeFor(uint32_t kind, const float size[4], OrblitPhysicsId hull,
+                Shape &out) const;
+
+  /// The shape a cast moves, as `shapeFor` reads it, except that shape zero is
+  /// a ray, which is a sphere of no size.
+  bool shapeOf(const OrblitPhysicsCast &query, Shape &out) const;
 
   /// Removes a body and everything this world keeps beside it, its joints
   /// included, and wakes what it was joined to.
@@ -275,6 +295,11 @@ class World {
   /// any snapshot that was taken while it was the ground.
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const HeightField>>
       fields_;
+
+  /// The hulls that have been laid, by id. A body's shape points into one, so
+  /// one is only ever let go of when no body is made from it. Shared with any
+  /// snapshot, for the same reason ground is.
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Hull>> hulls_;
 
   std::vector<Manifold> manifolds_;
   std::vector<PairKey> keys_;

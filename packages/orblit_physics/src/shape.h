@@ -2,16 +2,17 @@
 // spin.
 //
 // A shape here is a few floats and a tag rather than a class with virtuals.
-// There are five of them, every one is the same size, and a body store that
+// There are seven of them, every one is the same size, and a body store that
 // can memcpy its shapes is a body store that can be handed about as a column.
 // Ground, the one shape too big for a few floats, is a pointer to heights the
-// world owns, not a base class — and a convex hull, when one arrives, will be
-// the same.
+// world owns, not a base class. A hull is the same: a pointer to corners the
+// world owns, which nothing changes once they are cooked.
 
 #ifndef ORBLIT_PHYSICS_SHAPE_H
 #define ORBLIT_PHYSICS_SHAPE_H
 
 #include "heightfield.h"
+#include "hull.h"
 #include "maths.h"
 #include "orblit_physics.h"
 
@@ -23,13 +24,15 @@ enum class ShapeKind : uint32_t {
   plane = ORBLIT_PHYSICS_PLANE,
   capsule = ORBLIT_PHYSICS_CAPSULE,
   heightField = ORBLIT_PHYSICS_HEIGHT_FIELD,
+  cylinder = ORBLIT_PHYSICS_CYLINDER,
+  hull = ORBLIT_PHYSICS_HULL,
 };
 
 struct Shape {
   ShapeKind kind = ShapeKind::sphere;
 
   /// Sphere: radius in x. Box: half extents. Plane: the outward normal.
-  /// Capsule: radius in x, half the straight part in y.
+  /// Capsule and cylinder: radius in x, half the length along y in y.
   Vec3 size;
 
   /// Plane: how far along the normal the surface sits. Unused otherwise.
@@ -37,6 +40,9 @@ struct Shape {
 
   /// Height field: the heights, owned by the world. Unused otherwise.
   const HeightField *field = nullptr;
+
+  /// Hull: the cooked corners and faces, owned by the world. Unused otherwise.
+  const Hull *cooked = nullptr;
 
   static Shape sphere(float radius) {
     return {ShapeKind::sphere, {radius, radius, radius}, 0.0f};
@@ -61,18 +67,38 @@ struct Shape {
   }
 
   static Shape ground(const HeightField *field) {
-    return {ShapeKind::heightField, {}, 0.0f, field};
+    return {ShapeKind::heightField, {}, 0.0f, field, nullptr};
+  }
+
+  /// A solid cylinder of `radius` and `2 * halfHeight`, flat at both ends,
+  /// standing along its own y for the reason a capsule does.
+  static Shape cylinder(float radius, float halfHeight) {
+    return {ShapeKind::cylinder, {radius, halfHeight, 0.0f}, 0.0f};
+  }
+
+  /// The convex solid `cooked` describes, in the frame its corners were given
+  /// in. A body made from it is placed by that frame's origin.
+  static Shape hull(const Hull *cooked) {
+    return {ShapeKind::hull, {}, 0.0f, nullptr, cooked};
   }
 
   float radius() const { return size.x; }
 
   /// Capsule: half the straight part, so the whole thing is
-  /// `2 * (halfHeight() + radius())` tall.
+  /// `2 * (halfHeight() + radius())` tall. Cylinder: half the whole.
   float halfHeight() const { return size.y; }
+
+  /// Where the shape's own weight is, in the body's frame. The origin for
+  /// every shape that is symmetric about it, which is all of them but a hull,
+  /// whose corners are wherever they were given.
+  Vec3 centre() const {
+    return kind == ShapeKind::hull && cooked != nullptr ? cooked->centre() : Vec3{};
+  }
 
   /// The capsule's axis in the world, as a half-length vector from its centre.
   /// Zero for anything that is not a capsule, which makes the segment
-  /// degenerate to a point and every routine below fall back to a sphere.
+  /// degenerate to a point and every routine below fall back to a sphere. A
+  /// cylinder is not a capsule with square ends, so it answers zero here too.
   Vec3 axisAt(const Quat &rotation) const {
     if (kind != ShapeKind::capsule) return {};
     return rotate(rotation, {0.0f, size.y, 0.0f});
@@ -89,6 +115,8 @@ struct Shape {
       case ShapeKind::box: return length(size);
       case ShapeKind::plane: return 0.0f;
       case ShapeKind::capsule: return size.x + size.y;
+      case ShapeKind::cylinder: return std::sqrt(size.x * size.x + size.y * size.y);
+      case ShapeKind::hull: return cooked != nullptr ? cooked->reach() : 0.0f;
       // Never solved, so never asked how fast its edge is going.
       case ShapeKind::heightField: return 0.0f;
     }
@@ -128,6 +156,33 @@ struct Shape {
         const Vec3 half = absPerAxis(axisAt(rotation));
         const Vec3 r{size.x, size.x, size.x};
         return {at - half - r, at + half + r};
+      }
+      case ShapeKind::cylinder: {
+        // Along each world axis, the half length's share of it plus as much of
+        // the end discs' radius as lies across that axis. Exact: the rim's
+        // furthest point along an axis is the radius times the sine of the
+        // angle the cylinder's own axis makes with it.
+        const Vec3 up = rotate(rotation, {0.0f, 1.0f, 0.0f});
+        Vec3 r;
+        for (int i = 0; i < 3; ++i) {
+          r[i] = size.y * std::fabs(up[i]) +
+                 size.x * std::sqrt(std::fmax(0.0f, 1.0f - up[i] * up[i]));
+        }
+        return {at - r, at + r};
+      }
+      case ShapeKind::hull: {
+        if (cooked == nullptr) return {at, at};
+        // The corner that goes furthest along each world direction, asked in
+        // the hull's own frame. Exact, and no dearer than turning the corners.
+        Bounds out{at, at};
+        for (int i = 0; i < 3; ++i) {
+          Vec3 axis;
+          axis[i] = 1.0f;
+          const Vec3 own = unrotate(rotation, axis);
+          out.high[i] = at[i] + dot(cooked->support(own), own);
+          out.low[i] = at[i] + dot(cooked->support(-own), own);
+        }
+        return out;
       }
       case ShapeKind::heightField: {
         if (field == nullptr) return {at, at};
@@ -172,6 +227,20 @@ struct Shape {
       }
       case ShapeKind::plane: return {};
       case ShapeKind::heightField: return {};
+      // A hull's inertia is a whole matrix, not three numbers, and is asked
+      // for through `inverseInertiaOf`.
+      case ShapeKind::hull: return {};
+      case ShapeKind::cylinder: {
+        // A solid cylinder: half the mass times the radius squared about its
+        // axis, and a twelfth of the mass times three radii squared plus the
+        // full length squared across it.
+        const float r2 = size.x * size.x;
+        const float along = 0.5f * mass * r2;
+        const float across = mass * (0.25f * r2 + size.y * size.y / 3.0f);
+        return {across > 0.0f ? 1.0f / across : 0.0f,
+                along > 0.0f ? 1.0f / along : 0.0f,
+                across > 0.0f ? 1.0f / across : 0.0f};
+      }
       case ShapeKind::capsule: {
         // A cylinder and two hemispheres, each taking the share of the mass
         // its volume is worth, and the caps moved out to the ends by the
@@ -201,15 +270,18 @@ struct Shape {
 
   /// Reads one out of a command's four floats, as the header describes them.
   ///
-  /// Ground cannot be read out of four floats. A command naming it is read as
-  /// a sphere, and whoever sent one refuses it before it gets here.
+  /// Ground and a hull cannot be read out of four floats, since each is an
+  /// object the world holds. A command naming one is read as a sphere, and
+  /// whoever sent it makes the real shape or refuses it before it gets here.
   static Shape fromCommand(uint32_t kind, const float size[4]) {
     switch (static_cast<ShapeKind>(kind)) {
       case ShapeKind::box: return box({size[0], size[1], size[2]});
       case ShapeKind::plane: return plane({size[0], size[1], size[2]}, size[3]);
       case ShapeKind::capsule: return capsule(size[0], size[1]);
+      case ShapeKind::cylinder: return cylinder(size[0], size[1]);
       case ShapeKind::sphere:
-      case ShapeKind::heightField: break;
+      case ShapeKind::heightField:
+      case ShapeKind::hull: break;
     }
     return sphere(size[0]);
   }

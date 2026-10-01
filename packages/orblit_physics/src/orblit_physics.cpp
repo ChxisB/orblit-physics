@@ -55,6 +55,17 @@ bool orblit_physics_ground(OrblitPhysics *physics,
   return physics->world.ground(*ground);
 }
 
+bool orblit_physics_hull(OrblitPhysics *physics, OrblitPhysicsId id,
+                         const float *xyz, uint32_t count) {
+  if (physics == nullptr) return false;
+  return physics->world.hull(id, xyz, count);
+}
+
+bool orblit_physics_hull_drop(OrblitPhysics *physics, OrblitPhysicsId id) {
+  if (physics == nullptr) return false;
+  return physics->world.dropHull(id);
+}
+
 void orblit_physics_step(OrblitPhysics *physics, float delta) {
   if (physics == nullptr) return;
   const auto began = std::chrono::steady_clock::now();

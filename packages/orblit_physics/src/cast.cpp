@@ -1,6 +1,7 @@
 #include "cast.h"
 
 #include "collide.h"
+#include "gjk.h"
 
 namespace orblit {
 namespace {
@@ -19,16 +20,9 @@ constexpr uint32_t kMostSteps = 32;
 
 Placed movedTo(const Placed &of, const Vec3 &at) { return {of.shape, at, of.rotation}; }
 
-/// A plane body as a world normal and the value dot(normal, x) takes on its
-/// surface.
-void planeInWorld(const Placed &of, Vec3 &normal, float &surface) {
-  normal = rotate(of.rotation, of.shape.size);
-  surface = of.shape.offset + dot(normal, of.at);
-}
-
 /// The nearest point of a shape's core to `to` — the core being what is left
 /// of it once the rounding is taken off: a point for a sphere, a segment for a
-/// capsule, and a box for a box.
+/// capsule, and the solid itself for the rest.
 ///
 /// Used only to find a direction worth measuring along, never to answer a
 /// distance, so the iteration below can stop whenever it likes.
@@ -48,6 +42,9 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
                         clamped(local.z, -e.z, e.z)};
       return of.at + rotate(of.rotation, inside);
     }
+    case ShapeKind::cylinder:
+    case ShapeKind::hull:
+      return nearestOnCore(Convex(of.shape, of.at, of.rotation), to);
     case ShapeKind::plane:
     case ShapeKind::heightField: return to;
   }
@@ -107,7 +104,7 @@ bool sweepPlane(const Placed &moving, const Vec3 &direction, float distance,
                 const Placed &fixed, Impact &out) {
   Vec3 n;
   float surface;
-  planeInWorld(fixed, n, surface);
+  planeInWorld(fixed.shape, fixed.at, fixed.rotation, n, surface);
 
   // The lowest point of the moving shape, and how fast that height falls. A
   // shape translating without turning keeps the same lowest point throughout,
@@ -304,6 +301,9 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
       }
       return furthest;
     }
+    case ShapeKind::cylinder:
+    case ShapeKind::hull:
+      return toVec(Convex(of.shape, of.at, of.rotation).support(D3(direction)));
     case ShapeKind::plane:
     case ShapeKind::heightField: return of.at;
   }

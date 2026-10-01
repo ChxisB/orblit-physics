@@ -35,7 +35,7 @@ enum PhysicsMotion {
 
 /// What a body is, geometrically.
 final class Shape {
-  const Shape._(this.kind, this.x, this.y, this.z, this.w);
+  const Shape._(this.kind, this.x, this.y, this.z, this.w, {this.hull = 0});
 
   /// A ball of `radius` metres.
   const Shape.sphere(double radius) : this._(1, radius, 0.0, 0.0, 0.0);
@@ -54,6 +54,21 @@ final class Shape {
   const Shape.capsule(double radius, double halfHeight)
     : this._(4, radius, halfHeight, 0.0, 0.0);
 
+  /// A solid cylinder of `radius` with `halfHeight` metres of side either side
+  /// of the middle, flat at both ends, standing along the body's own y. It is
+  /// `2 * halfHeight` tall, and it stands on an end, lies on its side and rolls
+  /// the way a capsule of the same two numbers would not.
+  const Shape.cylinder(double radius, double halfHeight)
+    : this._(6, radius, halfHeight, 0.0, 0.0);
+
+  /// The convex solid laid with [Physics.layHull] under `id`. A body made from
+  /// it is placed by the origin of the frame its points were given in and
+  /// weighs from the middle of the solid, wherever that falls.
+  ///
+  /// A body or a cast naming a hull that was not laid makes nothing and meets
+  /// nothing.
+  const Shape.hull(int id) : this._(7, 0.0, 0.0, 0.0, 0.0, hull: id);
+
   /// An endless flat surface: everything behind the normal `nx, ny, nz` at
   /// `offset` along it is solid. Never dynamic — a half-space has no centre
   /// to spin about.
@@ -69,6 +84,9 @@ final class Shape {
   final double y;
   final double z;
   final double w;
+
+  /// The hull a [Shape.hull] names, and zero for every other kind.
+  final int hull;
 }
 
 /// Which layers a body is in, and which it wants to be told about.
@@ -741,6 +759,7 @@ class Physics {
     command.size[1] = shape.y;
     command.size[2] = shape.z;
     command.size[3] = shape.w;
+    command.hull = shape.hull;
     _write3(command.at, at);
     for (var i = 0; i < 4; i++) {
       command.rotation[i] = rotation[i];
@@ -873,6 +892,47 @@ class Physics {
       calloc.free(samples);
       calloc.free(ground);
     }
+  }
+
+  /// Cooks `points` into the convex hull round them and keeps it under `id`
+  /// for [Shape.hull] to name, and answers whether it was laid. `points` is
+  /// flat, three numbers a point: `x0, y0, z0, x1, y1, z1, ...`.
+  ///
+  /// A hull is made once and shared: a hundred crates cut from one mesh name
+  /// one hull. Cooking is the slow part, so it belongs at load and not in a
+  /// tick. A hull is never changed once laid. To change one, lay another under
+  /// a new id and make the bodies again.
+  ///
+  /// More than 255 corners are cooked down to the 255 that stand out furthest,
+  /// so the solid is a little smaller than the points and never larger.
+  ///
+  /// False, and nothing laid, for a zero id, an id that already names a hull,
+  /// a length that is not a multiple of three, fewer than four points or more
+  /// than 100,000, a number that is not finite, or points that enclose no
+  /// volume because they all lie in one plane or on one line.
+  bool layHull(int id, {required List<double> points}) {
+    _requireAlive();
+    // Sent now rather than queued, so a body queued before this that names the
+    // hull is made before the hull exists, as it would be for any other order.
+    _flush();
+    if (points.length % 3 != 0) return false;
+    final xyz = calloc<Float>(points.isEmpty ? 1 : points.length);
+    try {
+      xyz.asTypedList(points.length).setAll(0, points);
+      return native.physicsHull(_alive, id, xyz, points.length ~/ 3);
+    } finally {
+      calloc.free(xyz);
+    }
+  }
+
+  /// Takes a hull away and answers whether it did. False for an id that names
+  /// no hull, and for one a body still uses: take the bodies away first. The
+  /// id may then be laid again.
+  bool dropHull(int id) {
+    _requireAlive();
+    // So a body removed a moment ago has gone before the hull is asked about.
+    _flush();
+    return native.physicsHullDrop(_alive, id);
   }
 
   /// Takes a body out of the world. Anything that was touching it is told the
@@ -1316,8 +1376,8 @@ class Physics {
   /// engine does not claim cross-platform determinism.
   ///
   /// The copy is native memory the caller lets go of with
-  /// [PhysicsSnapshot.dispose]. A height field is shared with the world and not
-  /// copied, so a snapshot of a large terrain costs its bodies.
+  /// [PhysicsSnapshot.dispose]. A height field or a hull is shared with the
+  /// world and not copied, so a snapshot of a large terrain costs its bodies.
   PhysicsSnapshot snapshot() {
     _flush();
     final taken = native.physicsSnapshot(_alive);
@@ -1328,7 +1388,7 @@ class Physics {
   }
 
   /// Makes this world the one `snapshot` was taken from: its bodies, joints,
-  /// ground, zones, rules, characters and settings, and the contacts and
+  /// ground, hulls, zones, rules, characters and settings, and the contacts and
   /// events the last step left. Anything done since is gone, commands not yet
   /// stepped included.
   ///
@@ -1685,6 +1745,7 @@ class Physics {
       into.size[2] = shape.z;
       into.size[3] = shape.w;
     }
+    into.hull = shape?.hull ?? 0;
     _write3(into.from, from);
     for (var i = 0; i < 4; i++) {
       into.rotation[i] = rotation[i];
@@ -1729,5 +1790,6 @@ class Physics {
     command.asleep = false;
     command.sensor = false;
     command.stay = false;
+    command.hull = 0;
   }
 }

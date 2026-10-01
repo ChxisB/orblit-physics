@@ -24,7 +24,8 @@ struct Controls {
   float maxSpeed = 0.0f;
   float maxSpin = 0.0f;
 
-  /// Where the weight is wanted, in the body's frame. Only a free body has it.
+  /// Where the weight is wanted, as a distance from the shape's own middle, in
+  /// the body's frame. Only a free body has it.
   Vec3 centre;
 
   /// The inertia wanted about that point. Used only when every part is above
@@ -65,12 +66,34 @@ struct MassProperties {
   Mat3 inverseInertia = Mat3::zero();
 };
 
+/// `inertia`, which is about a body's middle, turned into the inertia about a
+/// point `centre` away from it.
+///
+/// That is the parallel axis theorem's share: turning about a point off to one
+/// side means swinging the whole mass round it.
+inline Mat3 aboutCentre(Mat3 inertia, float mass, const Vec3 &centre) {
+  const float away = lengthSquared(centre);
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      const float across = centre[i] * centre[j];
+      inertia.row[i][j] += mass * ((i == j ? away : 0.0f) - across);
+    }
+  }
+  return inertia;
+}
+
+/// A hull's inertia is a whole matrix about its middle, not three numbers
+/// about axes, so it takes its own way in.
+inline Mat3 hullInertia(const Shape &shape, float mass) {
+  return shape.cooked != nullptr ? shape.cooked->inertia() * mass
+                                 : Mat3::zero();
+}
+
 /// The inertia, inverted, that the controls call for.
 ///
 /// A given inertia is used as it is, since it is about the centre of mass
 /// already. The shape's own is about the shape's middle, so a centre away from
-/// it costs the parallel axis theorem's share: turning about a point off to one
-/// side means swinging the whole mass round it.
+/// it costs the parallel axis theorem's share.
 inline Mat3 inverseInertiaOf(const Shape &shape, float mass,
                              const Controls &controls) {
   const Vec3 &given = controls.inertia;
@@ -78,21 +101,18 @@ inline Mat3 inverseInertiaOf(const Shape &shape, float mass,
     return Mat3::diagonal({1.0f / given.x, 1.0f / given.y, 1.0f / given.z});
   }
 
+  if (shape.kind == ShapeKind::hull) {
+    return inverse(aboutCentre(hullInertia(shape, mass), mass, controls.centre));
+  }
+
   const Vec3 own = shape.inverseInertia(mass);
-  const float away = lengthSquared(controls.centre);
-  if (away <= 0.0f) return Mat3::diagonal(own);
+  if (lengthSquared(controls.centre) <= 0.0f) return Mat3::diagonal(own);
 
   // A zero inverse is an inertia the shape does not have, so it stays zero.
-  Mat3 shifted = Mat3::diagonal({own.x > 0.0f ? 1.0f / own.x : 0.0f,
-                                 own.y > 0.0f ? 1.0f / own.y : 0.0f,
-                                 own.z > 0.0f ? 1.0f / own.z : 0.0f});
-  for (int i = 0; i < 3; ++i) {
-    for (int j = 0; j < 3; ++j) {
-      const float across = controls.centre[i] * controls.centre[j];
-      shifted.row[i][j] += mass * ((i == j ? away : 0.0f) - across);
-    }
-  }
-  return inverse(shifted);
+  const Mat3 about = Mat3::diagonal({own.x > 0.0f ? 1.0f / own.x : 0.0f,
+                                     own.y > 0.0f ? 1.0f / own.y : 0.0f,
+                                     own.z > 0.0f ? 1.0f / own.z : 0.0f});
+  return inverse(aboutCentre(about, mass, controls.centre));
 }
 
 inline MassProperties massOf(const Shape &shape, bool free, float mass,
@@ -104,7 +124,7 @@ inline MassProperties massOf(const Shape &shape, bool free, float mass,
   for (int i = 0; i < 3; ++i) {
     out.gain[i] = controls.locksMove(i) ? 0.0f : out.inverseMass;
   }
-  out.offset = controls.centre;
+  out.offset = shape.centre() + controls.centre;
   out.inverseInertia = inverseInertiaOf(shape, mass, controls);
   return out;
 }

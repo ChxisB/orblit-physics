@@ -72,6 +72,28 @@ typedef enum {
   /// after that a body like any other, destroyed the same way. Never dynamic,
   /// and never cast.
   ORBLIT_PHYSICS_HEIGHT_FIELD = 5,
+
+  /// A solid cylinder, flat at both ends, standing along the body's own y.
+  /// `size[0]` is the radius and `size[1]` half the length, so it is
+  /// `2 * size[1]` tall.
+  ///
+  /// With no hemispheres to add, half the length is also half the straight
+  /// part, which is what a capsule's `size[1]` is. The same two numbers give
+  /// both shapes the same straight side. The ends are flat where a capsule's
+  /// are round: it stands on one, rolls on its side, and a flat end lies
+  /// flush on a floor.
+  ORBLIT_PHYSICS_CYLINDER = 6,
+
+  /// A convex solid made from a cloud of points. Not made from `size`, which
+  /// is ignored: laid first with `orblit_physics_hull`, then named by the
+  /// `hull` field of the command or cast.
+  ///
+  /// The body's frame is the frame the points were given in, and the body is
+  /// placed by that frame's origin. Its weight is at the middle of the solid
+  /// wherever that falls, and it turns about that. A hull cooked from a mesh
+  /// whose origin is at its feet is placed by its feet and tips about its
+  /// middle, and nothing about the mesh has to be moved to make that so.
+  ORBLIT_PHYSICS_HULL = 7,
 } OrblitPhysicsShapeKind;
 
 typedef enum {
@@ -239,6 +261,11 @@ typedef struct {
   /// sixty times a second. Either body of a pair asking is enough.
   bool stay;
   bool _reserved;
+
+  /// CREATE: the hull of a body whose `shape` is ORBLIT_PHYSICS_HULL, as laid
+  /// with `orblit_physics_hull`. A CREATE naming a hull that was not laid
+  /// makes nothing.
+  OrblitPhysicsId hull;
 } OrblitPhysicsCommand;
 
 // ----------------------------------------------------------------- events ---
@@ -483,6 +510,10 @@ typedef struct {
   /// This is nearly always the body doing the casting, which would otherwise
   /// hit itself at no distance at all and never see anything else.
   OrblitPhysicsId ignore;
+
+  /// The hull to cast, when `shape` is ORBLIT_PHYSICS_HULL, as laid with
+  /// `orblit_physics_hull`. A cast naming one that was not laid meets nothing.
+  OrblitPhysicsId hull;
 } OrblitPhysicsCast;
 
 typedef struct {
@@ -620,6 +651,36 @@ typedef struct {
 bool orblit_physics_ground(OrblitPhysics *physics,
                            const OrblitPhysicsGround *ground);
 
+// ------------------------------------------------------------------ hulls ---
+
+/// Cooks `count` points, three floats each, into the convex hull round them,
+/// and keeps it under `id` for bodies and casts to name.
+///
+/// A hull is made once and used by as many bodies as want it: a hundred
+/// crates cut from one mesh share one hull. Cooking is the slow part, so it
+/// belongs at load, never in a step. The hull keeps what the points gave it
+/// and nothing else: corners and faces, the volume, where the solid balances,
+/// and its inertia for a mass of one.
+///
+/// A hull is never changed once laid. To change one, lay another under a new
+/// id and make the bodies again; the old one is taken away with
+/// `orblit_physics_hull_drop` when nothing uses it.
+///
+/// A cloud of more than 255 corners is cooked to the 255 that stick out
+/// furthest in a spread of directions. The solid is then a little smaller than
+/// the points, never larger, so nothing clear of the points is caught by it.
+///
+/// False, and nothing laid, for a zero id, an id that already names a hull,
+/// fewer than four points, more than 100,000, a point that is not a finite
+/// number, or points that do not enclose any volume: all on one plane, or on
+/// one line.
+bool orblit_physics_hull(OrblitPhysics *physics, OrblitPhysicsId id,
+                         const float *xyz, uint32_t count);
+
+/// Takes a hull away, and returns whether it did. False for an id that names
+/// no hull, and for one that a body still uses: take the bodies away first.
+bool orblit_physics_hull_drop(OrblitPhysics *physics, OrblitPhysicsId id);
+
 // ------------------------------------------------------------------ zones ---
 
 typedef enum {
@@ -754,11 +815,13 @@ typedef struct {
   float maxSpeed;
   float maxSpin;
 
-  /// Where its weight is, in the body's own frame, from the origin it is placed
-  /// by. It turns about this point and a shove at it does not spin it. Unless
-  /// `inertia` is given, the inertia is the shape's about the shape's middle,
-  /// plus the cost of turning about this point instead, as the parallel axis
-  /// theorem has it. Zero is the middle of the shape.
+  /// Where its weight is, as a distance from the middle of its shape, in the
+  /// body's own frame. It turns about this point and a shove at it does not
+  /// spin it. Unless `inertia` is given, the inertia is the shape's about the
+  /// shape's middle, plus the cost of turning about this point instead, as the
+  /// parallel axis theorem has it. Zero is the middle of the shape, which for
+  /// a hull is where its solid balances, wherever that is in the frame its
+  /// points were given in.
   float centre[3];
 
   /// The inertia about each of the body's own axes through its centre of mass,

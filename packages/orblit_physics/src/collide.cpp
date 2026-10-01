@@ -1,5 +1,8 @@
 #include "collide.h"
 
+#include "convex.h"
+#include "convex_collide.h"
+
 namespace orblit {
 namespace {
 
@@ -10,18 +13,21 @@ void axesOf(const Quat &q, Vec3 axis[3]) {
   axis[2] = rotate(q, {0.0f, 0.0f, 1.0f});
 }
 
-/// A plane body as a world normal and the value dot(normal, x) takes on its
-/// surface. Everything below the plane has a smaller value than that.
-void planeInWorld(const Shape &s, const Vec3 &at, const Quat &rot, Vec3 &normal,
-                  float &surface) {
-  normal = rotate(rot, s.size);
-  surface = s.offset + dot(normal, at);
-}
+/// Two candidates nearer than this are one point, in metres.
+constexpr float kSamePoint = 1.0e-3f;
 
 void clearImpulses(Contact &c) {
   c.normalImpulse = 0.0f;
   c.frictionImpulse[0] = 0.0f;
   c.frictionImpulse[1] = 0.0f;
+}
+
+void place(Manifold &out, const Candidate &c) {
+  Contact &point = out.points[out.count++];
+  point.at = c.at;
+  point.normal = c.normal;
+  point.depth = c.depth;
+  clearImpulses(point);
 }
 
 void one(Manifold &out, const Vec3 &normal, const Vec3 &at, float depth) {
@@ -50,6 +56,122 @@ void keepDeepest(Manifold &out, const Vec3 &normal, const Vec3 &at, float depth)
   out.points[slot].normal = normal;
   out.points[slot].depth = depth;
   clearImpulses(out.points[slot]);
+}
+
+void planeInWorld(const Shape &s, const Vec3 &at, const Quat &rot, Vec3 &normal,
+                  float &surface) {
+  normal = rotate(rot, s.size);
+  surface = s.offset + dot(normal, at);
+}
+
+namespace {
+
+/// Stands for a candidate that is not there.
+constexpr size_t kNone = ~static_cast<size_t>(0);
+
+/// Depths this near are the same depth, in metres.
+constexpr float kTied = 1.0e-4f;
+
+/// The deepest candidate. A shape lying flat finds all its points equally
+/// deep, and there the one furthest from the middle of them is taken: a point
+/// inside the patch, such as the corner of a ground triangle under a disc, adds
+/// nothing to what holds the shape up, and starting from it leaves a side bare.
+size_t deepestOf(const Candidate *from, size_t count) {
+  float most = from[0].depth;
+  for (size_t i = 1; i < count; ++i) most = std::fmax(most, from[i].depth);
+
+  Vec3 middle;
+  float tied = 0.0f;
+  for (size_t i = 0; i < count; ++i) {
+    if (from[i].depth < most - kTied) continue;
+    middle += from[i].at;
+    tied += 1.0f;
+  }
+  middle = middle * (1.0f / tied);
+
+  size_t best = 0;
+  float furthest = -1.0f;
+  for (size_t i = 0; i < count; ++i) {
+    if (from[i].depth < most - kTied) continue;
+    const float away = lengthSquared(from[i].at - middle);
+    if (away > furthest) {
+      furthest = away;
+      best = i;
+    }
+  }
+  return best;
+}
+
+size_t furthestFrom(const Candidate *from, size_t count, const Vec3 &a) {
+  size_t best = kNone;
+  float furthest = kSamePoint * kSamePoint;
+  for (size_t i = 0; i < count; ++i) {
+    const float away = lengthSquared(from[i].at - a);
+    if (away > furthest) {
+      furthest = away;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/// The candidate that makes the largest triangle with `a` and `b`.
+size_t widest(const Candidate *from, size_t count, const Vec3 &a, const Vec3 &b) {
+  size_t best = kNone;
+  float most = kSamePoint * kSamePoint * kSamePoint * kSamePoint;
+  for (size_t i = 0; i < count; ++i) {
+    const float area = lengthSquared(cross(b - a, from[i].at - a));
+    if (area > most) {
+      most = area;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/// The candidate lying furthest outside the triangle `a`, `b`, `c`, measured by
+/// the area it would add on its most outward side.
+size_t outermost(const Candidate *from, size_t count, const Vec3 &a,
+                 const Vec3 &b, const Vec3 &c) {
+  const Vec3 facing = cross(b - a, c - a);
+  size_t best = kNone;
+  float most = -kSamePoint * kSamePoint * length(facing);
+  for (size_t i = 0; i < count; ++i) {
+    const Vec3 &p = from[i].at;
+    const float outside =
+        std::fmin(dot(facing, cross(a - p, b - p)),
+                  std::fmin(dot(facing, cross(b - p, c - p)),
+                            dot(facing, cross(c - p, a - p))));
+    if (outside < most) {
+      most = outside;
+      best = i;
+    }
+  }
+  return best;
+}
+
+} // namespace
+
+void reduce(const Candidate *from, size_t count, Manifold &out) {
+  out.count = 0;
+  if (count == 0) return;
+
+  const size_t first = deepestOf(from, count);
+  place(out, from[first]);
+  out.normal = from[first].normal;
+  const Vec3 a = from[first].at;
+
+  const size_t second = furthestFrom(from, count, a);
+  if (second == kNone) return;
+  place(out, from[second]);
+  const Vec3 b = from[second].at;
+
+  const size_t third = widest(from, count, a, b);
+  if (third == kNone) return;
+  place(out, from[third]);
+
+  const size_t fourth = outermost(from, count, a, b, from[third].at);
+  if (fourth != kNone) place(out, from[fourth]);
 }
 
 Vec3 closestOnSegment(const Vec3 &centre, const Vec3 &half, const Vec3 &to) {
@@ -541,11 +663,36 @@ bool capsuleBox(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
   return true;
 }
 
+/// The kinds with no routine for each pair. They meet everything through the
+/// one in `convex_collide.h`, or the ground's, or a plane's.
+bool isGeneral(const Shape &s) {
+  return s.kind == ShapeKind::cylinder || s.kind == ShapeKind::hull;
+}
+
+/// A pair in which at least one shape is `isGeneral`.
+bool general(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
+             const Vec3 &atB, const Quat &rotB, Manifold &out) {
+  if (b.kind == ShapeKind::plane) {
+    return collidePlane(Convex(a, atA, rotA), b, atB, rotB, out);
+  }
+  if (a.kind == ShapeKind::plane) {
+    return flipped(collidePlane(Convex(b, atB, rotB), a, atA, rotA, out), out);
+  }
+  if (b.kind == ShapeKind::heightField) {
+    return collideGround(a, atA, rotA, b, atB, rotB, out);
+  }
+  if (a.kind == ShapeKind::heightField) {
+    return flipped(collideGround(b, atB, rotB, a, atA, rotA, out), out);
+  }
+  return collideConvex(Convex(a, atA, rotA), Convex(b, atB, rotB), out);
+}
+
 } // namespace
 
 bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
              const Vec3 &atB, const Quat &rotB, Manifold &out) {
   out.count = 0;
+  if (isGeneral(a) || isGeneral(b)) return general(a, atA, rotA, b, atB, rotB, out);
   switch (a.kind) {
     case ShapeKind::sphere:
       switch (b.kind) {
@@ -556,6 +703,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return flipped(capsuleSphere(b, atB, rotB, a, atA, out), out);
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::cylinder:
+        case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::box:
@@ -569,6 +718,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return flipped(capsuleBox(b, atB, rotB, a, atA, rotA, out), out);
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::cylinder:
+        case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::plane:
@@ -583,6 +734,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::capsule:
           return flipped(capsulePlane(b, atB, rotB, a, atA, rotA, out), out);
         case ShapeKind::heightField: return false;
+        case ShapeKind::cylinder:
+        case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::capsule:
@@ -597,6 +750,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return capsuleCapsule(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
+        case ShapeKind::cylinder:
+        case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::heightField:
@@ -607,8 +762,12 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return flipped(collideGround(b, atB, rotB, a, atA, rotA, out), out);
         case ShapeKind::plane:
         case ShapeKind::heightField: return false;
+        case ShapeKind::cylinder:
+        case ShapeKind::hull: break;
       }
       return false;
+    case ShapeKind::cylinder:
+    case ShapeKind::hull: break;
   }
   return false;
 }

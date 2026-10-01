@@ -1,3 +1,36 @@
+## 0.9.0
+
+- A cylinder: `Shape.cylinder(radius, halfHeight)`, flat at both ends and
+  standing along the body's own y. Half the length is also the straight part
+  of a capsule with the same two numbers, so the two shapes share a side.
+- A convex hull, cooked from a cloud of points: `layHull(id, points: ...)`
+  keeps it under `id` and `Shape.hull(id)` names it, for a body or a cast.
+  A hull is made once and shared by every body that names it, and
+  `dropHull(id)` takes it away once none does. More than 255 corners are
+  cooked down to the 255 that stick out furthest, so the solid is a little
+  smaller than the points and never larger. Points on one plane or one line,
+  fewer than four, more than 100,000 or not finite lay nothing.
+- A hull is placed by the origin of the frame its points were given in, and
+  weighs and turns about its middle. A mesh whose origin is at its feet is
+  placed by its feet and tips about its balance point, with nothing moved.
+- A pair with a cylinder or a hull in it meets by GJK, with the core of each
+  rounded by its radius, and by an expanding polytope when they overlap.
+  Every pair of the five solid kinds now meets, and a cylinder or a hull
+  meets a plane and a height field. The pairs that already had a routine
+  keep it. Characters walk over cylinders and hulls and are stopped by them.
+  Casts and overlap queries take a cylinder or a hull as the shape.
+- Cylinders and hulls take their mass, centre and inertia from their volume.
+  A hull's centre of mass control is measured from where it balances.
+- A snapshot shares the hulls with the world, as it shares a height field,
+  and `restore` brings back the hulls the snapshot had.
+- On a height field, a cylinder or a hull that has sunk into a cliff comes
+  out along the nearest face, and a feature of it that is not its lowest can
+  be missed under a steep triangle. Ground a shape rests or walks on is
+  not affected.
+- The ABI gains `ORBLIT_PHYSICS_CYLINDER` and `ORBLIT_PHYSICS_HULL`, a `hull`
+  field on `OrblitPhysicsCommand` and `OrblitPhysicsCast`, and
+  `orblit_physics_hull` and `orblit_physics_hull_drop`.
+
 ## 0.8.0
 
 - Snapshots: `snapshot()` copies the world and `restore(snapshot)` goes back

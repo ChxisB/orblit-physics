@@ -104,20 +104,17 @@ void sortByPair(std::vector<OrblitPhysicsEvent> &events, size_t first) {
             });
 }
 
-/// The path a query describes. A ray is a sphere of no size, which is what it
-/// is, and means one routine in the cast rather than two that differ by a
-/// radius of zero.
-Journey journeyOf(const OrblitPhysicsCast &query, const Vec3 &direction,
-                  float distance) {
+/// The path `shape` takes under a query. A ray is a sphere of no size, which is
+/// what it is, and means one routine in the cast rather than two that differ by
+/// a radius of zero.
+Journey journeyOf(const Shape &shape, const OrblitPhysicsCast &query,
+                  const Vec3 &direction, float distance) {
   Sieve sieve;
   sieve.layerIs = query.layerIs;
   sieve.layerCares = query.layerCares;
   sieve.ignore = query.ignore;
   sieve.triggers = query.triggers;
 
-  const Shape shape = query.shape == 0
-                          ? Shape::sphere(0.0f)
-                          : Shape::fromCommand(query.shape, query.size);
   return Journey{Placed{shape, vectorOf(query.from), rotationOf(query.rotation)},
                  direction, distance, sieve};
 }
@@ -136,16 +133,14 @@ OrblitPhysicsHit hitOf(OrblitPhysicsId body, const Impact &impact) {
   return hit;
 }
 
-/// Whether a query goes anywhere. Ground cannot be cast, and a direction of no
-/// length goes nowhere.
+/// Whether a query goes anywhere. A direction of no length goes nowhere.
 bool castable(const OrblitPhysicsCast &query) {
-  return query.shape != ORBLIT_PHYSICS_HEIGHT_FIELD &&
-         lengthSquared(normalised(vectorOf(query.direction))) >= kTiny;
+  return lengthSquared(normalised(vectorOf(query.direction))) >= kTiny;
 }
 
-/// The journey a castable query describes.
-Journey castOf(const OrblitPhysicsCast &query) {
-  return journeyOf(query, normalised(vectorOf(query.direction)),
+/// The journey a castable query describes, for `shape`.
+Journey castOf(const Shape &shape, const OrblitPhysicsCast &query) {
+  return journeyOf(shape, query, normalised(vectorOf(query.direction)),
                    std::fmax(query.distance, 0.0f));
 }
 
@@ -298,10 +293,9 @@ void World::submit(const OrblitPhysicsCommand *commands, uint32_t count) {
 
 void World::apply(const OrblitPhysicsCommand &command) {
   if (command.kind == ORBLIT_PHYSICS_CREATE) {
-    // Ground has its own call, because a command has nowhere to put a grid.
-    if (command.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return;
     BodyDescription made;
-    made.shape = Shape::fromCommand(command.shape, command.size);
+    // Ground has its own call, because a command has nowhere to put a grid.
+    if (!shapeFor(command.shape, command.size, command.hull, made.shape)) return;
     made.motion = motionOf(command.motion);
     made.at = vectorOf(command.at);
     made.rotation = rotationOf(command.rotation);
@@ -490,6 +484,56 @@ bool World::ground(const OrblitPhysicsGround &from) {
                 : after;
   wakeWithin(area);
   return true;
+}
+
+bool World::hull(OrblitPhysicsId id, const float *xyz, uint32_t count) {
+  if (id == 0 || hulls_.count(id) != 0) return false;
+
+  std::shared_ptr<const Hull> cooked = Hull::cook(xyz, count);
+  if (cooked == nullptr) return false;
+  hulls_[id] = std::move(cooked);
+  return true;
+}
+
+bool World::dropHull(OrblitPhysicsId id) {
+  const auto found = hulls_.find(id);
+  if (found == hulls_.end()) return false;
+
+  const Hull *dropped = found->second.get();
+  for (uint32_t row = 0; row < bodies_.count(); ++row) {
+    if (bodies_.shape(row).cooked == dropped) return false;
+  }
+  hulls_.erase(found);
+  return true;
+}
+
+bool World::shapeFor(uint32_t kind, const float size[4], OrblitPhysicsId hull,
+                     Shape &out) const {
+  if (kind == ORBLIT_PHYSICS_HEIGHT_FIELD) return false;
+
+  if (kind == ORBLIT_PHYSICS_HULL) {
+    const auto found = hulls_.find(hull);
+    if (found == hulls_.end()) return false;
+    out = Shape::hull(found->second.get());
+    return true;
+  }
+
+  // A cylinder with no radius or no length has no flat ends to build, and the
+  // support routines divide by what they find there.
+  if (kind == ORBLIT_PHYSICS_CYLINDER &&
+      !(allFinite({size[0], size[1]}) && size[0] > 0.0f && size[1] > 0.0f)) {
+    return false;
+  }
+  out = Shape::fromCommand(kind, size);
+  return true;
+}
+
+bool World::shapeOf(const OrblitPhysicsCast &query, Shape &out) const {
+  if (query.shape == 0) {
+    out = Shape::sphere(0.0f);
+    return true;
+  }
+  return shapeFor(query.shape, query.size, query.hull, out);
 }
 
 bool World::zone(const OrblitPhysicsZone &from) {
@@ -1176,10 +1220,11 @@ uint32_t World::read(const OrblitPhysicsId *ids, uint32_t count, float *out,
 }
 
 bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
-  if (!castable(query)) return false;
+  Shape shape;
+  if (!castable(query) || !shapeOf(query, shape)) return false;
 
   Impact impact;
-  const uint32_t hit = nearest(bodies_, castOf(query), impact);
+  const uint32_t hit = nearest(bodies_, castOf(shape, query), impact);
   if (hit == Bodies::kNone) return false;
 
   out = hitOf(bodies_.id(hit), impact);
@@ -1188,10 +1233,12 @@ bool World::cast(const OrblitPhysicsCast &query, OrblitPhysicsHit &out) const {
 
 uint32_t World::castAll(const OrblitPhysicsCast &query, OrblitPhysicsHit *out,
                         uint32_t capacity) const {
+  Shape shape;
   if (!castable(query) || out == nullptr || capacity == 0) return 0;
+  if (!shapeOf(query, shape)) return 0;
 
   uint32_t written = 0;
-  forEachMeeting(bodies_, castOf(query), [&](uint32_t row, const Impact &impact) {
+  forEachMeeting(bodies_, castOf(shape, query), [&](uint32_t row, const Impact &impact) {
     written = keepNearest(out, written, capacity, hitOf(bodies_.id(row), impact));
     return true;
   });
@@ -1199,10 +1246,11 @@ uint32_t World::castAll(const OrblitPhysicsCast &query, OrblitPhysicsHit *out,
 }
 
 bool World::castAny(const OrblitPhysicsCast &query) const {
-  if (!castable(query)) return false;
+  Shape shape;
+  if (!castable(query) || !shapeOf(query, shape)) return false;
 
   bool found = false;
-  forEachMeeting(bodies_, castOf(query), [&](uint32_t, const Impact &) {
+  forEachMeeting(bodies_, castOf(shape, query), [&](uint32_t, const Impact &) {
     found = true;
     return false;
   });
@@ -1211,11 +1259,11 @@ bool World::castAny(const OrblitPhysicsCast &query) const {
 
 uint32_t World::overlap(const OrblitPhysicsCast &query, OrblitPhysicsId *out,
                         uint32_t capacity) const {
-  if (query.shape == ORBLIT_PHYSICS_HEIGHT_FIELD) return 0;
-  if (out == nullptr || capacity == 0) return 0;
+  Shape shape;
+  if (out == nullptr || capacity == 0 || !shapeOf(query, shape)) return 0;
 
   // A cast that goes nowhere. Only what it already overlaps can be met.
-  const Journey stay = journeyOf(query, Vec3{}, 0.0f);
+  const Journey stay = journeyOf(shape, query, Vec3{}, 0.0f);
   uint32_t written = 0;
   forEachMeeting(bodies_, stay, [&](uint32_t row, const Impact &) {
     out[written++] = bodies_.id(row);
