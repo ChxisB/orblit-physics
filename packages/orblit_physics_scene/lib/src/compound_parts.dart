@@ -17,6 +17,7 @@ ShapePart compoundPart(BodyPart part, int Function(List<double>) hullOf) {
     BodyShape.capsule => Shape.capsule(radius, straight),
     BodyShape.cylinder => Shape.cylinder(radius, part.height / 2),
     BodyShape.hull => Shape.hull(hullOf(part.hull)),
+    BodyShape.mesh ||
     BodyShape.plane ||
     BodyShape.compound => throw ArgumentError('A part must be convex.'),
   };

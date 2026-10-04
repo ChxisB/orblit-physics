@@ -201,10 +201,11 @@ bool meaningful(const OrblitPhysicsControls &from) {
          from.inertia[1] >= 0.0f && from.inertia[2] >= 0.0f;
 }
 
-/// A plane and a terrain are the ground: nothing about how they move can be
+/// Planes, terrain and triangle meshes are fixed: how they move cannot be
 /// changed, because they do not.
 bool isGround(const Shape &shape) {
-  return shape.kind == ShapeKind::plane || shape.kind == ShapeKind::heightField;
+  return shape.kind == ShapeKind::plane || shape.kind == ShapeKind::heightField ||
+         shape.kind == ShapeKind::mesh;
 }
 
 Controls controlsOf(const OrblitPhysicsControls &from) {
@@ -297,6 +298,7 @@ void World::apply(const OrblitPhysicsCommand &command) {
     // Ground has its own call, because a command has nowhere to put a grid.
     if (!shapeFor(command.shape, command.size, command.hull, made.shape)) return;
     made.motion = motionOf(command.motion);
+    if (made.shape.kind == ShapeKind::mesh && made.motion != Motion::fixed) return;
     made.at = vectorOf(command.at);
     made.rotation = rotationOf(command.rotation);
     made.mass = command.mass;
@@ -514,6 +516,12 @@ bool World::shapeFor(uint32_t kind, const float size[4], OrblitPhysicsId hull,
                      Shape &out) const {
   if (kind == ORBLIT_PHYSICS_HEIGHT_FIELD) return false;
 
+  if (kind == ORBLIT_PHYSICS_MESH) {
+    const auto found = meshes_.find(hull);
+    if (found == meshes_.end()) return false;
+    out = Shape::triangles(found->second.get());
+    return true;
+  }
   if (kind == ORBLIT_PHYSICS_COMPOUND) {
     const auto found = compounds_.find(hull);
     if (found == compounds_.end()) return false;

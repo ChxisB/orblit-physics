@@ -1,3 +1,8 @@
+## 0.11.0
+
+- Add fixed two-sided triangle meshes with spatial pruning, welded seams, convex queries, contacts and snapshot ownership.
+- Expose layMesh, Shape.mesh and dropMesh. Invalid or all-degenerate meshes are refused.
+
 ## 0.10.0
 
 - Add shared compound shapes, local affine scaling and placement, combined mass and inertia, compound casts and overlaps, and snapshot ownership.

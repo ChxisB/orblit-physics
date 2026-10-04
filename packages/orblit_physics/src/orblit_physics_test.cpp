@@ -4288,9 +4288,11 @@ void snapshottingHulls() {
 }
 
 void compoundChecks();
+void meshChecks();
 
 int main() {
   compoundChecks();
+  meshChecks();
   settling();
   capsules();
   casting();

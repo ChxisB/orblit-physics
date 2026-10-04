@@ -48,6 +48,7 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
     case ShapeKind::compound:
     case ShapeKind::hull:
       return nearestOnCore(Convex(of.shape, of.at, of.rotation), to);
+    case ShapeKind::mesh:
     case ShapeKind::plane:
     case ShapeKind::heightField: return to;
   }
@@ -263,6 +264,40 @@ bool sweepGround(const Placed &moving, const Vec3 &direction, float distance,
   return true;
 }
 
+bool sweepMesh(const Placed &moving, const Vec3 &direction, float distance,
+               const Placed &fixed, Impact &out) {
+  if (fixed.shape.mesh == nullptr) return false;
+  const Quat back = conjugate(fixed.rotation);
+  const Placed local{moving.shape, rotate(back, moving.at - fixed.at), back * moving.rotation};
+  const Vec3 way = rotate(back, direction);
+  const Bounds begins = local.shape.boundsAt(local.at, local.rotation);
+  const Bounds ends = local.shape.boundsAt(local.at + way * distance, local.rotation);
+  const Bounds area{minPerAxis(begins.low, ends.low), maxPerAxis(begins.high, ends.high)};
+  bool found = false;
+  fixed.shape.mesh->visit(area.grown(kTouching), [&](uint32_t id) {
+    Facet f = fixed.shape.mesh->facet(id);
+    if (dot(f.normal, local.at - f.v[0]) < 0) f.normal = -f.normal;
+    Impact hit;
+    if (!advance(local, way, found ? out.distance : distance, -f.normal,
+                 [&](const Vec3 &to) { return f.nearest(to); },
+                 [&](const Vec3 &along) { return f.furthest(along); }, hit)) return;
+    const Placed there = movedTo(local, local.at + way * hit.distance);
+    Vec3 onCore = there.at;
+    for (int i = 0; i < 6; ++i) onCore = nearestInCore(there, f.nearest(onCore));
+    if (f.over(onCore, kTouching)) hit.normal = f.normal;
+    if (!f.admits(hit.normal)) return;
+    hit.normal = f.straightened(hit.normal);
+    if (dot(way, hit.normal) >= -kTiny || (found && hit.distance >= out.distance)) return;
+    out = hit;
+    found = true;
+  });
+  if (found) {
+    out.at = fixed.at + rotate(fixed.rotation, out.at);
+    out.normal = rotate(fixed.rotation, out.normal);
+  }
+  return found;
+}
+
 /// Whether the sieve lets the body in `row` be met at all, before any geometry.
 bool asks(const Bodies &bodies, uint32_t row, const Sieve &sieve) {
   const OrblitPhysicsId id = bodies.id(row);
@@ -309,6 +344,7 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
     case ShapeKind::cylinder:
     case ShapeKind::hull:
       return toVec(Convex(of.shape, of.at, of.rotation).support(D3(direction)));
+    case ShapeKind::mesh:
     case ShapeKind::plane:
     case ShapeKind::heightField: return of.at;
   }
@@ -323,7 +359,7 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
   // Casting a half-space is asking where an infinite flat thing first touches
   // something, which has no answer worth giving, and ground is no better.
   if (moving.shape.kind == ShapeKind::plane) return false;
-  if (moving.shape.kind == ShapeKind::heightField) return false;
+  if (moving.shape.kind == ShapeKind::heightField || moving.shape.kind == ShapeKind::mesh) return false;
   if (fixed.shape.kind == ShapeKind::plane) {
     return sweepPlane(moving, direction, distance, fixed, out);
   }
@@ -348,6 +384,7 @@ bool sweep(const Placed &moving, const Vec3 &direction, float distance,
   if (fixed.shape.kind == ShapeKind::heightField) {
     return sweepGround(moving, direction, distance, fixed, out);
   }
+  if (fixed.shape.kind == ShapeKind::mesh) return sweepMesh(moving, direction, distance, fixed, out);
   return advance(
       moving, direction, distance, centreToCentre(moving, fixed),
       [&](const Vec3 &to) { return nearestInCore(fixed, to); },

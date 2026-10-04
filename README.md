@@ -344,7 +344,7 @@ exactly. The gaps between parts stay empty for collisions and queries.
 Parts share one body, its material and its events. Mass is distributed by
 volume at uniform density, with a combined inertia tensor. Overlaps count
 mass twice. Four contact points remain the budget for each pair of bodies.
-Planes, height fields and nested compounds cannot be parts.
+Planes, height fields, meshes and nested compounds cannot be parts.
 
 Remove bodies before `dropCompound`. A hull retained by a compound cannot be
 dropped until that compound goes. Snapshots retain both assets independently.
@@ -355,3 +355,24 @@ body's `shapeScale` stretches its collision geometry independently of its
 visual transform. Compounds and explicit shapeScale use exact scaling.
 Ordinary rounded bodies with default shapeScale retain their previous
 entity sizing rules. Invalid parts remain editable as an inert body.
+
+
+## Static model surfaces
+
+`layMesh(id, vertices: [...], indices: [...])` copies indexed triangles,
+welds coincident coordinates and builds a spatial tree with seam information.
+`Shape.mesh(id)` names the result on a fixed body. Rays, convex shape casts,
+overlaps, contacts and characters meet the same two-sided surfaces. Shared
+flat edges produce no rim impulse, including duplicated exporter vertices.
+Outer and nonmanifold edges stay rims; separate assets do not share seams.
+
+A mesh has no solid interior and cannot move or be a compound part. Use a
+convex hull or convex compound for something the solver moves. Invalid inputs
+and all-degenerate meshes return false. Remove its bodies before `dropMesh`;
+snapshots retain their own references.
+
+`CollisionMesh.fromGltf` in `orblit_asset` bakes an active static model scene
+into indexed triangles, or model settings `collision: true` cook a
+`collision.json` sidecar. A scene uses `BodyShape.mesh` with `meshVertices`
+and `meshIndices`; the bridge applies entity and shapeScale, forces fixed
+motion and owns the asset through edits, removal and snapshot restoration.

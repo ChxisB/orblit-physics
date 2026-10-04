@@ -73,6 +73,10 @@ final class Shape {
   /// where the parts were placed; a free body turns about their combined mass.
   const Shape.compound(int id) : this._(8, 0.0, 0.0, 0.0, 0.0, hull: id);
 
+  /// The two-sided triangles laid by [Physics.layMesh]. Only fixed bodies
+  /// can use a mesh. A moving collider must use a hull or convex parts.
+  const Shape.mesh(int id) : this._(9, 0.0, 0.0, 0.0, 0.0, hull: id);
+
   /// An endless flat surface: everything behind the normal `nx, ny, nz` at
   /// `offset` along it is solid. Never dynamic — a half-space has no centre
   /// to spin about.
@@ -988,6 +992,48 @@ class Physics {
     } finally {
       calloc.free(xyz);
     }
+  }
+
+  /// Copies indexed triangle geometry and cooks its spatial tree and seams.
+  /// Degenerate triangles are omitted. Invalid indices, nonfinite positions,
+  /// empty geometry and repeated ids return false without changing the world.
+  bool layMesh(
+    int id, {
+    required List<double> vertices,
+    required List<int> indices,
+  }) {
+    _requireAlive();
+    _flush();
+    if (vertices.length % 3 != 0 ||
+        indices.length % 3 != 0 ||
+        vertices.any((v) => !v.isFinite) ||
+        indices.any((i) => i < 0 || i >= vertices.length ~/ 3)) {
+      return false;
+    }
+    final points = calloc<Float>(vertices.length);
+    final triangles = calloc<Uint32>(indices.length);
+    try {
+      points.asTypedList(vertices.length).setAll(0, vertices);
+      triangles.asTypedList(indices.length).setAll(0, indices);
+      return native.physicsMesh(
+        _alive,
+        id,
+        points,
+        vertices.length ~/ 3,
+        triangles,
+        indices.length,
+      );
+    } finally {
+      calloc.free(points);
+      calloc.free(triangles);
+    }
+  }
+
+  /// Removes an unused mesh. Remove its bodies first. Snapshots keep theirs.
+  bool dropMesh(int id) {
+    _requireAlive();
+    _flush();
+    return native.physicsMeshDrop(_alive, id);
   }
 
   /// Keeps 1 to 64 convex parts under `id`, shared by bodies and snapshots.

@@ -796,3 +796,28 @@ external bool physicsCompound(
   assetId: kOrblitPhysicsAsset,
 )
 external bool physicsCompoundDrop(Pointer<OrblitPhysicsStruct> physics, int id);
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Uint64,
+    Pointer<Float>,
+    Uint32,
+    Pointer<Uint32>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_mesh', assetId: kOrblitPhysicsAsset)
+external bool physicsMesh(
+  Pointer<OrblitPhysicsStruct> physics,
+  int id,
+  Pointer<Float> xyz,
+  int vertices,
+  Pointer<Uint32> indices,
+  int count,
+);
+
+@Native<Bool Function(Pointer<OrblitPhysicsStruct>, Uint64)>(
+  symbol: 'orblit_physics_mesh_drop',
+  assetId: kOrblitPhysicsAsset,
+)
+external bool physicsMeshDrop(Pointer<OrblitPhysicsStruct> physics, int id);

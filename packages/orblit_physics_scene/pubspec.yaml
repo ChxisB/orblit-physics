@@ -3,7 +3,7 @@ description: >-
   The bodies in an Orblit scene document, simulated. Builds a physics world from
   the document's body components and writes where they end up back into it as a
   scene diff.
-version: 0.8.0
+version: 0.9.0
 publish_to: none
 
 environment:
@@ -24,3 +24,13 @@ dependencies:
 dev_dependencies:
   lints: ^5.0.0
   test: ^1.25.0
+  orblit_asset:
+    git:
+      url: https://github.com/ChxisB/orblit.git
+      path: packages/orblit_asset
+      ref: main
+  orblit_mesh:
+    git:
+      url: https://github.com/ChxisB/orblit.git
+      path: packages/orblit_mesh
+      ref: main

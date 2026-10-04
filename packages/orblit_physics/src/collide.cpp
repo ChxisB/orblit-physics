@@ -698,6 +698,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
   if (a.kind == ShapeKind::compound || b.kind == ShapeKind::compound) {
     return collideParts({a, atA, rotA}, {b, atB, rotB}, out);
   }
+  if (b.kind == ShapeKind::mesh) return collideMesh(a, atA, rotA, b, atB, rotB, out);
+  if (a.kind == ShapeKind::mesh) return flipped(collideMesh(b, atB, rotB, a, atA, rotA, out), out);
   if (isGeneral(a) || isGeneral(b)) return general(a, atA, rotA, b, atB, rotB, out);
   switch (a.kind) {
     case ShapeKind::sphere:
@@ -710,7 +712,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
-        case ShapeKind::compound:
+        case ShapeKind::mesh:
+    case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -726,7 +729,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
-        case ShapeKind::compound:
+        case ShapeKind::mesh:
+    case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -743,7 +747,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return flipped(capsulePlane(b, atB, rotB, a, atA, rotA, out), out);
         case ShapeKind::heightField: return false;
         case ShapeKind::cylinder:
-        case ShapeKind::compound:
+        case ShapeKind::mesh:
+    case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -760,7 +765,8 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
-        case ShapeKind::compound:
+        case ShapeKind::mesh:
+    case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -773,11 +779,13 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::plane:
         case ShapeKind::heightField: return false;
         case ShapeKind::cylinder:
-        case ShapeKind::compound:
+        case ShapeKind::mesh:
+    case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::cylinder:
+    case ShapeKind::mesh:
     case ShapeKind::compound:
     case ShapeKind::hull: break;
   }

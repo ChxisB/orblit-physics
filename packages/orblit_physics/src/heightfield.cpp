@@ -442,6 +442,7 @@ void touch(const Facet &f, const Probe &probe, float floor,
     case ShapeKind::capsule:
       round(f, probe.at, probe.half, probe.shape.radius(), into);
       break;
+    case ShapeKind::mesh:
     case ShapeKind::plane:
     case ShapeKind::heightField: break;
   }

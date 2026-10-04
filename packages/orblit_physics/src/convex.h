@@ -46,6 +46,7 @@ class Convex {
   /// The shape placed in the world. A plane and ground are not convex lumps
   /// and are not asked for.
   Convex(const Shape &shape, const Vec3 &at, const Quat &rotation);
+  explicit Convex(const Facet &triangle);
 
   /// How far the surface lies outside the core: a sphere's or a capsule's
   /// radius, and nothing for the rest.
@@ -63,7 +64,7 @@ class Convex {
   Feature feature(const Vec3 &direction) const;
 
  private:
-  enum class Core { point, segment, box, cylinder, hull };
+  enum class Core { point, segment, box, cylinder, hull, triangle };
 
   D3 toLocal(const D3 &direction) const;
   D3 coreSupport(const D3 &direction) const;
@@ -85,6 +86,7 @@ class Convex {
   float rounding_ = 0.0f;
   Mat3 normals_;
   bool affine_ = false;
+  const Facet *triangle_ = nullptr;
 };
 
 } // namespace orblit

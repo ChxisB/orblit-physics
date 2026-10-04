@@ -32,6 +32,7 @@ final class ScenePhysicsSnapshot {
       _hullKeyOf = Map.of(from._hullKeyOf),
       _nextHull = from._nextHull,
       _compoundBodies = Set.of(from._compoundBodies),
+      _meshBodies = Set.of(from._meshBodies),
       _partHullKeys = {
         for (final entry in from._partHullKeys.entries)
           entry.key: Set.of(entry.value),
@@ -59,6 +60,7 @@ final class ScenePhysicsSnapshot {
   final Map<int, String> _hullKeyOf;
   final int _nextHull;
   final Set<int> _compoundBodies;
+  final Set<int> _meshBodies;
   final Map<int, Set<String>> _partHullKeys;
   final Map<String, int> _jointOf;
   final Map<int, String> _entityOfJoint;
@@ -213,6 +215,7 @@ class ScenePhysics {
   /// The key of the hull each body is made of, for the bodies that have one.
   final Map<int, String> _hullKeyOf = {};
   final Set<int> _compoundBodies = {};
+  final Set<int> _meshBodies = {};
   final Map<int, Set<String>> _partHullKeys = {};
 
   /// Counted apart from the bodies', and never handed out twice, like them. A
@@ -473,6 +476,9 @@ class ScenePhysics {
       ..clear()
       ..addAll(snapshot._sharp);
     _next = snapshot._next;
+    _meshBodies
+      ..clear()
+      ..addAll(snapshot._meshBodies);
     _compoundBodies
       ..clear()
       ..addAll(snapshot._compoundBodies);
@@ -526,6 +532,7 @@ class ScenePhysics {
       if (number != null) {
         physics.remove(number);
         if (_compoundBodies.remove(number)) physics.dropCompound(number);
+        if (_meshBodies.remove(number)) physics.dropMesh(number);
         _partHullKeys.remove(number);
         gone.add(number);
         _hullKeyOf.remove(number);
@@ -590,19 +597,22 @@ class ScenePhysics {
     scale.absolute();
     final at = world.transform3(body.centre.clone());
     final plane = body.shape == BodyShape.plane;
+    final mesh = body.shape == BodyShape.mesh;
     final compound =
         body.shape == BodyShape.compound || body.shapeScale != Vector3.all(1);
     if (body.shape == BodyShape.hull) {
       _layHull(number, body, compound ? Vector3.all(1) : scale);
     }
-    final shape = compound && !plane
+    final shape = mesh
+        ? _meshOf(number, body, scale)
+        : compound && !plane
         ? _compoundOf(number, body, scale)
         : _shapeOf(number, body, scale);
 
     physics.add(
       number,
       shape: shape,
-      motion: plane ? PhysicsMotion.fixed : _motionOf(body.motion),
+      motion: plane || mesh ? PhysicsMotion.fixed : _motionOf(body.motion),
       at: [at.x, at.y, at.z],
       rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
       mass: body.mass,
@@ -716,6 +726,8 @@ class ScenePhysics {
   Shape _shapeOf(int number, BodyComponent body, Vector3 scale) {
     final size = body.size;
     switch (body.shape) {
+      case BodyShape.mesh:
+        return Shape.mesh(_meshBodies.contains(number) ? number : 0);
       case BodyShape.compound:
         return Shape.compound(_compoundBodies.contains(number) ? number : 0);
       case BodyShape.box:
@@ -748,6 +760,22 @@ class ScenePhysics {
         // places the normal by the body's pose, so it is given unturned here.
         return const Shape.plane(0, 1, 0);
     }
+  }
+
+  Shape _meshOf(int number, BodyComponent body, Vector3 scale) {
+    final outer = scale.clone()..multiply(body.shapeScale);
+    if (outer.storage.any((v) => !v.isFinite || v <= 0)) {
+      return const Shape.mesh(0);
+    }
+    final points = [
+      for (var i = 0; i < body.meshVertices.length; i++)
+        body.meshVertices[i] * outer.storage[i % 3],
+    ];
+    if (!physics.layMesh(number, vertices: points, indices: body.meshIndices)) {
+      return const Shape.mesh(0);
+    }
+    _meshBodies.add(number);
+    return Shape.mesh(number);
   }
 
   Shape _compoundOf(int number, BodyComponent body, Vector3 scale) {

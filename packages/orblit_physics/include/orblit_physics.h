@@ -97,6 +97,9 @@ typedef enum {
 
   /// A compound laid under the command or cast's `hull` id.
   ORBLIT_PHYSICS_COMPOUND = 8,
+
+  /// A fixed, two-sided triangle mesh laid under the asset id.
+  ORBLIT_PHYSICS_MESH = 9,
 } OrblitPhysicsShapeKind;
 
 typedef enum {
@@ -265,7 +268,7 @@ typedef struct {
   bool stay;
   bool _reserved;
 
-  /// CREATE: the compound id when `shape` is ORBLIT_PHYSICS_COMPOUND.
+  /// CREATE: the mesh or compound asset id for those shape kinds.
   /// Otherwise the hull of a body whose `shape` is ORBLIT_PHYSICS_HULL, as laid
   /// with `orblit_physics_hull`. A CREATE naming a hull that was not laid
   /// makes nothing.
@@ -678,6 +681,17 @@ bool orblit_physics_compound(OrblitPhysics *physics, OrblitPhysicsId id,
 
 /// Refuses removal while any body uses the compound.
 bool orblit_physics_compound_drop(OrblitPhysics *physics, OrblitPhysicsId id);
+
+/// Copies indexed triangles and builds their spatial tree and welded seams.
+/// Zero ids, repeated ids, invalid indices and nonfinite vertices are refused.
+/// Degenerate triangles are omitted; a mesh with none left is refused.
+// Buffer pointers travel with their counts in this C ABI entry point.
+bool orblit_physics_mesh(OrblitPhysics *physics, OrblitPhysicsId id,
+                         const float *xyz, uint32_t vertices,
+                         const uint32_t *indices, uint32_t count);
+
+/// Removes a mesh when no body uses it. Snapshots retain their own ownership.
+bool orblit_physics_mesh_drop(OrblitPhysics *physics, OrblitPhysicsId id);
 
 // ------------------------------------------------------------------ hulls ---
 

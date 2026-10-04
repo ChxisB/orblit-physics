@@ -7,6 +7,7 @@
 #include "heightfield.h"
 #include "hull.h"
 #include "maths.h"
+#include "triangle_mesh.h"
 #include "orblit_physics.h"
 
 namespace orblit {
@@ -27,6 +28,7 @@ enum class ShapeKind : uint32_t {
   cylinder = ORBLIT_PHYSICS_CYLINDER,
   hull = ORBLIT_PHYSICS_HULL,
   compound = ORBLIT_PHYSICS_COMPOUND,
+  mesh = ORBLIT_PHYSICS_MESH,
 };
 
 struct Shape {
@@ -49,6 +51,14 @@ struct Shape {
   /// A convex part's linear map. Bounds and support use the same map.
   Mat3 linear = Mat3::diagonal({1.0f, 1.0f, 1.0f});
   bool affine = false;
+  const TriangleMesh *mesh = nullptr;
+
+  static Shape triangles(const TriangleMesh *mesh) {
+    Shape out;
+    out.kind = ShapeKind::mesh;
+    out.mesh = mesh;
+    return out;
+  }
 
   static Shape compound(const Compound *parts) {
     Shape out;
@@ -139,7 +149,8 @@ struct Shape {
       case ShapeKind::cylinder: return std::sqrt(size.x * size.x + size.y * size.y);
       case ShapeKind::hull: return cooked != nullptr ? cooked->reach() : 0.0f;
       // Never solved, so never asked how fast its edge is going.
-      case ShapeKind::heightField: return 0.0f;
+      case ShapeKind::heightField:
+      case ShapeKind::mesh: return 0.0f;
     }
     return 0.0f;
   }
@@ -154,6 +165,7 @@ struct Shape {
     if (affine) return affineBounds(*this, at, rotation);
     switch (kind) {
       case ShapeKind::compound: return compoundBounds(parts, at, rotation);
+      case ShapeKind::mesh: return meshBounds(mesh, at, rotation);
       case ShapeKind::sphere: {
         const Vec3 r{size.x, size.x, size.x};
         return {at - r, at + r};
@@ -248,6 +260,7 @@ struct Shape {
         return {i.x > 0.0f ? 1.0f / i.x : 0.0f, i.y > 0.0f ? 1.0f / i.y : 0.0f,
                 i.z > 0.0f ? 1.0f / i.z : 0.0f};
       }
+      case ShapeKind::mesh:
       case ShapeKind::compound: return {};
       case ShapeKind::plane: return {};
       case ShapeKind::heightField: return {};
@@ -306,6 +319,7 @@ struct Shape {
       case ShapeKind::sphere:
       case ShapeKind::heightField:
       case ShapeKind::hull:
+      case ShapeKind::mesh:
       case ShapeKind::compound: break;
     }
     return sphere(size[0]);

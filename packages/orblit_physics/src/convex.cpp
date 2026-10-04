@@ -51,6 +51,7 @@ Convex::Convex(const Shape &shape, const Vec3 &at, const Quat &rotation)
       break;
     case ShapeKind::plane:
     case ShapeKind::heightField:
+    case ShapeKind::mesh:
     case ShapeKind::compound: break;
   }
   if (shape.affine) {
@@ -64,6 +65,10 @@ Convex::Convex(const Shape &shape, const Vec3 &at, const Quat &rotation)
     radius_ = 0.0f;
     middle_ = toWorld(D3(shape.kind == ShapeKind::hull ? hull_->centre() : Vec3{}));
   }
+}
+
+Convex::Convex(const Facet &triangle) : core_(Core::triangle), triangle_(&triangle) {
+  middle_ = D3((triangle.v[0] + triangle.v[1] + triangle.v[2]) * (1.0f / 3.0f));
 }
 
 Vec3 Convex::worldNormal(const Vec3 &normal) const {
@@ -96,6 +101,7 @@ D3 Convex::coreSupport(const D3 &direction) const {
   const D3 d = toLocal(direction);
   switch (core_) {
     case Core::point: return at_;
+    case Core::triangle: return D3(triangle_->furthest(toVec(direction)));
     case Core::segment: return toWorld({0.0, signOf(d.y) * half_.y, 0.0});
     case Core::box:
       return toWorld({signOf(d.x) * half_.x, signOf(d.y) * half_.y,
@@ -127,8 +133,15 @@ Feature Convex::feature(const Vec3 &direction) const {
   const double distance = std::sqrt(dot(d, d));
   if (affine_ && distance > 0.0) d = d * (1.0 / distance);
   Feature f;
+  if (core_ == Core::triangle) {
+    f.n = 3;
+    for (int k = 0; k < 3; ++k) f.v[k] = triangle_->v[k];
+    f.normal = triangle_->normal;
+    return f;
+  }
   switch (core_) {
-    case Core::point: break;
+    case Core::point:
+    case Core::triangle: break;
     case Core::segment:
       if (std::fabs(d.y) > kEdge) break;
       f.n = 2;

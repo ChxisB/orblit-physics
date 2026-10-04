@@ -64,6 +64,7 @@ float volumeOf(const Shape &of) {
     case ShapeKind::hull: volume = of.cooked->volume(); break;
     case ShapeKind::plane:
     case ShapeKind::heightField:
+    case ShapeKind::mesh:
     case ShapeKind::compound: break;
   }
   if (of.affine) volume *= dot(of.linear.row[0], cross(of.linear.row[1], of.linear.row[2]));

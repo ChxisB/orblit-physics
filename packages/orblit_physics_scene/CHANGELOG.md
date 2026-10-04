@@ -1,3 +1,7 @@
+## 0.9.0
+
+- Simulate scene mesh surfaces with entity and shape scaling, fixed motion, asset cleanup and snapshot bookkeeping.
+
 ## 0.8.0
 
 - Simulate compound body parts and shapeScale from scene files. Rebuild and release compound assets with their bodies and retain them across snapshots.

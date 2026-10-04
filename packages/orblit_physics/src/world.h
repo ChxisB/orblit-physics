@@ -72,6 +72,7 @@ namespace orblit {
 /// the thing that notices when it is not.
 struct Snapshot {
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Compound>> compounds;
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const TriangleMesh>> meshes;
   OrblitPhysicsSettings settings;
   Vec3 gravity;
   Bodies bodies;
@@ -110,6 +111,9 @@ class World {
   bool dropHull(OrblitPhysicsId id);
   bool compound(OrblitPhysicsId id, const OrblitPhysicsPart *parts, uint32_t count);
   bool dropCompound(OrblitPhysicsId id);
+  bool mesh(OrblitPhysicsId id, const float *xyz, uint32_t vertices,
+            const uint32_t *indices, uint32_t count);
+  bool dropMesh(OrblitPhysicsId id);
 
   uint32_t read(const OrblitPhysicsId *ids, uint32_t count, float *out,
                 uint32_t stride, uint32_t offset) const;
@@ -307,6 +311,7 @@ class World {
   /// snapshot, for the same reason ground is.
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Hull>> hulls_;
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Compound>> compounds_;
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const TriangleMesh>> meshes_;
 
   std::vector<Manifold> manifolds_;
   std::vector<PairKey> keys_;

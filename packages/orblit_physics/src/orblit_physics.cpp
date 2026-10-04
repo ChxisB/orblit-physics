@@ -261,3 +261,13 @@ void orblit_physics_stats(const OrblitPhysics *physics,
   physics->world.stats(*out);
   out->stepMicroseconds = physics->stepMicroseconds;
 }
+
+bool orblit_physics_mesh(OrblitPhysics *physics, OrblitPhysicsId id,
+                         const float *xyz, uint32_t vertices,
+                         const uint32_t *indices, uint32_t count) {
+  return physics != nullptr && physics->world.mesh(id, xyz, vertices, indices, count);
+}
+
+bool orblit_physics_mesh_drop(OrblitPhysics *physics, OrblitPhysicsId id) {
+  return physics != nullptr && physics->world.dropMesh(id);
+}
