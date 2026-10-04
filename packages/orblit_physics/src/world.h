@@ -43,6 +43,7 @@
 #include "body.h"
 #include "character.h"
 #include "collide.h"
+#include "compound.h"
 #include "heightfield.h"
 #include "hull.h"
 #include "joint.h"
@@ -70,6 +71,7 @@ namespace orblit {
 /// and the check that restores step 50 into a scene with every feature in it is
 /// the thing that notices when it is not.
 struct Snapshot {
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Compound>> compounds;
   OrblitPhysicsSettings settings;
   Vec3 gravity;
   Bodies bodies;
@@ -106,6 +108,8 @@ class World {
   /// Lets go of a hull. False, and nothing changed, if there is none under
   /// `id` or a body is still made from it.
   bool dropHull(OrblitPhysicsId id);
+  bool compound(OrblitPhysicsId id, const OrblitPhysicsPart *parts, uint32_t count);
+  bool dropCompound(OrblitPhysicsId id);
 
   uint32_t read(const OrblitPhysicsId *ids, uint32_t count, float *out,
                 uint32_t stride, uint32_t offset) const;
@@ -190,6 +194,8 @@ class World {
   /// The shape a command or a cast names, and whether it names one. Not a
   /// height field, which has its own call; not a hull that was never laid; not
   /// a cylinder whose size is not a positive number.
+  bool partFor(const OrblitPhysicsPart &from, Part &out) const;
+
   bool shapeFor(uint32_t kind, const float size[4], OrblitPhysicsId hull,
                 Shape &out) const;
 
@@ -300,6 +306,7 @@ class World {
   /// one is only ever let go of when no body is made from it. Shared with any
   /// snapshot, for the same reason ground is.
   std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Hull>> hulls_;
+  std::unordered_map<OrblitPhysicsId, std::shared_ptr<const Compound>> compounds_;
 
   std::vector<Manifold> manifolds_;
   std::vector<PairKey> keys_;

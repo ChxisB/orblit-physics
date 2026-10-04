@@ -4287,7 +4287,10 @@ void snapshottingHulls() {
   orblit_physics_destroy(other);
 }
 
+void compoundChecks();
+
 int main() {
+  compoundChecks();
   settling();
   capsules();
   casting();

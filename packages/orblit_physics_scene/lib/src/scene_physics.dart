@@ -6,6 +6,7 @@ import 'package:orblit_scene/orblit_scene.dart';
 import 'package:vector_math/vector_math_64.dart';
 
 import 'pose.dart';
+import 'compound_parts.dart';
 
 /// A [ScenePhysics] at one instant, to go back to with [ScenePhysics.restore].
 ///
@@ -30,6 +31,11 @@ final class ScenePhysicsSnapshot {
       _hullIdOf = Map.of(from._hullIdOf),
       _hullKeyOf = Map.of(from._hullKeyOf),
       _nextHull = from._nextHull,
+      _compoundBodies = Set.of(from._compoundBodies),
+      _partHullKeys = {
+        for (final entry in from._partHullKeys.entries)
+          entry.key: Set.of(entry.value),
+      },
       _jointOf = Map.of(from._jointOf),
       _entityOfJoint = Map.of(from._entityOfJoint),
       _held = Map.of(from._held),
@@ -52,6 +58,8 @@ final class ScenePhysicsSnapshot {
   final Map<String, int> _hullIdOf;
   final Map<int, String> _hullKeyOf;
   final int _nextHull;
+  final Set<int> _compoundBodies;
+  final Map<int, Set<String>> _partHullKeys;
   final Map<String, int> _jointOf;
   final Map<int, String> _entityOfJoint;
   final Map<String, ({int a, int b})> _held;
@@ -204,6 +212,8 @@ class ScenePhysics {
 
   /// The key of the hull each body is made of, for the bodies that have one.
   final Map<int, String> _hullKeyOf = {};
+  final Set<int> _compoundBodies = {};
+  final Map<int, Set<String>> _partHullKeys = {};
 
   /// Counted apart from the bodies', and never handed out twice, like them. A
   /// hull laid directly through [physics] wants a negative number.
@@ -463,6 +473,15 @@ class ScenePhysics {
       ..clear()
       ..addAll(snapshot._sharp);
     _next = snapshot._next;
+    _compoundBodies
+      ..clear()
+      ..addAll(snapshot._compoundBodies);
+    _partHullKeys
+      ..clear()
+      ..addAll({
+        for (final entry in snapshot._partHullKeys.entries)
+          entry.key: Set.of(entry.value),
+      });
     _hullIdOf
       ..clear()
       ..addAll(snapshot._hullIdOf);
@@ -506,6 +525,8 @@ class ScenePhysics {
       final number = _bodyOf[id];
       if (number != null) {
         physics.remove(number);
+        if (_compoundBodies.remove(number)) physics.dropCompound(number);
+        _partHullKeys.remove(number);
         gone.add(number);
         _hullKeyOf.remove(number);
       }
@@ -569,11 +590,18 @@ class ScenePhysics {
     scale.absolute();
     final at = world.transform3(body.centre.clone());
     final plane = body.shape == BodyShape.plane;
-    if (body.shape == BodyShape.hull) _layHull(number, body, scale);
+    final compound =
+        body.shape == BodyShape.compound || body.shapeScale != Vector3.all(1);
+    if (body.shape == BodyShape.hull) {
+      _layHull(number, body, compound ? Vector3.all(1) : scale);
+    }
+    final shape = compound && !plane
+        ? _compoundOf(number, body, scale)
+        : _shapeOf(number, body, scale);
 
     physics.add(
       number,
-      shape: _shapeOf(number, body, scale),
+      shape: shape,
       motion: plane ? PhysicsMotion.fixed : _motionOf(body.motion),
       at: [at.x, at.y, at.z],
       rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
@@ -670,7 +698,10 @@ class ScenePhysics {
   /// Takes out of the world the hulls no body is made of any more. A hull is
   /// cooked once and kept while any body names it, and it goes with the last.
   void _dropIdleHulls() {
-    final used = _hullKeyOf.values.toSet();
+    final used = {
+      ..._hullKeyOf.values,
+      for (final keys in _partHullKeys.values) ...keys,
+    };
     // A copy, because a hull that goes is taken out of the map being read.
     for (final MapEntry(:key, :value) in _hullIdOf.entries.toList()) {
       if (!used.contains(key) && physics.dropHull(value)) _hullIdOf.remove(key);
@@ -685,6 +716,8 @@ class ScenePhysics {
   Shape _shapeOf(int number, BodyComponent body, Vector3 scale) {
     final size = body.size;
     switch (body.shape) {
+      case BodyShape.compound:
+        return Shape.compound(_compoundBodies.contains(number) ? number : 0);
       case BodyShape.box:
         return Shape.box(
           size.x.abs() * scale.x / 2,
@@ -715,6 +748,42 @@ class ScenePhysics {
         // places the normal by the body's pose, so it is given unturned here.
         return const Shape.plane(0, 1, 0);
     }
+  }
+
+  Shape _compoundOf(int number, BodyComponent body, Vector3 scale) {
+    final outer = scale.clone()..multiply(body.shapeScale);
+    final parts = <ShapePart>[];
+    try {
+      if (body.shape == BodyShape.compound) {
+        if (body.parts.isEmpty || body.parts.length > 64) {
+          return const Shape.compound(0);
+        }
+        for (final part in body.parts) {
+          parts.add(compoundPart(part, (points) => _partHull(number, points)));
+        }
+      } else {
+        parts.add(ShapePart(shape: _shapeOf(number, body, Vector3.all(1))));
+      }
+      if (physics.layCompound(number, parts: parts, scale: outer.storage)) {
+        _compoundBodies.add(number);
+        return Shape.compound(number);
+      }
+    } on ArgumentError {
+      // Hand-edited invalid geometry stays in the document as an inert body.
+    }
+    _partHullKeys.remove(number);
+    return const Shape.compound(0);
+  }
+
+  int _partHull(int number, List<double> points) {
+    if (points.length % 3 != 0) return 0;
+    final key = points.join(',');
+    (_partHullKeys[number] ??= {}).add(key);
+    if (_hullIdOf[key] case final id?) return id;
+    final id = _nextHull++;
+    if (!physics.layHull(id, points: points)) return 0;
+    _hullIdOf[key] = id;
+    return id;
   }
 
   static PhysicsMotion _motionOf(BodyMotion motion) => switch (motion) {
@@ -991,9 +1060,7 @@ class ScenePhysics {
 
   /// The bodies of every entity [stopSmoothing] has switched off, and of every
   /// entity under one.
-  Set<int> _sharpBodies() => {
-    for (final id in _sharp) ..._bodiesUnder(id),
-  };
+  Set<int> _sharpBodies() => {for (final id in _sharp) ..._bodiesUnder(id)};
 
   /// The bodies of [entity] and of everything under it.
   List<int> _bodiesUnder(String entity) => [

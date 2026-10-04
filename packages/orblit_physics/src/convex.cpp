@@ -50,8 +50,25 @@ Convex::Convex(const Shape &shape, const Vec3 &at, const Quat &rotation)
       middle_ = toWorld(D3(hull_->centre()));
       break;
     case ShapeKind::plane:
-    case ShapeKind::heightField: break;
+    case ShapeKind::heightField:
+    case ShapeKind::compound: break;
   }
+  if (shape.affine) {
+    const Mat3 map = Mat3::rotation(rotation) * shape.linear;
+    for (int i = 0; i < 3; ++i) {
+      axis_[i] = D3(Vec3{map.row[0][i], map.row[1][i], map.row[2][i]});
+    }
+    normals_ = inverse(map).transposed();
+    affine_ = true;
+    rounding_ = radius_;
+    radius_ = 0.0f;
+    middle_ = toWorld(D3(shape.kind == ShapeKind::hull ? hull_->centre() : Vec3{}));
+  }
+}
+
+Vec3 Convex::worldNormal(const Vec3 &normal) const {
+  if (affine_) return normalised(normals_ * normal);
+  return normalised(toVec(toWorld(D3(normal)) - at_));
 }
 
 D3 Convex::toLocal(const D3 &d) const {
@@ -67,6 +84,15 @@ Vec3 Convex::worldPoint(double x, double y, double z) const {
 }
 
 D3 Convex::support(const D3 &direction) const {
+  const D3 core = coreSupport(direction);
+  if (rounding_ <= 0.0f) return core;
+  const D3 own = toLocal(direction);
+  const double distance = std::sqrt(dot(own, own));
+  if (distance <= 0.0) return core;
+  return core + toWorld(own * (rounding_ / distance)) - at_;
+}
+
+D3 Convex::coreSupport(const D3 &direction) const {
   const D3 d = toLocal(direction);
   switch (core_) {
     case Core::point: return at_;
@@ -97,7 +123,9 @@ D3 Convex::support(const D3 &direction) const {
 }
 
 Feature Convex::feature(const Vec3 &direction) const {
-  const D3 d = toLocal(D3(direction));
+  D3 d = toLocal(D3(direction));
+  const double distance = std::sqrt(dot(d, d));
+  if (affine_ && distance > 0.0) d = d * (1.0 / distance);
   Feature f;
   switch (core_) {
     case Core::point: break;
@@ -106,6 +134,11 @@ Feature Convex::feature(const Vec3 &direction) const {
       f.n = 2;
       f.v[0] = worldPoint(0.0, -half_.y, 0.0);
       f.v[1] = worldPoint(0.0, half_.y, 0.0);
+      if (rounding_ > 0.0f) {
+        const Vec3 shift = toVec(support(D3(direction)) - coreSupport(D3(direction)));
+        f.v[0] += shift;
+        f.v[1] += shift;
+      }
       return f;
     case Core::box: return boxFeature(d);
     case Core::cylinder: return cylinderFeature(d);
@@ -150,7 +183,9 @@ Feature Convex::boxFeature(const D3 &d) const {
       sign[k] = along[at][1];
       f.v[i] = corner(sign);
     }
-    f.normal = toVec(axis_[big] * s[big]);
+    Vec3 normal;
+    normal[big] = static_cast<float>(s[big]);
+    f.normal = worldNormal(normal);
     return f;
   }
 
@@ -183,7 +218,7 @@ Feature Convex::cylinderFeature(const D3 &d) const {
       f.v[i] = worldPoint(half_.x * std::cos(angle), top * half_.y,
                           half_.x * std::sin(angle));
     }
-    f.normal = toVec(axis_[1] * top);
+    f.normal = worldNormal({0.0f, static_cast<float>(top), 0.0f});
     return f;
   }
 
@@ -217,7 +252,7 @@ Feature Convex::hullFeature(const D3 &d) const {
       const uint32_t at = loops[facet.first + i * facet.count / f.n];
       f.v[i] = toVec(toWorld(D3(corners[at])));
     }
-    f.normal = toVec(toWorld(D3(facet.normal)) - at_);
+    f.normal = worldNormal(facet.normal);
     return f;
   }
 

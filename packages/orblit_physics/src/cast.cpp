@@ -1,6 +1,7 @@
 #include "cast.h"
 
 #include "collide.h"
+#include "compound.h"
 #include "gjk.h"
 
 namespace orblit {
@@ -27,6 +28,7 @@ Placed movedTo(const Placed &of, const Vec3 &at) { return {of.shape, at, of.rota
 /// Used only to find a direction worth measuring along, never to answer a
 /// distance, so the iteration below can stop whenever it likes.
 Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
+  if (of.shape.affine) return nearestOnCore(Convex(of.shape, of.at, of.rotation), to);
   switch (of.shape.kind) {
     case ShapeKind::sphere: return of.at;
     case ShapeKind::capsule: {
@@ -43,6 +45,7 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
       return of.at + rotate(of.rotation, inside);
     }
     case ShapeKind::cylinder:
+    case ShapeKind::compound:
     case ShapeKind::hull:
       return nearestOnCore(Convex(of.shape, of.at, of.rotation), to);
     case ShapeKind::plane:
@@ -282,6 +285,7 @@ bool leavingIt(const Journey &journey, const Impact &impact) {
 } // namespace
 
 Vec3 support(const Placed &of, const Vec3 &direction) {
+  if (of.shape.affine) return toVec(Convex(of.shape, of.at, of.rotation).support(D3(direction)));
   switch (of.shape.kind) {
     case ShapeKind::sphere:
       return of.at + normalised(direction) * of.shape.radius();
@@ -301,6 +305,7 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
       }
       return furthest;
     }
+    case ShapeKind::compound: return supportParts(of, direction);
     case ShapeKind::cylinder:
     case ShapeKind::hull:
       return toVec(Convex(of.shape, of.at, of.rotation).support(D3(direction)));
@@ -312,6 +317,9 @@ Vec3 support(const Placed &of, const Vec3 &direction) {
 
 bool sweep(const Placed &moving, const Vec3 &direction, float distance,
            const Placed &fixed, Impact &out) {
+  if (moving.shape.kind == ShapeKind::compound || fixed.shape.kind == ShapeKind::compound) {
+    return sweepParts(moving, direction, distance, fixed, out);
+  }
   // Casting a half-space is asking where an infinite flat thing first touches
   // something, which has no answer worth giving, and ground is no better.
   if (moving.shape.kind == ShapeKind::plane) return false;

@@ -13,6 +13,7 @@
 #include "maths.h"
 #include "orblit_physics.h"
 #include "shape.h"
+#include "compound.h"
 
 namespace orblit {
 
@@ -101,6 +102,9 @@ inline Mat3 inverseInertiaOf(const Shape &shape, float mass,
     return Mat3::diagonal({1.0f / given.x, 1.0f / given.y, 1.0f / given.z});
   }
 
+  if (shape.kind == ShapeKind::compound || shape.affine) {
+    return inverse(aboutCentre(inertiaOf(shape) * mass, mass, controls.centre));
+  }
   if (shape.kind == ShapeKind::hull) {
     return inverse(aboutCentre(hullInertia(shape, mass), mass, controls.centre));
   }

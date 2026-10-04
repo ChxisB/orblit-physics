@@ -1,12 +1,5 @@
-// What a body is, geometrically: its extent, its bounds and how hard it is to
-// spin.
-//
-// A shape here is a few floats and a tag rather than a class with virtuals.
-// There are seven of them, every one is the same size, and a body store that
-// can memcpy its shapes is a body store that can be handed about as a column.
-// Ground, the one shape too big for a few floats, is a pointer to heights the
-// world owns, not a base class. A hull is the same: a pointer to corners the
-// world owns, which nothing changes once they are cooked.
+// Geometry and mass of a body. Cooked hulls, ground and compounds are
+// immutable assets owned by the world and shared with snapshots.
 
 #ifndef ORBLIT_PHYSICS_SHAPE_H
 #define ORBLIT_PHYSICS_SHAPE_H
@@ -18,6 +11,13 @@
 
 namespace orblit {
 
+class Compound;
+Vec3 compoundCentre(const Compound *of);
+float compoundReach(const Compound *of);
+Bounds compoundBounds(const Compound *of, const Vec3 &at, const Quat &rotation);
+Bounds affineBounds(const struct Shape &of, const Vec3 &at, const Quat &rotation);
+
+
 enum class ShapeKind : uint32_t {
   sphere = ORBLIT_PHYSICS_SPHERE,
   box = ORBLIT_PHYSICS_BOX,
@@ -26,6 +26,7 @@ enum class ShapeKind : uint32_t {
   heightField = ORBLIT_PHYSICS_HEIGHT_FIELD,
   cylinder = ORBLIT_PHYSICS_CYLINDER,
   hull = ORBLIT_PHYSICS_HULL,
+  compound = ORBLIT_PHYSICS_COMPOUND,
 };
 
 struct Shape {
@@ -43,6 +44,18 @@ struct Shape {
 
   /// Hull: the cooked corners and faces, owned by the world. Unused otherwise.
   const Hull *cooked = nullptr;
+  const Compound *parts = nullptr;
+
+  /// A convex part's linear map. Bounds and support use the same map.
+  Mat3 linear = Mat3::diagonal({1.0f, 1.0f, 1.0f});
+  bool affine = false;
+
+  static Shape compound(const Compound *parts) {
+    Shape out;
+    out.kind = ShapeKind::compound;
+    out.parts = parts;
+    return out;
+  }
 
   static Shape sphere(float radius) {
     return {ShapeKind::sphere, {radius, radius, radius}, 0.0f};
@@ -92,7 +105,10 @@ struct Shape {
   /// every shape that is symmetric about it, which is all of them but a hull,
   /// whose corners are wherever they were given.
   Vec3 centre() const {
-    return kind == ShapeKind::hull && cooked != nullptr ? cooked->centre() : Vec3{};
+    if (kind == ShapeKind::compound) return compoundCentre(parts);
+    const Vec3 own = kind == ShapeKind::hull && cooked != nullptr
+                         ? cooked->centre() : Vec3{};
+    return affine ? linear * own : own;
   }
 
   /// The capsule's axis in the world, as a half-length vector from its centre.
@@ -110,7 +126,12 @@ struct Shape {
   /// properly, and sleeping uses it to find the fastest-moving point of a
   /// spinning body.
   float reach() const {
+    if (affine) {
+      const Bounds bounds = boundsAt({}, {});
+      return length(maxPerAxis(absPerAxis(bounds.low), absPerAxis(bounds.high)));
+    }
     switch (kind) {
+      case ShapeKind::compound: return compoundReach(parts);
       case ShapeKind::sphere: return size.x;
       case ShapeKind::box: return length(size);
       case ShapeKind::plane: return 0.0f;
@@ -130,7 +151,9 @@ struct Shape {
   /// overlap of bounds, and pretending otherwise would mean a bounds the size
   /// of the world that overlaps everything.
   Bounds boundsAt(const Vec3 &at, const Quat &rotation) const {
+    if (affine) return affineBounds(*this, at, rotation);
     switch (kind) {
+      case ShapeKind::compound: return compoundBounds(parts, at, rotation);
       case ShapeKind::sphere: {
         const Vec3 r{size.x, size.x, size.x};
         return {at - r, at + r};
@@ -225,6 +248,7 @@ struct Shape {
         return {i.x > 0.0f ? 1.0f / i.x : 0.0f, i.y > 0.0f ? 1.0f / i.y : 0.0f,
                 i.z > 0.0f ? 1.0f / i.z : 0.0f};
       }
+      case ShapeKind::compound: return {};
       case ShapeKind::plane: return {};
       case ShapeKind::heightField: return {};
       // A hull's inertia is a whole matrix, not three numbers, and is asked
@@ -281,7 +305,8 @@ struct Shape {
       case ShapeKind::cylinder: return cylinder(size[0], size[1]);
       case ShapeKind::sphere:
       case ShapeKind::heightField:
-      case ShapeKind::hull: break;
+      case ShapeKind::hull:
+      case ShapeKind::compound: break;
     }
     return sphere(size[0]);
   }

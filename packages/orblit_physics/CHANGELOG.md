@@ -1,3 +1,7 @@
+## 0.10.0
+
+- Add shared compound shapes, local affine scaling and placement, combined mass and inertia, compound casts and overlaps, and snapshot ownership.
+
 ## 0.9.0
 
 - A cylinder: `Shape.cylinder(radius, halfHeight)`, flat at both ends and

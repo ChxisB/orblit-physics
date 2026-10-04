@@ -1,3 +1,7 @@
+## 0.8.0
+
+- Simulate compound body parts and shapeScale from scene files. Rebuild and release compound assets with their bodies and retain them across snapshots.
+
 ## 0.7.0
 
 - A body can be a `BodyShape.cylinder` or a `BodyShape.hull`. A cylinder

@@ -8,7 +8,7 @@
 // a command still takes effect the moment it is given.
 
 import 'dart:ffi';
-import 'dart:math' show pi;
+import 'dart:math' show pi, sqrt;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -69,6 +69,10 @@ final class Shape {
   /// nothing.
   const Shape.hull(int id) : this._(7, 0.0, 0.0, 0.0, 0.0, hull: id);
 
+  /// The parts laid under `id` with [Physics.layCompound]. The origin stays
+  /// where the parts were placed; a free body turns about their combined mass.
+  const Shape.compound(int id) : this._(8, 0.0, 0.0, 0.0, 0.0, hull: id);
+
   /// An endless flat surface: everything behind the normal `nx, ny, nz` at
   /// `offset` along it is solid. Never dynamic — a half-space has no centre
   /// to spin about.
@@ -85,8 +89,69 @@ final class Shape {
   final double z;
   final double w;
 
-  /// The hull a [Shape.hull] names, and zero for every other kind.
+  /// The asset a [Shape.hull] or [Shape.compound] names, and zero otherwise.
   final int hull;
+}
+
+/// A convex shape placed inside a compound. Scaling is applied before turning
+/// and translating. A single part provides a scaled or offset shape.
+final class ShapePart {
+  ShapePart({
+    required this.shape,
+    List<double> at = const [0, 0, 0],
+    List<double> rotation = const [0, 0, 0, 1],
+    List<double> scale = const [1, 1, 1],
+  }) : at = _vector(at, 3),
+       rotation = _vector(rotation, 4),
+       scale = _vector(scale, 3) {
+    if (!const [1, 2, 4, 6, 7].contains(shape.kind)) {
+      throw ArgumentError('A part must be convex.');
+    }
+    if (this.scale.any((v) => v <= 0) || this.rotation.every((v) => v == 0)) {
+      throw ArgumentError('Scale must be positive and rotation nonzero.');
+    }
+  }
+
+  final Shape shape;
+  final List<double> at;
+  final List<double> rotation;
+  final List<double> scale;
+
+  static List<double> _vector(List<double> from, int count) {
+    if (from.length != count || from.any((v) => !v.isFinite)) {
+      throw ArgumentError('Expected $count finite numbers.');
+    }
+    return List.unmodifiable(from);
+  }
+
+  void _write(native.OrblitPhysicsPart out, List<double> outer) {
+    out.shape = shape.kind;
+    out.hull = shape.hull;
+    final size = [shape.x, shape.y, shape.z, shape.w];
+    for (var i = 0; i < 4; i++) {
+      out.size[i] = size[i];
+    }
+    for (var i = 0; i < 3; i++) {
+      out.at[i] = at[i] * outer[i];
+    }
+    final length = sqrt(rotation.fold<double>(0, (sum, v) => sum + v * v));
+    final x = rotation[0] / length, y = rotation[1] / length;
+    final z = rotation[2] / length, w = rotation[3] / length;
+    final turn = [
+      1 - 2 * (y * y + z * z),
+      2 * (x * y - z * w),
+      2 * (x * z + y * w),
+      2 * (x * y + z * w),
+      1 - 2 * (x * x + z * z),
+      2 * (y * z - x * w),
+      2 * (x * z - y * w),
+      2 * (y * z + x * w),
+      1 - 2 * (x * x + y * y),
+    ];
+    for (var i = 0; i < 9; i++) {
+      out.linear[i] = outer[i ~/ 3] * turn[i] * scale[i % 3];
+    }
+  }
 }
 
 /// Which layers a body is in, and which it wants to be told about.
@@ -923,6 +988,41 @@ class Physics {
     } finally {
       calloc.free(xyz);
     }
+  }
+
+  /// Keeps 1 to 64 convex parts under `id`, shared by bodies and snapshots.
+  /// Parts have uniform density. Overlapping parts count their mass twice.
+  /// `scale` stretches the whole compound, including its offsets and turns.
+  /// False for invalid geometry or an existing id. A hull part must be laid
+  /// first. Nested compounds, ground and planes cannot be parts.
+  bool layCompound(
+    int id, {
+    required List<ShapePart> parts,
+    List<double> scale = const [1, 1, 1],
+  }) {
+    _requireAlive();
+    _flush();
+    final outer = ShapePart._vector(scale, 3);
+    if (outer.any((v) => v <= 0) || parts.isEmpty || parts.length > 64) {
+      return false;
+    }
+    final nativeParts = calloc<native.OrblitPhysicsPart>(parts.length);
+    try {
+      for (var i = 0; i < parts.length; i++) {
+        parts[i]._write(nativeParts[i], outer);
+      }
+      return native.physicsCompound(_alive, id, nativeParts, parts.length);
+    } finally {
+      calloc.free(nativeParts);
+    }
+  }
+
+  /// Removes an unused compound. Remove its bodies first. Hulls it held can
+  /// then be dropped too. A snapshot still retains its own copy.
+  bool dropCompound(int id) {
+    _requireAlive();
+    _flush();
+    return native.physicsCompoundDrop(_alive, id);
   }
 
   /// Takes a hull away and answers whether it did. False for an id that names

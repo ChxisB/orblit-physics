@@ -29,4 +29,5 @@ export 'src/world.dart'
         PhysicsSnapshot,
         PhysicsStats,
         PhysicsZone,
-        Shape;
+        Shape,
+        ShapePart;

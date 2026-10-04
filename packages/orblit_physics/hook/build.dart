@@ -22,6 +22,8 @@ void main(List<String> args) async {
         root.resolve('src/heightfield.cpp').toFilePath(),
         root.resolve('src/inspect.cpp').toFilePath(),
         root.resolve('src/hull.cpp').toFilePath(),
+        root.resolve('src/compound.cpp').toFilePath(),
+        root.resolve('src/compound_world.cpp').toFilePath(),
         root.resolve('src/convex.cpp').toFilePath(),
         root.resolve('src/gjk.cpp').toFilePath(),
         root.resolve('src/convex_collide.cpp').toFilePath(),

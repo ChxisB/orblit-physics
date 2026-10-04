@@ -503,6 +503,9 @@ bool World::dropHull(OrblitPhysicsId id) {
   for (uint32_t row = 0; row < bodies_.count(); ++row) {
     if (bodies_.shape(row).cooked == dropped) return false;
   }
+  for (const auto &entry : compounds_) {
+    if (entry.second->uses(dropped)) return false;
+  }
   hulls_.erase(found);
   return true;
 }
@@ -511,6 +514,12 @@ bool World::shapeFor(uint32_t kind, const float size[4], OrblitPhysicsId hull,
                      Shape &out) const {
   if (kind == ORBLIT_PHYSICS_HEIGHT_FIELD) return false;
 
+  if (kind == ORBLIT_PHYSICS_COMPOUND) {
+    const auto found = compounds_.find(hull);
+    if (found == compounds_.end()) return false;
+    out = Shape::compound(found->second.get());
+    return true;
+  }
   if (kind == ORBLIT_PHYSICS_HULL) {
     const auto found = hulls_.find(hull);
     if (found == hulls_.end()) return false;

@@ -70,6 +70,22 @@ final class OrblitPhysicsCommand extends Struct {
   external int hull;
 }
 
+/// `OrblitPhysicsPart`, field for field.
+final class OrblitPhysicsPart extends Struct {
+  @Uint32()
+  external int shape;
+  @Uint32()
+  external int reserved;
+  @Uint64()
+  external int hull;
+  @Array(4)
+  external Array<Float> size;
+  @Array(3)
+  external Array<Float> at;
+  @Array(9)
+  external Array<Float> linear;
+}
+
 /// `OrblitPhysicsEvent`, field for field.
 final class OrblitPhysicsEvent extends Struct {
   @Uint32()
@@ -759,3 +775,24 @@ external void physicsStats(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsStats> out,
 );
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Uint64,
+    Pointer<OrblitPhysicsPart>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_compound', assetId: kOrblitPhysicsAsset)
+external bool physicsCompound(
+  Pointer<OrblitPhysicsStruct> physics,
+  int id,
+  Pointer<OrblitPhysicsPart> parts,
+  int count,
+);
+
+@Native<Bool Function(Pointer<OrblitPhysicsStruct>, Uint64)>(
+  symbol: 'orblit_physics_compound_drop',
+  assetId: kOrblitPhysicsAsset,
+)
+external bool physicsCompoundDrop(Pointer<OrblitPhysicsStruct> physics, int id);

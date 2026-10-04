@@ -330,3 +330,28 @@ open source. Use it, fork it and ship games with it, including commercial ones.
 Your game stays yours, and the licence does not reach into it. What it asks is
 that changes to this repository's own files ship under the same licence, so
 engine work stays in the open.
+
+## Compound and scaled shapes
+
+`layCompound(id, parts: [...])` keeps 1 to 64 `ShapePart` values under an id
+for `Shape.compound(id)` to name. Each part is a convex primitive or a laid
+hull, with local `at`, `rotation` in xyzw order, and positive `scale`.
+Scale is applied before turning and placement. An outer `scale` stretches the
+whole compound, including rotated parts and their offsets. One part provides
+a scaled or offset shape. Nonuniform scaling stretches rounded geometry
+exactly. The gaps between parts stay empty for collisions and queries.
+
+Parts share one body, its material and its events. Mass is distributed by
+volume at uniform density, with a combined inertia tensor. Overlaps count
+mass twice. Four contact points remain the budget for each pair of bodies.
+Planes, height fields and nested compounds cannot be parts.
+
+Remove bodies before `dropCompound`. A hull retained by a compound cannot be
+dropped until that compound goes. Snapshots retain both assets independently.
+
+In a scene, `BodyShape.compound` reads `BodyComponent.parts`, a list of
+`BodyPart` values with local centre, quaternion rotation and scale. The
+body's `shapeScale` stretches its collision geometry independently of its
+visual transform. Compounds and explicit shapeScale use exact scaling.
+Ordinary rounded bodies with default shapeScale retain their previous
+entity sizing rules. Invalid parts remain editable as an inert body.

@@ -94,6 +94,9 @@ typedef enum {
   /// whose origin is at its feet is placed by its feet and tips about its
   /// middle, and nothing about the mesh has to be moved to make that so.
   ORBLIT_PHYSICS_HULL = 7,
+
+  /// A compound laid under the command or cast's `hull` id.
+  ORBLIT_PHYSICS_COMPOUND = 8,
 } OrblitPhysicsShapeKind;
 
 typedef enum {
@@ -262,7 +265,8 @@ typedef struct {
   bool stay;
   bool _reserved;
 
-  /// CREATE: the hull of a body whose `shape` is ORBLIT_PHYSICS_HULL, as laid
+  /// CREATE: the compound id when `shape` is ORBLIT_PHYSICS_COMPOUND.
+  /// Otherwise the hull of a body whose `shape` is ORBLIT_PHYSICS_HULL, as laid
   /// with `orblit_physics_hull`. A CREATE naming a hull that was not laid
   /// makes nothing.
   OrblitPhysicsId hull;
@@ -511,7 +515,8 @@ typedef struct {
   /// hit itself at no distance at all and never see anything else.
   OrblitPhysicsId ignore;
 
-  /// The hull to cast, when `shape` is ORBLIT_PHYSICS_HULL, as laid with
+  /// The compound id when `shape` is ORBLIT_PHYSICS_COMPOUND.
+  /// Otherwise the hull to cast, when `shape` is ORBLIT_PHYSICS_HULL, as laid with
   /// `orblit_physics_hull`. A cast naming one that was not laid meets nothing.
   OrblitPhysicsId hull;
 } OrblitPhysicsCast;
@@ -651,6 +656,29 @@ typedef struct {
 bool orblit_physics_ground(OrblitPhysics *physics,
                            const OrblitPhysicsGround *ground);
 
+/// One convex part of a compound. Scale and turn are stored together in a
+/// row-major matrix, applied before `at`. Planes, ground and compounds are
+/// refused. A hull must already be laid under `hull`.
+typedef struct {
+  uint32_t shape;
+  uint32_t reserved;
+  OrblitPhysicsId hull;
+  float size[4];
+  float at[3];
+  float linear[9];
+} OrblitPhysicsPart;
+
+/// Keeps 1 to 64 convex parts under `id`. Each part has uniform density;
+/// overlapping parts count their mass twice. Parts retain their own contacts
+/// and the spaces between them remain empty. The compound is immutable.
+/// False for an existing or zero id, invalid geometry, non-finite numbers or
+/// a singular or reversing transform. Bodies and snapshots share the asset.
+bool orblit_physics_compound(OrblitPhysics *physics, OrblitPhysicsId id,
+                             const OrblitPhysicsPart *parts, uint32_t count);
+
+/// Refuses removal while any body uses the compound.
+bool orblit_physics_compound_drop(OrblitPhysics *physics, OrblitPhysicsId id);
+
 // ------------------------------------------------------------------ hulls ---
 
 /// Cooks `count` points, three floats each, into the convex hull round them,
@@ -678,7 +706,7 @@ bool orblit_physics_hull(OrblitPhysics *physics, OrblitPhysicsId id,
                          const float *xyz, uint32_t count);
 
 /// Takes a hull away, and returns whether it did. False for an id that names
-/// no hull, and for one that a body still uses: take the bodies away first.
+/// no hull, and for one that a body or compound still uses. Remove those first.
 bool orblit_physics_hull_drop(OrblitPhysics *physics, OrblitPhysicsId id);
 
 // ------------------------------------------------------------------ zones ---

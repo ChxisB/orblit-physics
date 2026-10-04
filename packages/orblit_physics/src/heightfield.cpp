@@ -429,9 +429,14 @@ struct Probe {
 
 void touch(const Facet &f, const Probe &probe, float floor,
            std::vector<Candidate> &into) {
+  if (probe.shape.affine) {
+    convexOnFace(f, probe.convex, into);
+    return;
+  }
   switch (probe.shape.kind) {
     case ShapeKind::box: boxAgainst(f, probe.box, floor, into); break;
     case ShapeKind::cylinder:
+    case ShapeKind::compound:
     case ShapeKind::hull: convexOnFace(f, probe.convex, into); break;
     case ShapeKind::sphere:
     case ShapeKind::capsule:

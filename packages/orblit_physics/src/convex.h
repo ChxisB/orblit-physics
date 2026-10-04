@@ -66,6 +66,8 @@ class Convex {
   enum class Core { point, segment, box, cylinder, hull };
 
   D3 toLocal(const D3 &direction) const;
+  D3 coreSupport(const D3 &direction) const;
+  Vec3 worldNormal(const Vec3 &normal) const;
   D3 toWorld(const D3 &local) const;
   Vec3 worldPoint(double x, double y, double z) const;
 
@@ -80,6 +82,9 @@ class Convex {
   Vec3 half_;
   float radius_ = 0.0f;
   const Hull *hull_ = nullptr;
+  float rounding_ = 0.0f;
+  Mat3 normals_;
+  bool affine_ = false;
 };
 
 } // namespace orblit

@@ -55,6 +55,16 @@ bool orblit_physics_ground(OrblitPhysics *physics,
   return physics->world.ground(*ground);
 }
 
+bool orblit_physics_compound(OrblitPhysics *physics, OrblitPhysicsId id,
+                             const OrblitPhysicsPart *parts, uint32_t count) {
+  if (physics == nullptr) return false;
+  return physics->world.compound(id, parts, count);
+}
+
+bool orblit_physics_compound_drop(OrblitPhysics *physics, OrblitPhysicsId id) {
+  return physics != nullptr && physics->world.dropCompound(id);
+}
+
 bool orblit_physics_hull(OrblitPhysics *physics, OrblitPhysicsId id,
                          const float *xyz, uint32_t count) {
   if (physics == nullptr) return false;

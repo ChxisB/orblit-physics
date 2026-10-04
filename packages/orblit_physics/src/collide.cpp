@@ -1,5 +1,8 @@
 #include "collide.h"
 
+#include "cast.h"
+#include "compound.h"
+
 #include "convex.h"
 #include "convex_collide.h"
 
@@ -666,7 +669,7 @@ bool capsuleBox(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
 /// The kinds with no routine for each pair. They meet everything through the
 /// one in `convex_collide.h`, or the ground's, or a plane's.
 bool isGeneral(const Shape &s) {
-  return s.kind == ShapeKind::cylinder || s.kind == ShapeKind::hull;
+  return s.affine || s.kind == ShapeKind::cylinder || s.kind == ShapeKind::hull;
 }
 
 /// A pair in which at least one shape is `isGeneral`.
@@ -692,6 +695,9 @@ bool general(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
 bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
              const Vec3 &atB, const Quat &rotB, Manifold &out) {
   out.count = 0;
+  if (a.kind == ShapeKind::compound || b.kind == ShapeKind::compound) {
+    return collideParts({a, atA, rotA}, {b, atB, rotB}, out);
+  }
   if (isGeneral(a) || isGeneral(b)) return general(a, atA, rotA, b, atB, rotB, out);
   switch (a.kind) {
     case ShapeKind::sphere:
@@ -704,6 +710,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
+        case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -719,6 +726,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
+        case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -735,6 +743,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
           return flipped(capsulePlane(b, atB, rotB, a, atA, rotA, out), out);
         case ShapeKind::heightField: return false;
         case ShapeKind::cylinder:
+        case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -751,6 +760,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::heightField:
           return collideGround(a, atA, rotA, b, atB, rotB, out);
         case ShapeKind::cylinder:
+        case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
@@ -763,10 +773,12 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
         case ShapeKind::plane:
         case ShapeKind::heightField: return false;
         case ShapeKind::cylinder:
+        case ShapeKind::compound:
         case ShapeKind::hull: break;
       }
       return false;
     case ShapeKind::cylinder:
+    case ShapeKind::compound:
     case ShapeKind::hull: break;
   }
   return false;
