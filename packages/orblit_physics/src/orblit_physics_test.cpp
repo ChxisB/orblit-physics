@@ -3,10 +3,12 @@
 // tool/check_native.sh, not by the package — Dart's tests cover the same
 // ground from the other side of the hook.
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <random>
 #include <vector>
 
 #include "orblit_physics.h"
@@ -4290,6 +4292,162 @@ void snapshottingHulls() {
 void compoundChecks();
 void meshChecks();
 
+using Triple = std::array<double, 3>;
+
+Triple operator+(const Triple &a, const Triple &b) {
+  return {a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+}
+
+Triple operator*(const Triple &a, double k) {
+  return {a[0] * k, a[1] * k, a[2] * k};
+}
+
+double dot(const Triple &a, const Triple &b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+Triple cross(const Triple &a, const Triple &b) {
+  return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+          a[0] * b[1] - a[1] * b[0]};
+}
+
+/// `v` turned by the unit quaternion `q`, given as x, y, z, w.
+Triple turned(const double q[4], const Triple &v) {
+  const Triple u = {q[0], q[1], q[2]};
+  const Triple t = cross(u, v) * 2.0;
+  return v + t * q[3] + cross(u, t);
+}
+
+/// A turn about a random axis by a random angle, as x, y, z, w, from a
+/// generator whose sequence the standard fixes.
+void randomTurn(std::mt19937 &dice, double q[4]) {
+  const auto between = [&dice] { return dice() / 4294967295.0 * 2.0 - 1.0; };
+  Triple axis = {between(), between(), between() + 0.01};
+  axis = axis * (1.0 / std::sqrt(dot(axis, axis)));
+  const double angle = 3.0 * between();
+  for (int i = 0; i < 3; ++i) q[i] = axis[i] * std::sin(angle / 2.0);
+  q[3] = std::cos(angle / 2.0);
+}
+
+/// How far a point is outside a box centred on the origin, nothing if inside.
+/// The box's sides run along `axes` and reach `half` along each.
+double outsideBox(const Triple &p, const Triple axes[3], const Triple &half) {
+  double squared = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    const double past = std::fabs(dot(p, axes[i])) - half[i];
+    if (past > 0.0) squared += past * past;
+  }
+  return std::sqrt(squared);
+}
+
+/// The shortest push that takes a segment out of a box it passes through. The
+/// way out of that overlap is across one of six planes: a side of the box, or
+/// one that holds the segment and an edge of the box.
+double pushOutOfBox(const Triple &centre, const Triple &reach,
+                    const Triple axes[3], const Triple &half) {
+  double least = 1.0e9;
+  for (int k = 0; k < 6; ++k) {
+    Triple along = k < 3 ? axes[k] : cross(reach, axes[k - 3]);
+    const double size = std::sqrt(dot(along, along));
+    if (size < 1.0e-6) continue;
+    along = along * (1.0 / size);
+    double boxReach = 0.0;
+    for (int i = 0; i < 3; ++i) boxReach += half[i] * std::fabs(dot(axes[i], along));
+    const double overlap =
+        std::fabs(dot(reach, along)) + boxReach - std::fabs(dot(centre, along));
+    least = std::fmin(least, overlap);
+  }
+  return least;
+}
+
+/// How deep a capsule overlaps a box, or a negative number for how far apart
+/// they are. Worked out from the shapes alone, a slow way and an exact one,
+/// to be set against what the engine says.
+double capsuleInBox(const Triple &centre, const Triple &reach, double radius,
+                    const Triple axes[3], const Triple &half) {
+  double nearest = 1.0e9;
+  for (int i = 0; i <= 4000; ++i) {
+    const double along = -1.0 + 2.0 * i / 4000.0;
+    nearest = std::fmin(nearest, outsideBox(centre + reach * along, axes, half));
+  }
+  if (nearest > 1.0e-3) return radius - nearest;
+  return radius + pushOutOfBox(centre, reach, axes, half);
+}
+
+void capsulesAgainstBoxes() {
+  OrblitPhysicsSettings still;
+  orblit_physics_defaults(&still);
+  still.gravity[1] = 0.0f;
+  still.sleeping = false;
+
+  const double radius = 0.3;
+  const double halfHeight = 0.6;
+  const Triple half = {0.5, 0.4, 0.6};
+
+  std::mt19937 dice(11);
+  const auto between = [&dice] { return dice() / 4294967295.0 * 2.0 - 1.0; };
+
+  int judged = 0;
+  int wrong = 0;
+  double worst = 0.0;
+  for (int pair = 0; pair < 2000; ++pair) {
+    double boxTurn[4];
+    double capsuleTurn[4];
+    randomTurn(dice, boxTurn);
+    randomTurn(dice, capsuleTurn);
+    const Triple at = {1.5 * between(), 1.5 * between(), 1.5 * between()};
+
+    const Triple axes[3] = {turned(boxTurn, {1, 0, 0}), turned(boxTurn, {0, 1, 0}),
+                            turned(boxTurn, {0, 0, 1})};
+    const Triple reach = turned(capsuleTurn, {0, 1, 0}) * halfHeight;
+    const double truth = capsuleInBox(at, reach, radius, axes, half);
+
+    // A pair that only just touches could be called either way.
+    if (std::fabs(truth) < 2.0e-3) continue;
+    ++judged;
+
+    OrblitPhysics *physics = orblit_physics_create(&still);
+    OrblitPhysicsCommand box = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+    box.size[0] = static_cast<float>(half[0]);
+    box.size[1] = static_cast<float>(half[1]);
+    box.size[2] = static_cast<float>(half[2]);
+    box.motion = ORBLIT_PHYSICS_STATIC;
+    OrblitPhysicsCommand capsule =
+        capsuleAt(2, static_cast<float>(radius), static_cast<float>(halfHeight),
+                  static_cast<float>(at[0]), static_cast<float>(at[1]),
+                  static_cast<float>(at[2]));
+    for (int i = 0; i < 4; ++i) {
+      box.rotation[i] = static_cast<float>(boxTurn[i]);
+      capsule.rotation[i] = static_cast<float>(capsuleTurn[i]);
+    }
+    submit(physics, box);
+    submit(physics, capsule);
+    orblit_physics_step(physics, kStep);
+
+    // The depth of the pair is its deepest point's, and no point means no touch.
+    const Listed listed = listContacts(physics);
+    double reported = -1.0;
+    for (const OrblitPhysicsContact &point : listed.points) {
+      reported = std::fmax(reported, point.depth);
+    }
+    orblit_physics_destroy(physics);
+
+    const bool touching = truth > 0.0;
+    const bool missed = touching != (reported >= 0.0);
+    const double off = touching ? std::fabs(reported - truth) : 0.0;
+    if (missed || off > 3.0e-3) {
+      ++wrong;
+      worst = std::fmax(worst, missed ? 1.0 : off);
+    }
+  }
+  if (wrong > 0) {
+    std::printf("      %d of %d pairs wrong, worst %.4f\n", wrong, judged, worst);
+  }
+  check(judged > 1500, "enough random capsules and boxes were judged to mean something");
+  check(wrong == 0,
+        "a capsule meets a box where the shapes meet, and as deep as they overlap");
+}
+
 int main() {
   compoundChecks();
   meshChecks();
@@ -4382,6 +4540,7 @@ int main() {
   walkingOnConvex();
   castingConvex();
   snapshottingHulls();
+  capsulesAgainstBoxes();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;
