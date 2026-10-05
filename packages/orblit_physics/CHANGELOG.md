@@ -1,3 +1,8 @@
+## 0.11.1
+
+- Correct capsule contacts with rotated boxes and overlapping interiors.
+  Contacts use the convex solver, with exact depth for rounded ends.
+
 ## 0.11.0
 
 - Add fixed two-sided triangle meshes with spatial pruning, welded seams, convex queries, contacts and snapshot ownership.

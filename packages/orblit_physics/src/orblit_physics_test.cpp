@@ -4436,6 +4436,10 @@ void capsulesAgainstBoxes() {
     const bool missed = touching != (reported >= 0.0);
     const double off = touching ? std::fabs(reported - truth) : 0.0;
     if (missed || off > 3.0e-3) {
+      std::printf("      pair %d: reference %.8f, reported %.8f\n", pair, truth, reported);
+      std::printf("      centre %.9f %.9f %.9f\n", at[0], at[1], at[2]);
+      std::printf("      box turn %.9f %.9f %.9f %.9f\n", boxTurn[0], boxTurn[1], boxTurn[2], boxTurn[3]);
+      std::printf("      capsule turn %.9f %.9f %.9f %.9f\n", capsuleTurn[0], capsuleTurn[1], capsuleTurn[2], capsuleTurn[3]);
       ++wrong;
       worst = std::fmax(worst, missed ? 1.0 : off);
     }

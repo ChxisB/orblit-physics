@@ -5,6 +5,7 @@
 
 #include "convex.h"
 #include "convex_collide.h"
+#include "gjk.h"
 
 namespace orblit {
 namespace {
@@ -556,112 +557,16 @@ bool capsuleCapsule(const Shape &a, const Vec3 &pa, const Quat &qa,
   return true;
 }
 
-/// The nearest point of a box to `to`, both in the box's own frame.
-Vec3 closestInBox(const Vec3 &half, const Vec3 &to) {
-  return {clamped(to.x, -half.x, half.x), clamped(to.y, -half.y, half.y),
-          clamped(to.z, -half.z, half.z)};
-}
-
 bool capsuleBox(const Shape &a, const Vec3 &pa, const Quat &qa, const Shape &b,
                 const Vec3 &pb, const Quat &qb, Manifold &out) {
-  // All of this happens in the box's own frame, where a box is an interval on
-  // each axis and the nearest point in it is three clamps.
-  const Vec3 centre = unrotate(qb, pa - pb);
-  const Vec3 half = unrotate(qb, a.axisAt(qa));
-  const Vec3 extent = b.size;
-  const float radius = a.radius();
-
-  // The nearest pair of points between the segment and the box, found by
-  // alternating: clamp the current guess into the box, then slide along the
-  // segment to whatever is nearest that. Each step can only shorten the
-  // distance, so it settles rather than wandering, and it is within rounding
-  // of the answer long before the fourth pass.
-  Vec3 inBox = closestInBox(extent, centre);
-  Vec3 onSegment = centre;
-  for (int i = 0; i < 4; ++i) {
-    onSegment = closestOnSegment(centre, half, inBox);
-    inBox = closestInBox(extent, onSegment);
-  }
-
-  Vec3 n; // Out of the box, towards the capsule, still in the box's frame.
-  Vec3 at;
-  float depth;
-  const float squared = lengthSquared(onSegment - inBox);
-  if (squared > kTiny) {
-    const float dist = std::sqrt(squared);
-    if (dist > radius) return false;
-    n = (onSegment - inBox) * (1.0f / dist);
-    depth = radius - dist;
-    at = inBox;
-  } else {
-    // The segment runs through the box, so there is no nearest surface point
-    // to push away from. Leave through the nearest face, exactly as a sphere
-    // whose centre is inside one does.
-    int axis = 0;
-    float least = extent[0] - std::fabs(onSegment[0]);
-    for (int i = 1; i < 3; ++i) {
-      const float gap = extent[i] - std::fabs(onSegment[i]);
-      if (gap < least) {
-        least = gap;
-        axis = i;
-      }
-    }
-    const float sign = onSegment[axis] < 0.0f ? -1.0f : 1.0f;
-    n = {};
-    n[axis] = sign;
-    depth = radius + least;
-    at = onSegment;
-    at[axis] = sign * extent[axis];
-  }
-
-  one(out, rotate(qb, n), pb + rotate(qb, at), depth);
-
-  // A capsule lying flat on a face is the same problem as two parallel
-  // capsules, and gets the same answer: clip the segment to the face it is
-  // lying on and hold both ends of what survives. The two tests are that the
-  // push is squarely out of a face rather than off an edge, and that the
-  // capsule is lying along that face rather than standing on it.
-  if (lengthSquared(half) < kTiny) return true;
-
-  int face = 0;
-  for (int i = 1; i < 3; ++i) {
-    if (std::fabs(n[i]) > std::fabs(n[face])) face = i;
-  }
-  if (std::fabs(n[face]) < 0.98f) return true;
-  if (std::fabs(dot(normalised(half), n)) > 0.3f) return true;
-
-  float lo = -1.0f;
-  float hi = 1.0f;
-  for (int i = 0; i < 3; ++i) {
-    if (i == face) continue;
-    if (std::fabs(half[i]) < kTiny) {
-      // Parallel to this pair of sides: either the whole segment is between
-      // them or none of it is.
-      if (std::fabs(centre[i]) > extent[i]) return true;
-      continue;
-    }
-    const float t0 = (-extent[i] - centre[i]) / half[i];
-    const float t1 = (extent[i] - centre[i]) / half[i];
-    lo = std::fmax(lo, std::fmin(t0, t1));
-    hi = std::fmin(hi, std::fmax(t0, t1));
-  }
-  if (hi - lo < 1.0e-4f) return true;
-
-  const float surface = std::fabs(n[face]) * extent[face];
-  Manifold both;
-  both.normal = out.normal;
-  both.count = 0;
-  for (int end = 0; end < 2; ++end) {
-    const Vec3 on = centre + half * (end == 0 ? lo : hi);
-    const float apart = dot(n, on) - surface;
-    if (radius - apart < 0.0f) continue;
-    keepDeepest(both, both.normal, pb + rotate(qb, on - n * apart),
-                  radius - apart);
-  }
-  if (both.count == 2) {
-    out.points[0] = both.points[0];
-    out.points[1] = both.points[1];
-    out.count = 2;
+  const Convex capsule(a, pa, qa);
+  const Convex box(b, pb, qb);
+  Gap gap;
+  if (!separation(capsule, box, gap)) return false;
+  if (!collideConvex(capsule, box, out)) return false;
+  // Clipping a nearly aligned face can lose the deepest point of a round end.
+  if (std::fabs(deepest(out).depth - gap.depth) > 1.0e-4f) {
+    one(out, gap.normal, gap.at, gap.depth);
   }
   return true;
 }
