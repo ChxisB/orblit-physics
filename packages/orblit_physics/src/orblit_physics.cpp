@@ -209,6 +209,12 @@ uint32_t orblit_physics_footing(const OrblitPhysics *physics,
   return physics->world.footing(ids, count, out);
 }
 
+bool orblit_physics_stance(OrblitPhysics *physics, OrblitPhysicsId id,
+                           uint32_t shape, const float size[4]) {
+  if (physics == nullptr || size == nullptr) return false;
+  return physics->world.stance(id, shape, size);
+}
+
 bool orblit_physics_join(OrblitPhysics *physics, const OrblitPhysicsJoint *joint) {
   if (physics == nullptr || joint == nullptr) return false;
   return physics->world.join(*joint);

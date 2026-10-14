@@ -1,3 +1,9 @@
+## 0.13.0
+
+- Add `setStance` for a character's crouch, with its feet kept in place and a room check before it stands.
+- Add `wall` and `ceiling` to `PhysicsFooting`.
+- Let a character give way to another character that walks into it.
+
 ## 0.12.0
 
 Breaking.

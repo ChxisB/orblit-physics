@@ -161,6 +161,12 @@ class World {
   /// nothing changed, if any axis is not finite.
   bool gravity(const float to[3]);
 
+  /// Changes the shape character `id` is made of, keeping its feet where they
+  /// are. False, and nothing changed, for a body that is not a character, a
+  /// shape that is not a sphere, box, capsule or cylinder, and a shape that
+  /// would overlap something the character may not overlap.
+  bool stance(OrblitPhysicsId id, uint32_t kind, const float size[4]);
+
   /// What the world is now, to be given back by `restore`.
   Snapshot snapshot() const;
 
@@ -284,6 +290,14 @@ class World {
   /// Whether this step has a contact between the bodies in `a` and `b`.
   bool holds(uint32_t a, uint32_t b) const;
   void moveCharacters(float delta);
+
+  /// Moves the character in `row` aside by `move`, as far as it will go: swept
+  /// like its own walk, so a wall stops it, and kept where it stands on what
+  /// carries it.
+  void yield(uint32_t row, const Vec3 &move, const Vec3 &up, float delta);
+
+  /// Which way is up: against gravity, or the usual way for a world with none.
+  Vec3 upwards() const;
   void moveCharacter(Character &character, uint32_t row, const Vec3 &up,
                      float delta);
   void updateSleep(float delta);

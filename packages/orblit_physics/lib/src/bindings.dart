@@ -231,7 +231,13 @@ final class OrblitPhysicsFooting extends Struct {
   @Bool()
   external bool grounded;
 
-  @Array(7)
+  @Bool()
+  external bool wall;
+
+  @Bool()
+  external bool ceiling;
+
+  @Array(5)
   external Array<Uint8> reserved;
 }
 
@@ -667,6 +673,16 @@ external bool physicsControls(
 external bool physicsGravity(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<Float> gravity,
+);
+
+@Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Uint64, Uint32, Pointer<Float>)
+>(symbol: 'orblit_physics_stance', assetId: kOrblitPhysicsAsset)
+external bool physicsStance(
+  Pointer<OrblitPhysicsStruct> physics,
+  int id,
+  int shape,
+  Pointer<Float> size,
 );
 
 @Native<

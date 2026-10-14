@@ -1,3 +1,9 @@
+## 0.11.0
+
+- Make characters from body components with `BodyMotion.character`, with `walk` to say what each asks for once a step, and `crouch` and `isCrouching` for its stance.
+- Add `CharacterWalk` and `RootMotionWalk`, which drives a character from a clip's root motion. Depends on `orblit_motion`.
+- Needs `orblit_physics` 0.13.0 for `setStance`.
+
 ## 0.10.0
 
 - A body with `continuous` set is cast along its move against fixed bodies

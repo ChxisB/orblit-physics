@@ -667,6 +667,45 @@ bool World::gravity(const float to[3]) {
   return true;
 }
 
+bool World::stance(OrblitPhysicsId id, uint32_t kind, const float size[4]) {
+  const uint32_t row = bodies_.rowOf(id);
+  if (row == Bodies::kNone || characterOf(id) == nullptr) return false;
+  const bool rigid = kind == ORBLIT_PHYSICS_SPHERE || kind == ORBLIT_PHYSICS_BOX ||
+                     kind == ORBLIT_PHYSICS_CAPSULE ||
+                     kind == ORBLIT_PHYSICS_CYLINDER;
+  if (!rigid) return false;
+  Shape next;
+  if (!shapeFor(kind, size, 0, next)) return false;
+
+  // Feet stay where they are, so a crouch is the head coming down and not the
+  // character sinking into the floor.
+  const Vec3 up = upwards();
+  const Quat &rotation = bodies_.rotation(row);
+  const Vec3 was = bodies_.at(row);
+  const float sole = dot(support(Placed{bodies_.shape(row), was, rotation}, -up), up);
+  const float lowest = dot(support(Placed{next, was, rotation}, -up), up);
+  const Vec3 at = was + up * (sole - lowest);
+
+  Sieve sieve;
+  sieve.layerIs = bodies_.layerIs(row);
+  sieve.layerCares = bodies_.layerCares(row);
+  sieve.ignore = id;
+  Impact hit;
+  if (nearest(bodies_, Journey{Placed{next, at, rotation}, up, 0.0f, sieve}, hit) !=
+      Bodies::kNone) {
+    return false;
+  }
+
+  bodies_.at(row) = at;
+  bodies_.reshape(row, next);
+  return true;
+}
+
+Vec3 World::upwards() const {
+  const float fall = length(gravity_);
+  return fall > kTiny ? gravity_ * (-1.0f / fall) : Vec3{0.0f, 1.0f, 0.0f};
+}
+
 void World::switchMotion(uint32_t row, uint32_t to) {
   if (to > ORBLIT_PHYSICS_DYNAMIC) return;
 
@@ -1562,6 +1601,8 @@ uint32_t World::footing(const OrblitPhysicsId *ids, uint32_t count,
     into.carried[2] = character->carried.z;
     into.turning = character->turning;
     into.grounded = character->grounded;
+    into.wall = character->wall;
+    into.ceiling = character->ceiling;
     ++written;
   }
   return written;

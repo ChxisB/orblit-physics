@@ -368,6 +368,74 @@ void main() {
     expect(physics.footingOf(2)!.velocity[0], closeTo(0.0, 1e-4));
   });
 
+  test('a character crouches under a beam it cannot then stand up under', () {
+    floor();
+    // A beam 0.2 m thick with its underside 1.2 m up, across x from -2 to 2.
+    physics.add(
+      3,
+      shape: const Shape.box(2.0, 0.1, 2.0),
+      motion: PhysicsMotion.fixed,
+      at: const [0.0, 1.3, 0.0],
+    );
+    physics.addCharacter(2, at: const [-3.0, 0.91, 0.0]);
+    run(0.2);
+
+    expect(physics.setStance(2, const Shape.capsule(0.3, 0.2)), isTrue);
+    expect(heightOf(2), closeTo(0.51, 0.005), reason: 'feet stay put');
+
+    walk(2, 1.5, 0.0, 2.0);
+    expect(physics.transformOf(2)![0], closeTo(0.0, 0.2), reason: 'under it');
+    expect(physics.setStance(2, const Shape.capsule(0.3, 0.6)), isFalse);
+    expect(heightOf(2), closeTo(0.51, 0.005), reason: 'left as it was');
+
+    walk(2, 1.5, 0.0, 2.0);
+    expect(physics.setStance(2, const Shape.capsule(0.3, 0.6)), isTrue);
+    expect(heightOf(2), closeTo(0.91, 0.005));
+  });
+
+  test('a stance is refused for what is not a character or a rigid shape', () {
+    floor();
+    physics.add(3, shape: const Shape.sphere(0.5), at: const [3.0, 0.5, 0.0]);
+    physics.addCharacter(2, at: const [0.0, 0.91, 0.0]);
+
+    expect(physics.setStance(3, const Shape.capsule(0.3, 0.6)), isFalse);
+    expect(physics.setStance(2, const Shape.plane(0.0, 1.0, 0.0)), isFalse);
+    expect(physics.setStance(99, const Shape.capsule(0.3, 0.6)), isFalse);
+  });
+
+  test('a character is told when its walk met a wall or a ceiling', () {
+    floor();
+    physics.add(
+      3,
+      shape: const Shape.box(0.25, 1.0, 2.0),
+      motion: PhysicsMotion.fixed,
+      at: const [2.0, 1.0, 0.0],
+    );
+    physics.add(
+      4,
+      shape: const Shape.box(8.0, 0.1, 4.0),
+      motion: PhysicsMotion.fixed,
+      at: const [0.0, 2.3, 0.0],
+    );
+    physics.addCharacter(2, at: const [0.0, 0.91, 0.0]);
+
+    walk(2, 1.0, 0.0, 0.5);
+    expect(physics.footingOf(2)!.wall, isFalse);
+    expect(physics.footingOf(2)!.ceiling, isFalse);
+
+    walk(2, 1.0, 0.0, 2.0);
+    expect(physics.footingOf(2)!.wall, isTrue);
+    expect(physics.footingOf(2)!.ceiling, isFalse);
+
+    var bumped = false;
+    for (var i = 0; i < 12; i++) {
+      physics.drive(2, velocity: const [0.0, 8.0, 0.0]);
+      physics.step(1 / 60);
+      bumped = bumped || physics.footingOf(2)!.ceiling;
+    }
+    expect(bumped, isTrue);
+  });
+
   test('a character rides a platform and is told how far it was carried', () {
     physics.add(
       3,

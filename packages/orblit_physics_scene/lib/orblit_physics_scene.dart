@@ -5,4 +5,6 @@
 /// diff that moves those entities to where the simulation put them.
 library;
 
+export 'src/character_walk.dart' show CharacterWalk;
+export 'src/root_motion_walk.dart' show RootMotionWalk;
 export 'src/scene_physics.dart' show ScenePhysics, ScenePhysicsSnapshot;
