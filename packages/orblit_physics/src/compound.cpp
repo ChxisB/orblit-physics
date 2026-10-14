@@ -136,12 +136,15 @@ Vec3 supportParts(const Placed &of, const Vec3 &direction) {
   return best;
 }
 
-bool collideParts(const Placed &a, const Placed &b, Manifold &out) {
+bool collideParts(const Placed &a, const Placed &b, float margin, Manifold &out) {
   std::vector<Candidate> candidates;
   eachPart(a, [&](const Placed &pa) {
     eachPart(b, [&](const Placed &pb) {
       Manifold touch;
-      if (!collide(pa.shape, pa.at, pa.rotation, pb.shape, pb.at, pb.rotation, touch)) return;
+      if (!collideNear(pa.shape, pa.at, pa.rotation, pb.shape, pb.at, pb.rotation, margin,
+                       touch)) {
+        return;
+      }
       for (uint32_t i = 0; i < touch.count; ++i) {
         const Contact &p = touch.points[i];
         candidates.push_back({p.normal, p.at, p.depth});

@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "bounds_tree.h"
 #include "mass.h"
 #include "maths.h"
 #include "orblit_physics.h"
@@ -114,6 +115,29 @@ class Bodies {
   /// Removes the row holding `id`, if any. The last row moves into its place.
   void remove(OrblitPhysicsId id);
 
+  // --- finding bodies ------------------------------------------------------
+
+  /// Calls `visit(row)` for each fixed body whose bounds meet `area`, in no
+  /// order. A plane is never among them, having no bounds worth finding it
+  /// by: `scanned` has those.
+  ///
+  /// Fixed bodies are the ones that never move on their own, so they are kept
+  /// in a tree that is built once and only rebuilt when one of them is added,
+  /// removed, moved or converted. A level of thousands of static boxes costs a
+  /// query a handful of node visits, not a pass over every one.
+  template <typename Visit>
+  void visitStill(const Bounds &area, Visit &&visit) const {
+    const Finder &known = finder();
+    known.tree.visit(area, [&](uint32_t leaf) {
+      const uint32_t row = known.rows[leaf];
+      if (bounds_[row].overlaps(area)) visit(row);
+    });
+  }
+
+  /// Every row `visitStill` does not cover: the bodies that move, and the
+  /// planes. In row order. What a query reads after the tree.
+  const std::vector<uint32_t> &scanned() const { return finder().loose; }
+
   // --- columns -------------------------------------------------------------
 
   const std::vector<OrblitPhysicsId> &ids() const { return id_; }
@@ -187,11 +211,17 @@ class Bodies {
   float &still(uint32_t row) { return still_[row]; }
   const Bounds &bounds(uint32_t row) const { return bounds_[row]; }
 
+  /// Which island it fell asleep in, or zero for one that slept alone. Bodies
+  /// that slept in one island share a number, so waking one can wake them all.
+  /// The number means nothing once the body is awake.
+  uint32_t island(uint32_t row) const { return island_[row]; }
+
   /// Puts it to sleep, stopping it dead. Velocity is cleared rather than kept
   /// for waking, because a body that resumes at the speed it fell asleep at is
   /// a body that twitches when something brushes past it.
-  void sleep(uint32_t row) {
+  void sleep(uint32_t row, uint32_t island) {
     asleep_[row] = 1;
+    island_[row] = island;
     velocity_[row] = {};
     spin_[row] = {};
     still_[row] = 0.0f;
@@ -199,6 +229,7 @@ class Bodies {
 
   void wake(uint32_t row) {
     asleep_[row] = 0;
+    island_[row] = 0;
     still_[row] = 0.0f;
   }
 
@@ -212,6 +243,8 @@ class Bodies {
   /// that has changed what it is has not stayed at rest.
   void convert(uint32_t row, Motion motion) {
     motion_[row] = motion;
+    finder_.treeStale = true;
+    finder_.looseStale = true;
     if (motion == Motion::fixed) {
       velocity_[row] = {};
       spin_[row] = {};
@@ -262,12 +295,19 @@ class Bodies {
     inverseInertia_[row] = holdTurns(
         rotatedInverseInertia(rotation_[row], localInverseInertia_[row]),
         controls_[row]);
-    bounds_[row] = shape_[row].boundsAt(at_[row], rotation_[row]);
+    const Bounds next = shape_[row].boundsAt(at_[row], rotation_[row]);
+    if (inTree(row) && !(next == bounds_[row])) finder_.treeStale = true;
+    bounds_[row] = next;
   }
 
-  /// Recomputes every row's derived state. Once per step, over columns.
+  /// Recomputes the derived state of every row a step can have moved. Once
+  /// per step, over columns. A fixed body is skipped: the integrator and the
+  /// solver leave it where it is, and `place` and `convert` refresh theirs, so
+  /// a level of fixed bodies costs nothing here.
   void refreshAll() {
-    for (uint32_t row = 0; row < count(); ++row) refresh(row);
+    for (uint32_t row = 0; row < count(); ++row) {
+      if (motion_[row] != Motion::fixed) refresh(row);
+    }
   }
 
  private:
@@ -310,6 +350,7 @@ class Bodies {
   std::vector<uint32_t> layerIs_;
   std::vector<uint32_t> layerCares_;
   std::vector<uint8_t> asleep_;
+  std::vector<uint32_t> island_;
   std::vector<float> still_;
   std::vector<Bounds> bounds_;
   std::vector<uint8_t> sensor_;
@@ -317,6 +358,31 @@ class Bodies {
   std::vector<Vec3> surface_;
 
   std::unordered_map<OrblitPhysicsId, uint32_t> index_;
+
+  /// What `visitStill` and `scanned` read. A cache of what the columns
+  /// already say, so a const query may rebuild it. A world is stepped and
+  /// queried from one thread at a time, which is all this relies on.
+  struct Finder {
+    BoundsTree tree = BoundsTree(std::vector<Bounds>{});
+    std::vector<uint32_t> rows;
+    std::vector<uint32_t> loose;
+    bool treeStale = true;
+    bool looseStale = true;
+  };
+
+  /// Fixed and with bounds, which is to say fixed and not a plane.
+  bool inTree(uint32_t row) const {
+    return motion_[row] == Motion::fixed && shape_[row].kind != ShapeKind::plane;
+  }
+
+  const Finder &finder() const {
+    if (finder_.treeStale || finder_.looseStale) rebuildFinder();
+    return finder_;
+  }
+
+  void rebuildFinder() const;
+
+  mutable Finder finder_;
 };
 
 inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
@@ -346,6 +412,7 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
   layerIs_.push_back(from.layerIs);
   layerCares_.push_back(from.layerCares);
   asleep_.push_back(from.asleep && free ? 1 : 0);
+  island_.push_back(0);
   still_.push_back(0.0f);
   bounds_.push_back({});
   sensor_.push_back(from.sensor ? 1 : 0);
@@ -354,6 +421,8 @@ inline uint32_t Bodies::add(OrblitPhysicsId id, const BodyDescription &from) {
 
   index_.emplace(id, row);
   configure(row);
+  if (inTree(row)) finder_.treeStale = true;
+  finder_.looseStale = true;
   return row;
 }
 
@@ -364,6 +433,11 @@ inline void Bodies::remove(OrblitPhysicsId id) {
   const uint32_t row = found->second;
   const uint32_t last = count() - 1;
   index_.erase(found);
+
+  // The tree names rows, so it is wrong if it held this one or holds the one
+  // about to take its number.
+  if (inTree(row) || (row != last && inTree(last))) finder_.treeStale = true;
+  finder_.looseStale = true;
 
   if (row != last) {
     id_[row] = id_[last];
@@ -387,6 +461,7 @@ inline void Bodies::remove(OrblitPhysicsId id) {
     layerIs_[row] = layerIs_[last];
     layerCares_[row] = layerCares_[last];
     asleep_[row] = asleep_[last];
+    island_[row] = island_[last];
     still_[row] = still_[last];
     bounds_[row] = bounds_[last];
     sensor_[row] = sensor_[last];
@@ -416,11 +491,35 @@ inline void Bodies::remove(OrblitPhysicsId id) {
   layerIs_.pop_back();
   layerCares_.pop_back();
   asleep_.pop_back();
+  island_.pop_back();
   still_.pop_back();
   bounds_.pop_back();
   sensor_.pop_back();
   stay_.pop_back();
   surface_.pop_back();
+}
+
+inline void Bodies::rebuildFinder() const {
+  Finder &known = finder_;
+  const uint32_t total = count();
+
+  if (known.treeStale) {
+    std::vector<Bounds> boxes;
+    known.rows.clear();
+    for (uint32_t row = 0; row < total; ++row) {
+      if (!inTree(row)) continue;
+      known.rows.push_back(row);
+      boxes.push_back(bounds_[row]);
+    }
+    known.tree = BoundsTree(boxes);
+    known.treeStale = false;
+  }
+
+  known.loose.clear();
+  for (uint32_t row = 0; row < total; ++row) {
+    if (!inTree(row)) known.loose.push_back(row);
+  }
+  known.looseStale = false;
 }
 
 } // namespace orblit

@@ -53,9 +53,26 @@ constexpr float kThinnest = 1.0e-3f;
 constexpr float kSameWay = 0.9f;
 
 /// How near a body must be to a surface to count as resting on it, in metres.
-/// A little over the solver's slop, which is how far into it a resting body
-/// sits.
+/// A little over the solver's slop, which is as far into it as a body is let
+/// in.
 constexpr float kResting = 0.05f;
+
+/// How far two bodies must close in one step, in metres, before the pair is
+/// held apart by a speculative contact. Slower pairs are left to the exact
+/// contact. Speculating for every pair doubles the manifolds, and each near
+/// miss ties a neighbour into its island, which keeps a heap from sleeping.
+/// It is about 3 m/s at 60 steps a second.
+constexpr float kFast = 0.05f;
+
+/// A move this short, in metres, cannot take a body through anything worth
+/// asking about, so a continuous body that is this slow is not cast.
+constexpr float kStill = 1.0e-4f;
+
+/// How far past the first touch, in metres, a continuous body is carried. The
+/// cast calls a gap of 0.1 mm a touch, and a body stopped short of the surface
+/// has no contact to push it, so a slow one would hang there with its velocity
+/// still pointing in. Half a millimetre is overlap enough for the narrowphase.
+constexpr float kPastTouch = 5.0e-4f;
 
 /// Carries last step's impulse onto whichever of this step's points is
 /// nearest. No distance limit, deliberately: an old manifold only exists
@@ -67,9 +84,10 @@ constexpr float kResting = 0.05f;
 /// face different ways, and the push that held a corner against one slope is
 /// no start at all for a corner now against the other.
 void carryImpulses(const Manifold &old, Manifold &manifold) {
-  // The rows a manifold names can swap between steps; the impulse is along a
-  // normal that flips with them.
-  const float sign = old.a != manifold.a ? -1.0f : 1.0f;
+  // Which body is named first can change between steps, and a pair that slept
+  // keeps its manifold while rows move, so it is the ids that say whether the
+  // impulse is along a normal that flipped.
+  const float sign = old.reversed != manifold.reversed ? -1.0f : 1.0f;
   for (uint32_t c = 0; c < manifold.count; ++c) {
     uint32_t nearest = Bodies::kNone;
     float best = 3.0e38f;
@@ -216,6 +234,7 @@ Controls controlsOf(const OrblitPhysicsControls &from) {
   controls.maxSpin = from.maxSpin;
   controls.centre = vectorOf(from.centre);
   controls.inertia = vectorOf(from.inertia);
+  controls.continuous = from.continuous;
   return controls;
 }
 
@@ -258,10 +277,11 @@ void World::defaults(OrblitPhysicsSettings *out) {
   out->gravity[0] = 0.0f;
   out->gravity[1] = -9.81f;
   out->gravity[2] = 0.0f;
-  out->velocitySteps = 10;
+  out->subSteps = 6;
+  out->velocitySteps = 1;
   out->positionSteps = 2;
   out->slop = 0.02f;
-  out->stiffness = 0.2f;
+  out->contactHertz = 50.0f;
   out->bounceThreshold = 1.0f;
   out->sleepSpeed = 0.03f;
   out->sleepAfter = 0.5f;
@@ -275,12 +295,14 @@ World::World(const OrblitPhysicsSettings &settings)
 
 SolverSettings World::solvingFor(const OrblitPhysicsSettings &settings) {
   SolverSettings solving;
-  // One velocity pass cannot produce friction, so asking for one is asking for
-  // ice. Take the two it needs rather than silently giving no grip.
-  solving.velocitySteps = std::max(settings.velocitySteps, 2u);
+  // A step with no sub-steps, or a sub-step with no pass in it, is a world
+  // that never moves or never holds anything up. One of each is the least that
+  // is a solver at all.
+  solving.subSteps = std::max(settings.subSteps, 1u);
+  solving.velocitySteps = std::max(settings.velocitySteps, 1u);
   solving.positionSteps = settings.positionSteps;
   solving.slop = std::fmax(settings.slop, 0.0f);
-  solving.stiffness = clamped(settings.stiffness, 0.0f, 1.0f);
+  solving.contactHertz = std::fmax(settings.contactHertz, 0.0f);
   solving.bounceThreshold = std::fmax(settings.bounceThreshold, 0.0f);
   return solving;
 }
@@ -434,6 +456,7 @@ void World::destroy(OrblitPhysicsId id) {
 }
 
 void World::unmake(OrblitPhysicsId id) {
+  leaveIsland(id);
   bodies_.remove(id);
   // Erased in place rather than swapped out, because the list's order is the
   // order characters move in, and two characters that swap turns swap which
@@ -444,6 +467,28 @@ void World::unmake(OrblitPhysicsId id) {
   // After the body, which points into it.
   fields_.erase(id);
   zones_.erase(id);
+}
+
+void World::leaveIsland(OrblitPhysicsId id) {
+  const uint32_t row = bodies_.rowOf(id);
+  if (row == Bodies::kNone) return;
+  const auto found = islands_.find(bodies_.island(row));
+  if (found == islands_.end()) return;
+
+  Island &island = found->second;
+  island.bodies.erase(std::remove(island.bodies.begin(), island.bodies.end(), id),
+                      island.bodies.end());
+  // Its pairs are given back to the last step's, so they end on the next one,
+  // as they would have if it had been destroyed awake.
+  for (auto pair = island.pairs.begin(); pair != island.pairs.end();) {
+    if (pair->first.a == id || pair->first.b == id) {
+      wasTouching_.emplace(*pair);
+      pair = island.pairs.erase(pair);
+    } else {
+      ++pair;
+    }
+  }
+  if (island.bodies.empty()) islands_.erase(found);
 }
 
 bool World::ground(const OrblitPhysicsGround &from) {
@@ -671,13 +716,39 @@ const Character *World::characterOf(OrblitPhysicsId id) const {
 
 void World::wake(uint32_t row) {
   const bool sleeper = bodies_.movable(row) && bodies_.asleep(row);
-  if (sleeper) {
-    bodies_.wake(row);
-    note(ORBLIT_PHYSICS_WOKE, row);
-  }
+  if (sleeper) wakeIsland(row);
   // An awake body that the solver moves is in a group that is awake already,
   // because joined bodies only ever sleep together.
   if (sleeper || !bodies_.movable(row)) wakeJoined(row);
+}
+
+void World::wakeIsland(uint32_t row) {
+  const uint32_t name = bodies_.island(row);
+  const auto found = islands_.find(name);
+  if (name == 0 || found == islands_.end()) {
+    // Made asleep, so it has no fellows.
+    waken(row);
+    return;
+  }
+
+  const Island island = std::move(found->second);
+  islands_.erase(found);
+  for (const OrblitPhysicsId id : island.bodies) {
+    // A body that was destroyed has left the island, and its id may belong to
+    // another body by now, which is in another island or none.
+    const uint32_t member = bodies_.rowOf(id);
+    if (member != Bodies::kNone && bodies_.island(member) == name) waken(member);
+  }
+
+  // What was touching goes back to being what the last step found, so the
+  // pair is warm started if it is still there and ended if it is not.
+  for (const auto &pair : island.pairs) wasTouching_.emplace(pair);
+}
+
+void World::waken(uint32_t row) {
+  bodies_.wake(row);
+  note(ORBLIT_PHYSICS_WOKE, row);
+  woke_ = true;
 }
 
 void World::wakeJoined(uint32_t row) {
@@ -690,8 +761,7 @@ void World::wakeJoined(uint32_t row) {
     joints_.eachPartner(from, [this](OrblitPhysicsId partner) {
       const uint32_t other = bodies_.rowOf(partner);
       if (!bodies_.movable(other) || !bodies_.asleep(other)) return;
-      bodies_.wake(other);
-      note(ORBLIT_PHYSICS_WOKE, other);
+      wakeIsland(other);
       waking_.push_back(partner);
     });
   }
@@ -801,16 +871,10 @@ void World::step(float delta) {
   events_.clear();
   if (!(delta > 0.0f)) return;
 
-  findContacts();
+  rememberPositions();
+  findContacts(delta);
   feelZones();
-  integrateVelocities(delta);
-  solver_.solveVelocities(bodies_, manifolds_.data(),
-                          static_cast<uint32_t>(manifolds_.size()), joints_,
-                          delta, solving_);
-  capSpeeds();
-  integratePositions(delta);
-  solver_.solvePositions(bodies_, manifolds_.data(), joints_, solving_);
-  breakJoints(delta);
+  solveStep(delta);
 
   bodies_.refreshAll();
   moveCharacters(delta);
@@ -822,18 +886,40 @@ void World::step(float delta) {
   wasSensing_.swap(sensing_);
 }
 
-void World::findContacts() {
+void World::solveStep(float delta) {
+  const float h = delta / static_cast<float>(solving_.subSteps);
+
+  solver_.prepare(bodies_, manifolds_.data(),
+                  static_cast<uint32_t>(manifolds_.size()), solving_);
+  for (uint32_t i = 0; i < solving_.subSteps; ++i) {
+    integrateVelocities(h);
+    solver_.solve(bodies_, joints_, h, solving_);
+    capSpeeds();
+    integratePositions(h);
+    solver_.relax(bodies_, joints_, h, solving_);
+  }
+  solver_.finish(bodies_, manifolds_.data(), joints_, solving_);
+
+  if (solver_.rebounds()) {
+    solver_.rebound(bodies_);
+    // A bounce may be faster than the cap, which holds a body at the end of
+    // every step.
+    capSpeeds();
+  }
+  breakJoints(delta);
+}
+
+void World::findContacts(float delta) {
   manifolds_.clear();
   keys_.clear();
-  candidates_.clear();
 
-  const uint32_t count = bodies_.count();
-
-  // A plane has no bounds to overlap — it is half the world — so it is paired
-  // against everything else rather than swept. There are only ever a few.
+  // Fixed bodies are not swept. They never move, so the tree in `bodies_` has
+  // them, and each body that moves asks it what is near. A plane has no
+  // bounds to overlap, being half the world, so it is paired against
+  // everything else. There are only ever a few.
   planes_.clear();
   sorted_.clear();
-  for (uint32_t row = 0; row < count; ++row) {
+  for (const uint32_t row : bodies_.scanned()) {
     if (bodies_.shape(row).kind == ShapeKind::plane) {
       planes_.push_back(row);
     } else {
@@ -848,55 +934,31 @@ void World::findContacts() {
     return bodies_.bounds(l).low.x < bodies_.bounds(r).low.x;
   });
 
-  const auto consider = [this](uint32_t a, uint32_t b) {
-    // A trigger is somewhere to be, not something to hit. It is read once the
-    // step is over, in `reportSensing`.
-    if (bodies_.sensor(a) || bodies_.sensor(b)) return;
-    // Nothing the solver would move means nothing worth looking at. That is
-    // static against static, and it is also a pair that is entirely asleep —
-    // which is the whole point of sleeping, and why a settled stack costs
-    // nothing until something disturbs it.
-    if (!bodies_.solved(a) && !bodies_.solved(b)) return;
-    if (joints_.apart(bodies_.id(a), bodies_.id(b))) return;
-    if (ignores(bodies_.id(a), bodies_.id(b))) return;
-    if (!interact(bodies_.layerIs(a), bodies_.layerCares(a), bodies_.layerIs(b),
-                  bodies_.layerCares(b))) {
-      return;
-    }
-    candidates_.emplace_back(a, b);
-  };
-
-  for (size_t i = 0; i < sorted_.size(); ++i) {
-    const uint32_t a = sorted_[i];
-    const float reach = bodies_.bounds(a).high.x;
-    for (size_t j = i + 1; j < sorted_.size(); ++j) {
-      const uint32_t b = sorted_[j];
-      if (bodies_.bounds(b).low.x > reach) break;
-      if (!bodies_.bounds(a).overlaps(bodies_.bounds(b))) continue;
-      consider(a, b);
-    }
-    for (const uint32_t plane : planes_) consider(a, plane);
+  reach_.clear();
+  longest_ = 0.0f;
+  for (const uint32_t row : sorted_) {
+    reach_.push_back(reachOf(row, delta));
+    longest_ = std::max(longest_, reach_.back());
   }
+
+  // A pair that is entirely asleep is left out of the list, which is why a
+  // settled stack costs nothing. Touching one of them wakes the whole island,
+  // and the pairs inside it were left out, so the list is made again until a
+  // pass wakes nothing. That is one pass when nothing sleeping is touched.
+  do {
+    woke_ = false;
+    pairUp();
+    wakeTouched(delta);
+  } while (woke_);
   pairs_ = static_cast<uint32_t>(candidates_.size());
 
   Manifold manifold;
   for (const auto &candidate : candidates_) {
     const uint32_t a = candidate.first;
     const uint32_t b = candidate.second;
-    if (!collide(bodies_.shape(a), bodies_.at(a), bodies_.rotation(a),
-                 bodies_.shape(b), bodies_.at(b), bodies_.rotation(b),
-                 manifold)) {
-      continue;
-    }
-
-    // Something touching a sleeper wakes it. It is too late for this step's
-    // solve to know that, so the pair is dropped and picked up next step,
-    // which costs one frame of overlap and no correctness.
-    if (bodies_.asleep(a) || bodies_.asleep(b)) {
-      wake(a);
-      wake(b);
-      continue;
-    }
+    // Still asleep after the pass above means it did not touch.
+    if (bodies_.asleep(a) || bodies_.asleep(b)) continue;
+    if (!meet(a, b, delta, manifold)) continue;
 
     manifold.a = a;
     manifold.b = b;
@@ -913,6 +975,111 @@ void World::findContacts() {
     manifolds_.push_back(manifold);
     keys_.push_back(key);
   }
+}
+
+void World::pairUp() {
+  candidates_.clear();
+
+  const auto consider = [this](uint32_t a, uint32_t b) {
+    // A trigger is somewhere to be, not something to hit. It is read once the
+    // step is over, in `reportSensing`.
+    if (bodies_.sensor(a) || bodies_.sensor(b)) return;
+    // Nothing the solver would move means nothing worth looking at. That is
+    // static against static, and it is also a pair that is entirely asleep,
+    // which is the whole point of sleeping.
+    if (!bodies_.solved(a) && !bodies_.solved(b)) return;
+    if (joints_.apart(bodies_.id(a), bodies_.id(b))) return;
+    if (ignores(bodies_.id(a), bodies_.id(b))) return;
+    if (!interact(bodies_.layerIs(a), bodies_.layerCares(a), bodies_.layerIs(b),
+                  bodies_.layerCares(b))) {
+      return;
+    }
+    candidates_.emplace_back(a, b);
+  };
+
+  for (size_t i = 0; i < sorted_.size(); ++i) {
+    const uint32_t a = sorted_[i];
+    const Bounds own = bodies_.bounds(a);
+    // Two bodies are near enough to be held apart when the distance between
+    // them is under what they can close in a step, which is what each one
+    // can travel. The sweep reads the longest reach there is, since it does
+    // not know yet which body it will meet.
+    const float stop = own.high.x + reach_[i] + longest_;
+    for (size_t j = i + 1; j < sorted_.size(); ++j) {
+      const uint32_t b = sorted_[j];
+      if (bodies_.bounds(b).low.x > stop) break;
+      const float near = reach_[i] + reach_[j];
+      if (!own.grown(near).overlaps(bodies_.bounds(b))) continue;
+      consider(a, b);
+    }
+    for (const uint32_t plane : planes_) consider(a, plane);
+    bodies_.visitStill(own.grown(reach_[i]),
+                       [&](uint32_t still) { consider(a, still); });
+  }
+}
+
+void World::wakeTouched(float delta) {
+  Manifold scratch;
+  for (const auto &candidate : candidates_) {
+    const uint32_t a = candidate.first;
+    const uint32_t b = candidate.second;
+    // Woken by an earlier pair in this loop, or awake to begin with.
+    if (!bodies_.asleep(a) && !bodies_.asleep(b)) continue;
+    // A slow pair has no margin, so a sleeper is woken by touching and not by
+    // a neighbour a centimetre away, which would wake that neighbour back
+    // when it slept and keep a heap from ever settling. A fast one is woken
+    // a step early, so that what hits it is stopped there.
+    if (!meet(a, b, delta, scratch)) continue;
+    wake(a);
+    wake(b);
+  }
+}
+
+float World::extentOf(uint32_t row) const {
+  // A field's bounds go down as far as a float does, so squaring them for
+  // the length overflows, and nought spin times infinity is not a number. It
+  // never moves, so it has no edge to be fast.
+  if (bodies_.shape(row).kind == ShapeKind::heightField) return 0.0f;
+  const Bounds around = bodies_.bounds(row);
+  return 0.5f * length(around.high - around.low);
+}
+
+float World::reachOf(uint32_t row, float delta) const {
+  if (bodies_.asleep(row)) return 0.0f;
+  return (length(bodies_.velocity(row)) +
+          length(bodies_.spin(row)) * extentOf(row)) *
+         delta;
+}
+
+bool World::beyondPlane(uint32_t body, uint32_t plane, float margin) const {
+  const Shape &shape = bodies_.shape(plane);
+  if (shape.kind != ShapeKind::plane) return false;
+
+  Vec3 normal;
+  float surface = 0.0f;
+  planeInWorld(shape, bodies_.at(plane), bodies_.rotation(plane), normal,
+               surface);
+  const Bounds around = bodies_.bounds(body);
+  const Vec3 centre = (around.low + around.high) * 0.5f;
+  const Vec3 half = (around.high - around.low) * 0.5f;
+  const float lowest = dot(normal, centre) - dot(absPerAxis(normal), half);
+  return lowest - surface > margin;
+}
+
+bool World::meet(uint32_t a, uint32_t b, float delta, Manifold &out) const {
+  // How far the two can close on each other this step. Two bodies falling
+  // together close on nothing, which is why this is not the sum of reaches.
+  const Vec3 apart = bodies_.velocity(a) - bodies_.velocity(b);
+  const float closing = (length(apart) + length(bodies_.spin(a)) * extentOf(a) +
+                         length(bodies_.spin(b)) * extentOf(b)) *
+                        delta;
+  const float margin = closing < kFast ? 0.0f : closing;
+  // Every body is paired with a plane, there being no bounds to sweep, and
+  // most are nowhere near it.
+  if (beyondPlane(a, b, margin) || beyondPlane(b, a, margin)) return false;
+  return collideNear(bodies_.shape(a), bodies_.at(a), bodies_.rotation(a),
+                     bodies_.shape(b), bodies_.at(b), bodies_.rotation(b),
+                     margin, out);
 }
 
 Rule World::ruleFor(const PairKey &key, OrblitPhysicsId first) const {
@@ -976,9 +1143,63 @@ void World::integratePositions(float delta) {
     if (bodies_.motion(row) == Motion::fixed) continue;
     if (bodies_.motion(row) == Motion::character) continue;
     if (bodies_.movable(row) && bodies_.asleep(row)) continue;
-    bodies_.at(row) += bodies_.velocity(row) * delta;
-    bodies_.turn(row, bodies_.spin(row), delta);
+    // The turn is cut by the same share as the move, so a body that stops at
+    // a wall has not also swung into it.
+    const bool continuous =
+        bodies_.solved(row) && bodies_.controls(row).continuous;
+    const float run = continuous ? freeRun(row, delta) : 1.0f;
+    bodies_.at(row) += bodies_.velocity(row) * (delta * run);
+    bodies_.turn(row, bodies_.spin(row), delta * run);
   }
+}
+
+float World::freeRun(uint32_t row, float delta) const {
+  const Vec3 velocity = bodies_.velocity(row);
+  const float travel = length(velocity) * delta;
+  if (!(travel > kStill)) return 1.0f;
+
+  Sieve sieve;
+  sieve.layerIs = bodies_.layerIs(row);
+  sieve.layerCares = bodies_.layerCares(row);
+  sieve.ignore = bodies_.id(row);
+  const Placed moving{bodies_.shape(row), bodies_.at(row), bodies_.rotation(row)};
+  const Journey journey(moving, velocity * (1.0f / length(velocity)), travel, sieve);
+
+  // A body it is already inside belongs to the contacts, and counting it
+  // would hold a ball back for resting a few millimetres into the floor. One
+  // it reached in an earlier sub-step has no contact yet, because the
+  // contacts were found where the bodies began the step, and is stopped
+  // where it is until the next step finds the overlap.
+  float nearest = travel;
+  const auto ask = [&](uint32_t other) {
+    Impact impact;
+    if (ignores(bodies_.id(row), bodies_.id(other))) return;
+    if (joints_.apart(bodies_.id(row), bodies_.id(other))) return;
+    if (!meets(bodies_, other, journey, impact)) return;
+    if (!impact.started) {
+      nearest = std::min(nearest, impact.distance + kPastTouch);
+    } else if (!holds(row, other)) {
+      nearest = 0.0f;
+    }
+  };
+  bodies_.visitStill(journey.reach, ask);
+  for (const uint32_t plane : planes_) ask(plane);
+  return nearest / travel;
+}
+
+bool World::holds(uint32_t a, uint32_t b) const {
+  return std::any_of(manifolds_.begin(), manifolds_.end(),
+                     [a, b](const Manifold &manifold) {
+                       const bool pair = (manifold.a == a && manifold.b == b) ||
+                                         (manifold.a == b && manifold.b == a);
+                       return pair && manifold.count > 0;
+                     });
+}
+
+void World::rememberPositions() {
+  const uint32_t count = bodies_.count();
+  began_.resize(count);
+  for (uint32_t row = 0; row < count; ++row) began_[row] = bodies_.at(row);
 }
 
 void World::updateSleep(float delta) {
@@ -990,24 +1211,21 @@ void World::updateSleep(float delta) {
     if (!bodies_.solved(row)) continue;
 
     // Measured at the fastest-moving point rather than the centre, so a body
-    // spinning on the spot is not mistaken for a body at rest.
-    const float speed = length(bodies_.velocity(row)) +
+    // spinning on the spot is not mistaken for a body at rest. The velocity
+    // is what the step left, which a contact that is pushing the body out of
+    // an overlap has already taken back. How far it went is not, so a body
+    // that is climbing out of the ground is not at rest.
+    const float walked = length(bodies_.at(row) - began_[row]) / delta;
+    const float speed = std::fmax(length(bodies_.velocity(row)), walked) +
                         length(bodies_.spin(row)) * bodies_.reach(row);
     if (speed > settings_.sleepSpeed) {
       bodies_.still(row) = 0.0f;
-      continue;
+    } else {
+      bodies_.still(row) += delta;
     }
-
-    bodies_.still(row) += delta;
-    if (bodies_.still(row) < settings_.sleepAfter) continue;
-
-    // A joined body waits for the rest of what it is joined to.
-    if (joints_.on(bodies_.id(row))) continue;
-    bodies_.sleep(row);
-    note(ORBLIT_PHYSICS_SLEPT, row);
   }
 
-  sleepJoined();
+  sleepIslands();
 }
 
 void World::keepDragged() {
@@ -1020,12 +1238,11 @@ void World::keepDragged() {
   }
 }
 
-void World::sleepJoined() {
-  if (joints_.empty()) return;
-
-  // Joined bodies are grouped by following joints between bodies the solver
-  // moves, and only those: a wall does not tie together the two chains
-  // hanging from it.
+void World::sleepIslands() {
+  // An island is found by following this step's contacts and the joints
+  // between bodies the solver moves, and only those: a wall does not tie
+  // together the two chains hanging from it, and the ground does not tie
+  // together everything lying on it.
   const uint32_t count = bodies_.count();
   group_.resize(count);
   for (uint32_t row = 0; row < count; ++row) group_[row] = row;
@@ -1037,6 +1254,11 @@ void World::sleepJoined() {
     return row;
   };
 
+  for (const Manifold &manifold : manifolds_) {
+    if (bodies_.solved(manifold.a) && bodies_.solved(manifold.b)) {
+      group_[root(manifold.a)] = root(manifold.b);
+    }
+  }
   for (const Joint &joint : joints_.all()) {
     if (joint.a == 0 || joint.b == 0) continue;
     const uint32_t a = bodies_.rowOf(joint.a);
@@ -1045,20 +1267,19 @@ void World::sleepJoined() {
     group_[root(a)] = root(b);
   }
 
-  // A group sleeps when every body in it has been still long enough — one
-  // already asleep counts, since it is as still as a body gets — and none of
-  // it hangs from something moving. A rope tied to a rising lift is still
-  // relative to the lift, and would otherwise go to sleep in mid-air.
+  // An island sleeps when every body in it has been still long enough, and
+  // none of it hangs from something moving. A rope tied to a rising lift is
+  // still relative to the lift, and would otherwise go to sleep in mid-air.
+  // A body asleep already is not in any island, so it counts for nothing.
   ready_.assign(count, 1);
+  for (uint32_t row = 0; row < count; ++row) {
+    if (bodies_.solved(row) && bodies_.still(row) < settings_.sleepAfter) {
+      ready_[root(row)] = 0;
+    }
+  }
   for (const Joint &joint : joints_.all()) {
     const uint32_t a = joint.a == 0 ? Bodies::kNone : bodies_.rowOf(joint.a);
     const uint32_t b = joint.b == 0 ? Bodies::kNone : bodies_.rowOf(joint.b);
-    for (const uint32_t row : {a, b}) {
-      if (row == Bodies::kNone || !bodies_.movable(row)) continue;
-      if (bodies_.solved(row) && bodies_.still(row) < settings_.sleepAfter) {
-        ready_[root(row)] = 0;
-      }
-    }
     if (a == Bodies::kNone || b == Bodies::kNone ||
         bodies_.movable(a) == bodies_.movable(b)) {
       continue;
@@ -1071,11 +1292,40 @@ void World::sleepJoined() {
     }
   }
 
+  named_.assign(count, 0);
   for (uint32_t row = 0; row < count; ++row) {
-    if (!bodies_.solved(row) || !ready_[root(row)]) continue;
-    if (!joints_.on(bodies_.id(row))) continue;
-    bodies_.sleep(row);
+    if (!bodies_.solved(row)) continue;
+    const uint32_t head = root(row);
+    if (!ready_[head]) continue;
+
+    if (named_[head] == 0) named_[head] = ++lastIsland_;
+    islands_[named_[head]].bodies.push_back(bodies_.id(row));
+    bodies_.sleep(row, named_[head]);
     note(ORBLIT_PHYSICS_SLEPT, row);
+  }
+
+  keepResting();
+}
+
+void World::keepResting() {
+  // A pair that is entirely at rest is not looked at again until one of its
+  // bodies wakes, so it is not ended by that. It goes with its island, and is
+  // put back when the island wakes. A driven body or a character moves without
+  // waking what it touches, so a pair with one of those is left to end.
+  const auto holds = [this](uint32_t row) {
+    return bodies_.motion(row) == Motion::fixed || bodies_.asleep(row);
+  };
+  for (size_t i = 0; i < manifolds_.size(); ++i) {
+    const Manifold &manifold = manifolds_[i];
+    if (!holds(manifold.a) || !holds(manifold.b)) continue;
+
+    const uint32_t name = bodies_.island(manifold.a) != 0
+                              ? bodies_.island(manifold.a)
+                              : bodies_.island(manifold.b);
+    const auto touch = touching_.find(keys_[i]);
+    if (name == 0 || touch == touching_.end()) continue;
+    islands_[name].pairs.push_back(*touch);
+    touching_.erase(touch);
   }
 }
 

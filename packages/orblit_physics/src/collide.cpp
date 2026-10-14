@@ -460,14 +460,21 @@ bool boxBox(const Shape &sa, const Vec3 &pa, const Quat &qa, const Shape &sb,
     }
   }
 
+  // Reduced by spread, not by depth. A face resting on a face is equally deep
+  // everywhere, and two nearly parallel edges cross at a point anywhere along
+  // them, so picking the four deepest keeps changing which vertices of the
+  // clipped face it holds. Each change throws away the impulses a stack was
+  // being held up by.
   const float surface = dot(rCentre, outward) + rHalf[rIndex];
   out.normal = referenceIsA ? -outward : outward;
-  out.count = 0;
+  Candidate found[8];
+  size_t n = 0;
   for (uint32_t i = 0; i < poly.n; ++i) {
     const float depth = surface - dot(poly.v[i], outward);
     if (depth < 0.0f) continue;
-    keepDeepest(out, out.normal, poly.v[i] + outward * (depth * 0.5f), depth);
+    found[n++] = Candidate{out.normal, poly.v[i] + outward * (depth * 0.5f), depth};
   }
+  reduce(found, n, out);
   return out.count > 0;
 }
 
@@ -601,7 +608,7 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
              const Vec3 &atB, const Quat &rotB, Manifold &out) {
   out.count = 0;
   if (a.kind == ShapeKind::compound || b.kind == ShapeKind::compound) {
-    return collideParts({a, atA, rotA}, {b, atB, rotB}, out);
+    return collideParts({a, atA, rotA}, {b, atB, rotB}, 0.0f, out);
   }
   if (b.kind == ShapeKind::mesh) return collideMesh(a, atA, rotA, b, atB, rotB, out);
   if (a.kind == ShapeKind::mesh) return flipped(collideMesh(b, atB, rotB, a, atA, rotA, out), out);
@@ -695,6 +702,76 @@ bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
     case ShapeKind::hull: break;
   }
   return false;
+}
+
+namespace {
+
+bool isConvex(const Shape &s) {
+  return s.kind == ShapeKind::sphere || s.kind == ShapeKind::box ||
+         s.kind == ShapeKind::capsule || s.kind == ShapeKind::cylinder ||
+         s.kind == ShapeKind::hull;
+}
+
+/// Whether two shapes that do not overlap are within `margin` of it, and where
+/// and how far apart if so. Each point's depth is that much negative and
+/// nothing else is changed, so what it means is whatever a depth means.
+bool nearMiss(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
+              const Vec3 &atB, const Quat &rotB, float margin, Manifold &out) {
+  // How much of the margin went on each shape, as a rounding added to it.
+  float roundA = 0.0f;
+  float roundB = 0.0f;
+  bool hit = false;
+  if (isConvex(a) && isConvex(b)) {
+    roundA = roundB = margin * 0.5f;
+    hit = collideConvex(Convex(a, atA, rotA).rounded(roundA),
+                        Convex(b, atB, rotB).rounded(roundB), out);
+  } else if (isConvex(a) && b.kind == ShapeKind::plane) {
+    roundA = margin;
+    hit = collidePlane(Convex(a, atA, rotA).rounded(roundA), b, atB, rotB, out);
+  } else if (a.kind == ShapeKind::plane && isConvex(b)) {
+    roundB = margin;
+    hit = flipped(
+        collidePlane(Convex(b, atB, rotB).rounded(roundB), a, atA, rotA, out),
+        out);
+  } else if (isConvex(a) && b.kind == ShapeKind::heightField) {
+    roundA = margin;
+    hit = collideGroundGrown(a, atA, rotA, b, atB, rotB, roundA, out);
+  } else if (a.kind == ShapeKind::heightField && isConvex(b)) {
+    roundB = margin;
+    hit = flipped(collideGroundGrown(b, atB, rotB, a, atA, rotA, roundB, out), out);
+  } else if (isConvex(a) && b.kind == ShapeKind::mesh) {
+    roundA = margin;
+    hit = collideMeshGrown(a, atA, rotA, b, atB, rotB, roundA, out);
+  } else if (a.kind == ShapeKind::mesh && isConvex(b)) {
+    roundB = margin;
+    hit = flipped(collideMeshGrown(b, atB, rotB, a, atA, rotA, roundB, out), out);
+  }
+  if (!hit || out.count == 0) return false;
+
+  // A shape rounded by `r` has its surface `r` nearer the other, so the
+  // midpoint of the surfaces as they were is half the difference of the two
+  // roundings back along the normal, which points out of `b`.
+  const float along = (roundA - roundB) * 0.5f;
+  for (uint32_t i = 0; i < out.count; ++i) {
+    Contact &point = out.points[i];
+    point.depth -= margin;
+    point.at += point.normal * along;
+  }
+  return true;
+}
+
+} // namespace
+
+bool collideNear(const Shape &a, const Vec3 &atA, const Quat &rotA,
+                 const Shape &b, const Vec3 &atB, const Quat &rotB,
+                 float margin, Manifold &out) {
+  if (a.kind == ShapeKind::compound || b.kind == ShapeKind::compound) {
+    return collideParts({a, atA, rotA}, {b, atB, rotB}, margin, out);
+  }
+  if (collide(a, atA, rotA, b, atB, rotB, out)) return true;
+  if (margin <= 0.0f) return false;
+  out.count = 0;
+  return nearMiss(a, atA, rotA, b, atB, rotB, margin, out);
 }
 
 } // namespace orblit

@@ -1,3 +1,13 @@
+## 0.10.0
+
+- A body with `continuous` set is cast along its move against fixed bodies
+  and ground. It needs `orblit_physics` 0.12.0.
+- The Euler angles read back from a body keep the angles they had when it
+  lands flat. A flat landing keeps a tilt of a few hundred-thousandths of a
+  radian, and X read from that was a large angle, so a crate showed turned
+  about X and back about Z. Near a quarter turn about Y, X now holds within a
+  thousandth of the angle it had.
+
 ## 0.9.0
 
 - Simulate scene mesh surfaces with entity and shape scaling, fixed motion, asset cleanup and snapshot bookkeeping.

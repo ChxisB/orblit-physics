@@ -319,6 +319,7 @@ final class PhysicsControls {
     this.maxSpin = 0.0,
     this.centre = const [0.0, 0.0, 0.0],
     this.inertia,
+    this.continuous = false,
   });
 
   /// The ways it may not move. A locked move drops that part of a velocity, of
@@ -346,6 +347,20 @@ final class PhysicsControls {
   /// mass. So does a set with a zero in it, since all three are used or none.
   /// A negative one is refused.
   final List<double>? inertia;
+
+  /// Stops it at the first fixed body or ground its move would take it
+  /// through, instead of finding it on the far side. Speculative contacts
+  /// already hold anything fast, so this is for what they miss: a small body
+  /// at a walking pace against a thin wall, and a body that is knocked into
+  /// one in the same step. It costs one cast a step while the body moves.
+  ///
+  /// It keeps the body's velocity and leaves the stop to the contacts of the
+  /// next step. Only a free body is cast, and only against fixed bodies, so a
+  /// driven body, a character and another free body are not stopped by it. A
+  /// sensor, a layer it does not collide with and a pair told to ignore each
+  /// other are passed as they are in a step. A body already inside another is
+  /// left to the contacts.
+  final bool continuous;
 
   /// The locks as the ABI holds them.
   int get bits => locks.fold(0, (bits, lock) => bits | lock.bit);
@@ -613,10 +628,11 @@ final class JointState {
 final class PhysicsSettings {
   const PhysicsSettings({
     this.gravity,
+    this.subSteps,
     this.velocitySteps,
     this.positionSteps,
     this.slop,
-    this.stiffness,
+    this.contactHertz,
     this.bounceThreshold,
     this.sleepSpeed,
     this.sleepAfter,
@@ -624,10 +640,11 @@ final class PhysicsSettings {
   });
 
   final List<double>? gravity;
+  final int? subSteps;
   final int? velocitySteps;
   final int? positionSteps;
   final double? slop;
-  final double? stiffness;
+  final double? contactHertz;
   final double? bounceThreshold;
   final double? sleepSpeed;
   final double? sleepAfter;
@@ -756,6 +773,7 @@ class Physics {
         it.gravity[1] = gravity[1];
         it.gravity[2] = gravity[2];
       }
+      if (settings.subSteps != null) it.subSteps = settings.subSteps!;
       if (settings.velocitySteps != null) {
         it.velocitySteps = settings.velocitySteps!;
       }
@@ -763,7 +781,9 @@ class Physics {
         it.positionSteps = settings.positionSteps!;
       }
       if (settings.slop != null) it.slop = settings.slop!;
-      if (settings.stiffness != null) it.stiffness = settings.stiffness!;
+      if (settings.contactHertz != null) {
+        it.contactHertz = settings.contactHertz!;
+      }
       if (settings.bounceThreshold != null) {
         it.bounceThreshold = settings.bounceThreshold!;
       }
@@ -1159,6 +1179,7 @@ class Physics {
       final it = made.ref;
       it.body = id;
       it.quiet = quiet;
+      it.continuous = controls.continuous;
       it.locks = controls.bits;
       it.gravityScale = controls.gravityScale;
       it.maxSpeed = controls.maxSpeed;

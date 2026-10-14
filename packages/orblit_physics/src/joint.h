@@ -95,9 +95,14 @@ struct Joint {
   float breakingTorque = 0.0f;
   bool collide = false;
 
-  /// Each row's accumulated impulse, kept from one step to the next to warm
-  /// start from, as a contact's is.
+  /// Each row's accumulated impulse over one sub-step, kept from one to the
+  /// next to warm start from, as a contact's is.
   float impulse[kJointRows] = {};
+
+  /// What the sub-steps of this step have held with so far, in the same rows.
+  /// Strain is read from these, because the last sub-step alone can miss a
+  /// yank that the first one took.
+  float total[kJointRows] = {};
 
   /// What it held with on the last step it was solved.
   float force = 0.0f;
@@ -158,19 +163,24 @@ class Joints {
   bool state(const Bodies &bodies, OrblitPhysicsId id,
              OrblitPhysicsJointState &out) const;
 
-  // The solver's half, called in this order within a step. `prepare` builds
-  // the rows from where the bodies are before they move, and the position
-  // passes work from where they are after.
+  // The solver's half, called in this order within each sub-step of a step.
+  // `prepare` builds the rows from where the bodies are before they move, and
+  // `correctPositions` works from where they are after the last of them.
 
-  void prepare(Bodies &bodies, float delta);
+  /// `h` is the length of the sub-step, which the limits and the motor turn
+  /// into speeds and forces with.
+  void prepare(Bodies &bodies, float h);
   bool idle() const { return rows_.empty(); }
   void warmStart(Bodies &bodies);
   void correctVelocities(Bodies &bodies);
+  /// Adds the sub-step's impulses to the step's.
+  void accumulate();
   void correctPositions(Bodies &bodies);
 
-  /// Works out what each joint solved this step held with, and adds every
-  /// one that held with more than it could take to `broken`. Removes none:
-  /// the caller does that, and says so.
+  /// Works out what each joint solved this step held with, over the `delta`
+  /// of the whole step, and adds every one that held with more than it could
+  /// take to `broken`. Removes none: the caller does that, and says so. The
+  /// next step's sum starts from nothing.
   void strain(const Bodies &bodies, float delta, std::vector<Broken> &broken);
 
  private:

@@ -53,6 +53,14 @@
 
 namespace orblit {
 
+/// Bodies that fell asleep together, with the touching pairs between them that
+/// nobody will look at until one of them wakes. Waking one wakes all, and the
+/// pairs go back to being what the last step found.
+struct Island {
+  std::vector<OrblitPhysicsId> bodies;
+  std::vector<std::pair<PairKey, Manifold>> pairs;
+};
+
 /// Everything a world carries from one step to the next, and nothing it
 /// rebuilds inside one.
 ///
@@ -86,6 +94,8 @@ struct Snapshot {
   std::vector<Character> characters;
   std::vector<OrblitPhysicsEvent> events;
   uint32_t pairs = 0;
+  std::unordered_map<uint32_t, Island> islands;
+  uint32_t lastIsland = 0;
 };
 
 class World {
@@ -214,7 +224,32 @@ class World {
   /// Removes a body and what this world keeps beside it, but not its joints:
   /// ground laid again under the same id is still what they were tied to.
   void unmake(OrblitPhysicsId id);
-  void findContacts();
+  void findContacts(float delta);
+
+  /// Fills `candidates_` with the pairs worth a closer look: the bodies whose
+  /// bounds overlap, minus the ones that are entirely at rest or that cannot
+  /// meet.
+  void pairUp();
+
+  /// Wakes the island of every sleeper that something awake is touching, or
+  /// is about to within `delta` seconds at the speed it closes at.
+  void wakeTouched(float delta);
+
+  /// Half the diagonal of a body's bounds: the furthest any of it is from its
+  /// centre, give or take.
+  float extentOf(uint32_t row) const;
+
+  /// How far a body can go in `delta` seconds, turning included, in metres.
+  /// Zero for one that is asleep.
+  float reachOf(uint32_t row, float delta) const;
+
+  /// Whether `body` is further than `margin` in front of `plane`, which is
+  /// worked out from its bounds. False when `plane` is not one.
+  bool beyondPlane(uint32_t body, uint32_t plane, float margin) const;
+
+  /// Whether two bodies touch, or will within `delta` seconds at the speed
+  /// they close at, and where. Nothing else is read or changed.
+  bool meet(uint32_t a, uint32_t b, float delta, Manifold &out) const;
 
   /// What `rules_` says about the pair, named the way round `first` and the
   /// other body are, which is how a manifold names them.
@@ -229,16 +264,33 @@ class World {
 
   /// Settles, for every body the solver moves, what each zone it is in says.
   void feelZones();
+  /// Moves every solved and driven body by `delta`, in sub-steps, holding
+  /// them to their contacts and joints as it goes.
+  void solveStep(float delta);
   void integrateVelocities(float delta);
 
   /// Holds each body the solver moves to its caps, after the contacts have had
   /// their say, so a cap limits where the body goes and not what it hits.
   void capSpeeds();
   void integratePositions(float delta);
+
+  /// How much of this step's movement the free body in `row` may make before
+  /// it meets a fixed body. One is all of it, and nought is that it is already
+  /// inside one with no contact to hold it. Read from the velocity the solve
+  /// left, which is why it runs where the move is made and not with the
+  /// contacts.
+  float freeRun(uint32_t row, float delta) const;
+
+  /// Whether this step has a contact between the bodies in `a` and `b`.
+  bool holds(uint32_t a, uint32_t b) const;
   void moveCharacters(float delta);
   void moveCharacter(Character &character, uint32_t row, const Vec3 &up,
                      float delta);
   void updateSleep(float delta);
+
+  /// Remembers where every body is, for `updateSleep` to say how far each
+  /// one has gone since.
+  void rememberPositions();
 
   /// Stops a body that a moving surface is holding still from counting that as
   /// rest. It is at rest against the surface and not against the world, and
@@ -248,9 +300,24 @@ class World {
   /// Wakes every body whose bounds overlap `area`.
   void wakeWithin(const Bounds &area);
 
-  /// Puts every group of joined bodies to sleep that is still enough as a
-  /// whole, and none that is not.
-  void sleepJoined();
+  /// Puts every island to sleep that is still enough as a whole, and none that
+  /// is not. An island is a set of bodies the solver moves that touch, or are
+  /// joined, through one another.
+  void sleepIslands();
+
+  /// Hands the pairs that sleeping bodies make with each other and with fixed
+  /// bodies to their island, out of this step's touches.
+  void keepResting();
+
+  /// Wakes `row`, which is asleep, and everything that fell asleep in its
+  /// island, so a stack is woken as a stack and not a layer a step.
+  void wakeIsland(uint32_t row);
+
+  /// Wakes one body that is asleep and says so.
+  void waken(uint32_t row);
+
+  /// Takes a body out of the island it sleeps in, because it is going.
+  void leaveIsland(OrblitPhysicsId id);
 
   /// Wakes everything joined to `row`, and everything joined to that, but
   /// not through a body the solver does not move: two chains hung from the
@@ -354,14 +421,34 @@ class World {
   std::vector<uint32_t> planes_;
   std::vector<std::pair<uint32_t, uint32_t>> candidates_;
 
+  /// How far each of `sorted_` can go in this step, in the same order, and the
+  /// most of them.
+  std::vector<float> reach_;
+
+  /// Where each body was when the step began, by row.
+  std::vector<Vec3> began_;
+
+  float longest_ = 0.0f;
+
   /// How many of those the narrowphase looked at in the last step. Kept past
   /// the step, unlike the list, so a snapshot can carry it.
   uint32_t pairs_ = 0;
 
-  /// Scratch for joints, likewise: which group each row is in, whether each
-  /// group may sleep, the bodies left to wake, and the joints that broke.
+  /// Every island that is asleep, by the number its bodies carry. The last
+  /// number given is kept so a new island never has one a sleeping island has,
+  /// and a snapshot carries both.
+  std::unordered_map<uint32_t, Island> islands_;
+  uint32_t lastIsland_ = 0;
+
+  /// Set when a body is woken. `findContacts` clears it and reads it back.
+  bool woke_ = false;
+
+  /// Scratch for islands and joints, likewise: which group each row is in,
+  /// whether each group may sleep, what it was called, the bodies left to
+  /// wake, and the joints that broke.
   std::vector<uint32_t> group_;
   std::vector<uint8_t> ready_;
+  std::vector<uint32_t> named_;
   std::vector<OrblitPhysicsId> waking_;
   std::vector<OrblitPhysicsId> partners_;
   std::vector<Broken> broken_;

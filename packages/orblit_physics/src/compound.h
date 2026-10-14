@@ -42,7 +42,9 @@ float volumeOf(const Shape &of);
 
 Vec3 supportParts(const Placed &of, const Vec3 &direction);
 
-bool collideParts(const Placed &a, const Placed &b, Manifold &out);
+/// Where the parts of `a` touch the parts of `b`, or are within `margin` of
+/// it, as `collideNear` says for one pair.
+bool collideParts(const Placed &a, const Placed &b, float margin, Manifold &out);
 bool sweepParts(const Placed &moving, const Vec3 &direction, float distance,
                 const Placed &fixed, Impact &out);
 

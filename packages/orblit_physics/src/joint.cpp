@@ -11,8 +11,8 @@ constexpr float kFar = std::numeric_limits<float>::infinity();
 
 /// What fraction of a joint's error one position pass puts back.
 ///
-/// More than a contact's fifth. A contact has slop to rest in and the rest of
-/// a stack to share its push with; a joint has neither, and one that puts back
+/// More than a contact's fifth. A contact has a soft spring and the rest of a
+/// stack to share its push with; a joint has neither, and one that puts back
 /// only a fifth of what it drifted is a chain that sags while it swings. Less
 /// than all of it, because a joint's rows are corrected one after another, and
 /// each full correction would undo part of the one before.
@@ -377,7 +377,7 @@ float Joints::massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
   return k > kTiny ? 1.0f / k : 0.0f;
 }
 
-void Joints::prepare(Bodies &bodies, float delta) {
+void Joints::prepare(Bodies &bodies, float h) {
   held_.clear();
   rows_.clear();
 
@@ -403,8 +403,8 @@ void Joints::prepare(Bodies &bodies, float delta) {
 
       if (which == kMotorRow) {
         row.target = joint.speed;
-        row.least = -joint.strength * delta;
-        row.most = joint.strength * delta;
+        row.least = -joint.strength * h;
+        row.most = joint.strength * h;
       } else if (joint.least[which] == joint.most[which]) {
         // Locked. Only the velocity is held here; where it has drifted to is
         // put back by the position passes, which is what keeps a held joint
@@ -414,17 +414,18 @@ void Joints::prepare(Bodies &bodies, float delta) {
         row.most = kFar;
       } else {
         // A limit, and only its nearer end. It lets the joint close on that
-        // end as fast as it likes so long as it will not pass it this step,
-        // so it catches a fast swing on the step it arrives rather than the
-        // step after, and never pulls it back from anywhere short of it.
+        // end as fast as it likes so long as it will not pass it this
+        // sub-step, so it catches a fast swing on the sub-step it arrives
+        // rather than the one after, and never pulls it back from anywhere
+        // short of it.
         const float low = joint.least[which];
         const float high = joint.most[which];
         if (at - low < high - at) {
-          row.target = at > low ? (low - at) / delta : 0.0f;
+          row.target = at > low ? (low - at) / h : 0.0f;
           row.least = 0.0f;
           row.most = kFar;
         } else {
-          row.target = at < high ? (high - at) / delta : 0.0f;
+          row.target = at < high ? (high - at) / h : 0.0f;
           row.least = -kFar;
           row.most = 0.0f;
         }
@@ -464,6 +465,15 @@ void Joints::correctVelocities(Bodies &bodies) {
         was - row.mass * (speedAlong(bodies, held, row) - row.target),
         row.least, row.most);
     apply(bodies, held, row, impulse - was);
+  }
+}
+
+void Joints::accumulate() {
+  for (const Held &held : held_) {
+    Joint &joint = joints_[held.joint];
+    for (int which = 0; which < kJointRows; ++which) {
+      joint.total[which] += joint.impulse[which];
+    }
   }
 }
 
@@ -517,8 +527,9 @@ void Joints::strain(const Bodies &bodies, float delta,
     // rows that turn, so each set adds up as a vector. The motor pushes along
     // the row it drives.
     float along[6];
-    for (int which = 0; which < 6; ++which) along[which] = joint.impulse[which];
-    if (joint.motor >= 0) along[joint.motor] += joint.impulse[kMotorRow];
+    for (int which = 0; which < 6; ++which) along[which] = joint.total[which];
+    if (joint.motor >= 0) along[joint.motor] += joint.total[kMotorRow];
+    for (float &sum : joint.total) sum = 0.0f;
     joint.force = std::sqrt(along[0] * along[0] + along[1] * along[1] +
                             along[2] * along[2]) / delta;
     joint.torque = std::sqrt(along[3] * along[3] + along[4] * along[4] +

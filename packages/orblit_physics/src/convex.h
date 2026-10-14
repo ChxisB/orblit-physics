@@ -52,6 +52,15 @@ class Convex {
   /// radius, and nothing for the rest.
   float radius() const { return radius_; }
 
+  /// The same shape with its surface `by` further out, as a sphere's or a
+  /// capsule's is held off its core: the shape and a ball of radius `by` swept
+  /// over one another.
+  Convex rounded(float by) const {
+    Convex out = *this;
+    out.radius_ += by;
+    return out;
+  }
+
   /// A point inside the core.
   const D3 &middle() const { return middle_; }
 

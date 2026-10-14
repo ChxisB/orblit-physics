@@ -295,6 +295,20 @@ class Walker {
     return out;
   }
 
+  /// The fixed and driven bodies that could meet `area`, lowest row first, so
+  /// that pushing out of several at once goes the same way however the tree
+  /// happens to be laid out.
+  std::vector<uint32_t> obstaclesNear(const Bounds &area) const {
+    std::vector<uint32_t> rows;
+    bodies_.visitStill(area, [&](uint32_t row) { rows.push_back(row); });
+    for (const uint32_t row : bodies_.scanned()) {
+      const Motion motion = bodies_.motion(row);
+      if (motion == Motion::fixed || motion == Motion::driven) rows.push_back(row);
+    }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+  }
+
   /// Pushes it out of whatever fixed or driven body it overlaps, as far as
   /// the skin beyond touching.
   ///
@@ -306,11 +320,8 @@ class Walker {
     for (int pass = 0; pass < kMostPushOuts; ++pass) {
       bool moved = false;
       const Bounds mine = shape_.boundsAt(at, rotation_).grown(skin());
-      const uint32_t count = bodies_.count();
-      for (uint32_t row = 0; row < count; ++row) {
+      for (const uint32_t row : obstaclesNear(mine)) {
         if (row == self) continue;
-        const Motion motion = bodies_.motion(row);
-        if (motion != Motion::fixed && motion != Motion::driven) continue;
         // A sensor is somewhere to be, not something to be pushed out of.
         if (bodies_.sensor(row)) continue;
         if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),

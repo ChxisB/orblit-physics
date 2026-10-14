@@ -1,3 +1,62 @@
+## 0.12.0
+
+Breaking.
+
+- `PhysicsSettings.stiffness` is gone. A contact is a spring, and
+  `contactHertz` is its frequency. The default is 50.
+- `subSteps` is new. A step is cut into that many pieces, and each piece is
+  solved and moved. The default is 6.
+- `velocitySteps` counts the passes in each sub-step and not in the whole
+  step. The default is 1.
+- `slop` is the depth a body is let in as it arrives. A quarter of it is the
+  depth it settles at, which is 5 mm at the default of 0.02.
+- The defaults are tuned for 60 steps a second. At 30, a wall of 25 by 20
+  boxes grows a mode and comes down to half its height, as it does in 0.11.
+  The heap of 1,000 boxes sleeps whole in 6 of 8 seeds.
+- A bounce is worked out after the move and not before it. A body used to
+  turn round up to a step of travel above the surface.
+
+Added.
+
+- `PhysicsControls.continuous` casts a free body along its move against
+  fixed bodies and ground, and stops it at the first it would pass through.
+  It costs one cast a step while the body moves.
+- Speculative contacts. A pair that will cross the gap this step gets a
+  contact before it touches, so nothing crosses a thin wall at any speed from
+  5 to 320 m/s in the benchmark. Slow pairs keep the exact contact. A
+  sleeper is woken one step early, by the same margin.
+- Islands. Bodies that touch sleep and wake as one, and a stack reports
+  nothing on the way. A body now waits for everything it touches, so a heap
+  sleeps whole and a scatter of spheres sleeps fewer.
+- A tree for fixed bodies. Casts and push-outs read it, and a cast against
+  5,000 boxes takes 2.3 µs and not 23.8.
+- `tool/benchmark.sh` times a step on the scenes in `bench/benchmark.cpp`.
+
+Changed.
+
+- A box face on a box face keeps the four corners that spread furthest and
+  not the four deepest. All four deepest are equally deep, so which four
+  changed with a hair of yaw and threw away the impulses holding a stack up.
+- A body is put to sleep by the distance it walked over the step as well as
+  by its speed. The relax pass zeroes the speed of a body at rest, so speed
+  alone read a creeping body as still.
+- A ball closing on the ground from 1.5 cm lands 1.6 mm in and rises. Three
+  landing tests changed their bounds and not their promise.
+
+Fixed.
+
+- A cast chose the wrong one of two candidates and reported a touch that was
+  not there.
+- A height field's bounds are plus and minus 1e30, which made `extentOf` NaN.
+
+Costs.
+
+- A step is longer. Scatter of 2,000 spheres takes 2.1 ms against 0.7, and
+  sleeps 947 against 1,384. The level of 5,000 boxes and 200 spheres takes
+  135 µs against 403, because of the tree.
+- The ragdoll in the test sleeps in 10 of 13 throws against 13 of 13.
+- A wall of 50 by 40 boxes does not sleep, and did not in 0.11.
+
 ## 0.11.1
 
 - Correct capsule contacts with rotated boxes and overlapping interiors.

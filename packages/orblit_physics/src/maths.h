@@ -262,6 +262,11 @@ struct Bounds {
            high.y >= o.low.y && low.z <= o.high.z && high.z >= o.low.z;
   }
 
+  bool operator==(const Bounds &o) const {
+    return low.x == o.low.x && low.y == o.low.y && low.z == o.low.z &&
+           high.x == o.high.x && high.y == o.high.y && high.z == o.high.z;
+  }
+
   /// Grown by `m` on every side. Used to keep a pair in the broadphase for a
   /// frame after it stops overlapping, so a contact that is about to come back
   /// is not rediscovered from nothing.

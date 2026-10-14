@@ -33,6 +33,10 @@ struct Controls {
   /// zero.
   Vec3 inertia;
 
+  /// Stopped at the first fixed body it would pass through in a step, instead
+  /// of being found on the far side of it.
+  bool continuous = false;
+
   bool locksMove(int axis) const {
     return (locks & (ORBLIT_PHYSICS_LOCK_MOVE_X << axis)) != 0;
   }
