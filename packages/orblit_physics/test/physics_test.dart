@@ -734,11 +734,15 @@ void main() {
         5,
         6,
         7,
+        8,
+        9,
+        10,
+        11,
       ]);
     });
 
     test('its structs are the size the engine reads', () {
-      expect(sizeOf<native.OrblitPhysicsJoint>(), 240);
+      expect(sizeOf<native.OrblitPhysicsJoint>(), 280);
       expect(sizeOf<native.OrblitPhysicsJointState>(), 32);
     });
 
@@ -1129,6 +1133,265 @@ void main() {
       final soft = widest(const JointSoftness(hertz: 1.0));
       expect(hard, lessThan(0.53));
       expect(soft, greaterThan(hard + 0.05));
+    });
+
+    /// A frame whose x axis is the world's z, so a hinge turns a wheel that
+    /// faces the camera.
+    const aboutZ = [0.0, -0.70710678, 0.0, 0.70710678];
+
+    /// A wheel on the world with its centre on its axle, so only a motor or a
+    /// gear turns it.
+    void wheel(int id, List<double> at, {double speed = 0.0}) {
+      physics.add(id, shape: const Shape.box(0.3, 0.3, 0.3), at: at);
+      physics.join(
+        id,
+        Joint.hinge(speed: speed, strength: speed == 0.0 ? 0.0 : 200.0),
+        a: 0,
+        b: id,
+        at: at,
+        rotation: aboutZ,
+      );
+    }
+
+    test('a gear turns the second wheel as far the other way as it says', () {
+      wheel(2, const [0.0, 3.0, 0.0], speed: 4.0);
+      wheel(3, const [1.0, 3.0, 0.0]);
+      expect(
+        physics.join(
+          9,
+          const Joint.gear(ratio: -0.5),
+          a: 2,
+          b: 3,
+          at: const [0.5, 3.0, 0.0],
+          rotation: aboutZ,
+        ),
+        isTrue,
+      );
+      for (var i = 0; i < 30; i++) {
+        physics.step(1 / 60);
+      }
+      final left = physics.jointStateOf(2)!.angles[0];
+      final right = physics.jointStateOf(3)!.angles[0];
+      expect(left, greaterThan(0.8));
+      expect(right, closeTo(-0.5 * left, 0.03));
+
+      for (var i = 0; i < 150; i++) {
+        physics.step(1 / 60);
+      }
+      expect(
+        physics.jointStateOf(9)!.offset[0].abs(),
+        lessThan(0.05),
+        reason: 'the ratio holds over turns, which a pose cannot count',
+      );
+    });
+
+    test('without the gear the second wheel stays where it was', () {
+      wheel(2, const [0.0, 3.0, 0.0], speed: 4.0);
+      wheel(3, const [1.0, 3.0, 0.0]);
+      for (var i = 0; i < 30; i++) {
+        physics.step(1 / 60);
+      }
+      expect(physics.jointStateOf(3)!.angles[0].abs(), lessThan(0.01));
+    });
+
+    test('a rack moves by its ratio for each radian its pinion turns', () {
+      physics.add(
+        2,
+        shape: const Shape.box(0.2, 0.2, 0.2),
+        at: const [0.0, 2.2, 0.0],
+      );
+      physics.add(
+        3,
+        shape: const Shape.box(0.2, 0.2, 0.2),
+        at: const [0.0, 3.0, 0.0],
+      );
+      physics.join(
+        1,
+        const Joint.slider(),
+        a: 0,
+        b: 2,
+        at: const [0.0, 2.2, 0.0],
+      );
+      physics.join(
+        2,
+        const Joint.hinge(speed: 2.0, strength: 100.0),
+        a: 0,
+        b: 3,
+        at: const [0.0, 3.0, 0.0],
+        rotation: aboutZ,
+      );
+      expect(
+        physics.join(
+          3,
+          const Joint.rack(ratio: 0.25),
+          a: 2,
+          b: 3,
+          at: const [0.0, 2.6, 0.0],
+          axisB: const [0.0, 0.0, 1.0],
+        ),
+        isTrue,
+      );
+      for (var i = 0; i < 60; i++) {
+        physics.step(1 / 60);
+      }
+      final turned = physics.jointStateOf(2)!.angles[0];
+      expect(turned, greaterThan(1.5));
+      expect(physics.jointStateOf(1)!.offset[0], closeTo(0.25 * turned, 0.02));
+    });
+
+    test('weights over a pulley move at a third of gravity', () {
+      physics.add(
+        2,
+        shape: const Shape.box(0.1, 0.1, 0.1),
+        mass: 2.0,
+        at: const [-1.0, 1.0, 0.0],
+      );
+      physics.add(
+        3,
+        shape: const Shape.box(0.1, 0.1, 0.1),
+        at: const [1.0, 1.0, 0.0],
+      );
+      expect(
+        physics.join(
+          1,
+          const Joint.pulley(),
+          a: 2,
+          b: 3,
+          at: const [-1.0, 1.0, 0.0],
+          to: const [1.0, 1.0, 0.0],
+          over: const [
+            [-1.0, 3.0, 0.0],
+            [1.0, 3.0, 0.0],
+          ],
+        ),
+        isTrue,
+      );
+      for (var i = 0; i < 30; i++) {
+        physics.step(1 / 60);
+      }
+      final fall = 1.0 - heightOf(2);
+      expect(fall, closeTo(0.41, 0.06));
+      expect(heightOf(3) - 1.0, closeTo(fall, 0.02));
+    });
+
+    group('a path', () {
+      /// A slope of one in two and then a flat, from (0, 3) to (6, 1.5).
+      const way = [
+        [0.0, 3.0, 0.0],
+        [3.0, 1.5, 0.0],
+        [6.0, 1.5, 0.0],
+      ];
+
+      void ball(Joint joint) {
+        physics.add(
+          2,
+          shape: const Shape.sphere(0.1),
+          at: const [0.0, 3.0, 0.0],
+        );
+        expect(
+          physics.join(
+            1,
+            joint,
+            a: 0,
+            b: 2,
+            at: const [0.0, 3.0, 0.0],
+            path: way,
+          ),
+          isTrue,
+        );
+      }
+
+      test('holds a ball on its line as it slides down', () {
+        ball(const Joint.path());
+        for (var i = 0; i < 60; i++) {
+          physics.step(1 / 60);
+        }
+        final arc = physics.jointStateOf(1)!.offset[0];
+        expect(arc, closeTo(2.15, 0.15));
+        final at = physics.transformOf(2)!;
+        expect(at[0], closeTo(0.894427 * arc, 0.02));
+        expect(at[1], closeTo(3.0 - 0.447214 * arc, 0.02));
+      });
+
+      test('goes round a corner', () {
+        ball(const Joint.path());
+        for (var i = 0; i < 96; i++) {
+          physics.step(1 / 60);
+        }
+        expect(heightOf(2), closeTo(1.5, 0.02));
+      });
+
+      test('stops at a limit', () {
+        ball(const Joint.path(limit: JointLimit(0.0, 2.0)));
+        for (var i = 0; i < 120; i++) {
+          physics.step(1 / 60);
+        }
+        expect(physics.jointStateOf(1)!.offset[0], closeTo(2.0, 0.05));
+      });
+
+      test('is driven along by a motor', () {
+        ball(const Joint.path(speed: 1.0, strength: 100.0));
+        for (var i = 0; i < 60; i++) {
+          physics.step(1 / 60);
+        }
+        expect(physics.jointStateOf(1)!.offset[0], closeTo(1.0, 0.1));
+      });
+
+      test('is refused without a line to follow', () {
+        physics.add(
+          2,
+          shape: const Shape.sphere(0.1),
+          at: const [0.0, 3.0, 0.0],
+        );
+        bool path(List<List<double>>? points) => physics.join(
+          1,
+          const Joint.path(),
+          a: 0,
+          b: 2,
+          at: const [0.0, 3.0, 0.0],
+          path: points,
+        );
+        expect(path(null), isFalse);
+        expect(
+          path(const [
+            [0.0, 3.0, 0.0],
+          ]),
+          isFalse,
+        );
+        expect(
+          () => path(const [
+            [0.0, 3.0],
+            [1.0, 3.0],
+          ]),
+          throwsArgumentError,
+        );
+        expect(path(way), isTrue);
+      });
+    });
+
+    test('a coupling with no ratio is refused', () {
+      physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 3.0, 0.0]);
+      expect(
+        physics.join(
+          1,
+          const Joint.gear(ratio: double.nan),
+          a: 2,
+          at: const [0.0, 3.0, 0.0],
+        ),
+        isFalse,
+      );
+      expect(
+        () => physics.join(
+          1,
+          const Joint.pulley(),
+          a: 2,
+          at: const [0.0, 3.0, 0.0],
+          over: const [
+            [0.0, 4.0, 0.0],
+          ],
+        ),
+        throwsArgumentError,
+      );
     });
 
     test('the world refuses a joint it cannot make', () {

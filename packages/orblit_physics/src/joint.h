@@ -8,10 +8,13 @@
 // when the joint is made, so the solver has one kind of row to solve rather
 // than seven kinds of joint.
 //
-// Two kinds bend that. A distance joint's one row is along the line between
+// Four kinds bend that. A distance joint's one row is along the line between
 // its points rather than along an axis of its frame, and a cone's swing row is
 // along whichever way it is swinging, because a cone limits how far it swings
-// rather than which way.
+// rather than which way. A path joint's frame is wherever the path is, so its
+// rows are measured along the path at the point nearest `b`. A coupling holds
+// one row only, whose coordinate is a sum of the two bodies' own: a gear's
+// turns, a rack's slide and a pinion's turn, a rope's two lengths.
 //
 // A row is a lever, an effective mass and an accumulated impulse, the same as
 // a contact's, solved in the same passes: velocity passes that stop it moving
@@ -41,6 +44,54 @@ constexpr int kMotorRow = 6;
 constexpr int kSpringRow = 7;
 constexpr int kJointRows = 13;
 
+/// The most points a path joint is given.
+constexpr uint32_t kMostPathPoints = 10000;
+
+/// What a coupling ties together, for the kinds that tie a coordinate of `a` to
+/// one of `b` and do not hold one body's place against the other's.
+enum class Tied : uint8_t { None, Gear, Rack, Pulley };
+
+/// A coupling's one coordinate, and the sum it keeps.
+///
+/// The coordinate is made of turns, and a turn is not a thing a pose holds: a
+/// body that has gone round three times is in the pose it began in. So it is
+/// summed, a sub-step at a time, from how far each body turned since it was
+/// last looked at.
+struct Tie {
+  Tied kind = Tied::None;
+
+  /// Gear: how far `b` turns for each turn of `a`, the same way about their
+  /// own x axes. Rack: how far `a` moves along `axis` for each radian `b` turns.
+  /// Pulley: how much rope comes off `b`'s side for one off `a`'s.
+  float ratio = 0.0f;
+
+  /// Rack: the way `a` slides, in the world, as it was when the joint was made.
+  Vec3 axis;
+
+  /// Pulley: the two points the rope runs over, in the world.
+  Vec3 over[2];
+
+  /// The coordinate when the joint was made, which is what it keeps.
+  float constant = 0.0f;
+
+  /// Gear and rack: how far `a` and `b` have turned about their axes, and the
+  /// rotation each had when that was last added up.
+  float turned[2] = {};
+  Quat last[2];
+};
+
+/// A path for a joint's point on `b` to follow, in `a`'s frame, or in the world
+/// when `a` is the world.
+struct Track {
+  std::vector<Vec3> points;
+
+  /// How far along the path each point is, in metres, from the first.
+  std::vector<float> arc;
+
+  /// Whether `b`'s x axis is kept along the path as well as its point on it.
+  bool follow = false;
+};
+
 /// How a joint was asked for, in the engine's own numbers.
 struct JointDescription {
   OrblitPhysicsId id = 0;
@@ -64,6 +115,11 @@ struct JointDescription {
   float springRest[6] = {};
   float limitHertz = 0.0f;
   float limitRatio = 0.0f;
+  float ratio = 0.0f;
+  Vec3 axisB;
+  Vec3 over[2];
+  std::vector<Vec3> path;
+  bool follow = false;
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
   bool collide = false;
@@ -121,6 +177,13 @@ struct Joint {
   /// past its end, rather than a wall. Locks are not limits and stay hard.
   float limitHertz = 0.0f;
   float limitRatio = 0.0f;
+
+  /// A coupling holds its coordinate as way 0, and has no frame to hold the
+  /// others by. A path joint's point follows `track`, which gives way 0 its
+  /// arc length and the rest their frame.
+  Tie tie;
+  Track track;
+  bool onPath() const { return !track.points.empty(); }
 
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
@@ -253,10 +316,12 @@ class Joints {
     uint32_t held = 0;
     int which = 0;
 
-    /// Pushing along `linear` at `b`'s point moves `b` along it and `a` the
-    /// other way; `turnA` and `turnB` are how that turns each. A row about
-    /// an axis has no `linear`, and both turns are the axis.
-    Vec3 linear;
+    /// Pushing along the row moves `b` along `linearB` and `a` along
+    /// `linearA` the other way; `turnA` and `turnB` are how that turns each.
+    /// Most rows have one `linear` for both. A row about an axis has none, and
+    /// both turns are the axis. A coupling has a different row for each body.
+    Vec3 linearA;
+    Vec3 linearB;
     Vec3 turnA;
     Vec3 turnB;
     float mass = 0.0f;
@@ -292,7 +357,8 @@ class Joints {
 
   /// How hard it is to change the speed along a row, inverted. Zero when
   /// neither body can move, which makes every impulse along it zero.
-  static float massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
+  static float massAlong(const Held &held, const Vec3 &linearA,
+                         const Vec3 &linearB, const Vec3 &turnA,
                          const Vec3 &turnB);
 
   static float speedAlong(const Bodies &bodies, const Held &held,

@@ -8,7 +8,7 @@
 // a command still takes effect the moment it is given.
 
 import 'dart:ffi';
-import 'dart:math' show pi, sqrt;
+import 'dart:math' show max, pi, sqrt;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -457,7 +457,11 @@ enum PhysicsJointKind {
   slider(4),
   distance(5),
   cone(6),
-  sixAxis(7);
+  sixAxis(7),
+  gear(8),
+  rack(9),
+  pulley(10),
+  path(11);
 
   const PhysicsJointKind(this.code);
   final int code;
@@ -589,6 +593,8 @@ final class Joint {
     this.goal,
     this.springs = const JointSprings(),
     this.softLimit,
+    this.ratio = 1.0,
+    this.follow = false,
   });
 
   /// Holds the second body exactly where it is relative to the first: welded.
@@ -728,7 +734,92 @@ final class Joint {
          softLimit: softLimit,
        );
 
+  /// Ties how far the second body turns to how far the first does: it turns
+  /// [ratio] times as far, about its own x axis. Meshed gears turn opposite
+  /// ways, so a ratio is negative for them.
+  ///
+  /// Both bodies are usually hinged to something already, and the gear only
+  /// makes them turn together. Turns are counted over many revolutions, which
+  /// an angle read from a pose cannot do, so the ratio holds after the wheels
+  /// have gone round a hundred times. A spring on `alongX`, the only way a
+  /// coupling has, makes the teeth yield under load and come back.
+  ///
+  /// [Physics.join] takes `axisB` where the second body's axis is not the
+  /// frame's own.
+  const Joint.gear({
+    required double ratio,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.gear, ratio: ratio, springs: springs);
+
+  /// Ties how far the first body slides to how far the second turns: the
+  /// first, the rack, moves [ratio] metres along the frame's x for each
+  /// radian the second, the pinion, turns about its own x.
+  ///
+  /// The rack's direction is fixed in the world from where the joint is made,
+  /// so hinge or slide the rack to what it runs on. A spring on `alongX`
+  /// makes the teeth give.
+  const Joint.rack({
+    required double ratio,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.rack, ratio: ratio, springs: springs);
+
+  /// A rope over two fixed points. The length from the first point to the
+  /// first body's point, plus [ratio] times the length from the second point
+  /// to the second body's, stays what it was when made. As one side goes down
+  /// the other comes up, by [ratio] times as much.
+  ///
+  /// Both ends are given to [Physics.join]: `at` on the first body, `to` on
+  /// the second, and the two fixed points as `over`.
+  ///
+  /// It holds in both directions, so it is a rod and not a rope: it pushes
+  /// as well as pulls. A spring on `alongX` makes it stretch.
+  const Joint.pulley({
+    double ratio = 1.0,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.pulley, ratio: ratio, springs: springs);
+
+  /// Lets the second body slide along a bent line, a rail, a track or a
+  /// chute, and holds it on it. The line is [Physics.join]'s `path`, in the
+  /// world as it stands when the joint is made, and it is carried with the
+  /// first body.
+  ///
+  /// `limit` is how far along it may go, in metres from the first point. A
+  /// motor takes it along at `speed` metres a second, never harder than
+  /// `strength` newtons, and a [goal] holds a place. A spring on `alongX`
+  /// pulls it to a place along the line, and [softLimit] makes the ends of
+  /// the limit springs. Past the ends the line goes on straight, so give it a limit
+  /// unless it should run off.
+  ///
+  /// The second body keeps its own turn unless [follow] is set, when its x
+  /// axis is kept along the line as well and it is free to roll about it. The
+  /// corners of the line are sharp, and a loop is closed by repeating its
+  /// first point.
+  const Joint.path({
+    JointLimit? limit,
+    double speed = 0.0,
+    double strength = 0.0,
+    JointGoal? goal,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
+    bool follow = false,
+  }) : this._(
+         PhysicsJointKind.path,
+         alongX: limit,
+         speed: speed,
+         strength: strength,
+         goal: goal,
+         springs: springs,
+         softLimit: softLimit,
+         follow: follow,
+       );
+
   final PhysicsJointKind kind;
+
+  /// The ratio a gear, a rack or a pulley ties its two sides at.
+  final double ratio;
+
+  /// Whether a path keeps the second body's x axis along the line.
+  final bool follow;
 
   /// The range of each of the six ways, or null where the kind leaves it
   /// alone: metres along the frame's axes, then radians about them.
@@ -1524,6 +1615,9 @@ class Physics {
     required List<double> at,
     List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
     List<double>? to,
+    List<double>? axisB,
+    List<List<double>>? over,
+    List<List<double>>? path,
     double breakingForce = 0.0,
     double breakingTorque = 0.0,
     bool collide = false,
@@ -1533,22 +1627,15 @@ class Physics {
     // is made.
     _flush();
     final made = calloc<native.OrblitPhysicsJoint>();
+    Pointer<Float>? points;
     try {
+      points = _pathOf(path);
       final it = made.ref;
       it.id = id;
       it.a = a;
       it.b = b;
       it.kind = joint.kind.code;
-      final limits = joint.limits;
-      var limited = 0;
-      for (var i = 0; i < 6; i++) {
-        final limit = limits[i];
-        if (limit == null) continue;
-        limited |= 1 << i;
-        it.low[i] = limit.low;
-        it.high[i] = limit.high;
-      }
-      it.limited = limited;
+      _writeLimits(it, joint);
       _write3(it.at, at);
       for (var i = 0; i < 4; i++) {
         it.rotation[i] = rotation[i];
@@ -1558,12 +1645,71 @@ class Physics {
       it.speed = joint.speed;
       it.strength = joint.strength;
       _writeGive(it, joint, _lengthOf(joint, at, to));
+      _writeTie(it, joint, axisB: axisB, over: over);
       it.breakingForce = breakingForce;
       it.breakingTorque = breakingTorque;
       it.collide = collide;
-      return native.physicsJoin(_alive, made);
+      if (points == null || path == null) {
+        return native.physicsJoin(_alive, made);
+      }
+      return native.physicsJoinPath(_alive, made, points, path.length);
     } finally {
+      if (points != null) calloc.free(points);
       calloc.free(made);
+    }
+  }
+
+  /// A path's points as the flat floats the ABI takes, or null for none. The
+  /// caller frees it.
+  Pointer<Float>? _pathOf(List<List<double>>? path) {
+    if (path == null) return null;
+    final flat = calloc<Float>(max(path.length * 3, 1));
+    for (var i = 0; i < path.length; i++) {
+      final point = path[i];
+      if (point.length != 3) {
+        calloc.free(flat);
+        throw ArgumentError.value(point, 'path', 'A point is x, y and z.');
+      }
+      flat[i * 3] = point[0];
+      flat[i * 3 + 1] = point[1];
+      flat[i * 3 + 2] = point[2];
+    }
+    return flat;
+  }
+
+  void _writeLimits(native.OrblitPhysicsJoint it, Joint joint) {
+    final limits = joint.limits;
+    var limited = 0;
+    for (var i = 0; i < 6; i++) {
+      final limit = limits[i];
+      if (limit == null) continue;
+      limited |= 1 << i;
+      it.low[i] = limit.low;
+      it.high[i] = limit.high;
+    }
+    it.limited = limited;
+  }
+
+  /// Writes what a coupling or a path adds to a joint: its ratio, the axis of
+  /// its second body, the two fixed points of a pulley, and whether a path
+  /// turns its body to follow.
+  void _writeTie(
+    native.OrblitPhysicsJoint it,
+    Joint joint, {
+    List<double>? axisB,
+    List<List<double>>? over,
+  }) {
+    it.ratio = joint.ratio;
+    it.follow = joint.follow;
+    if (axisB != null) _write3(it.axisB, axisB);
+    if (over == null) return;
+    if (over.length != 2) {
+      throw ArgumentError.value(over, 'over', 'A pulley has two points.');
+    }
+    for (var i = 0; i < 2; i++) {
+      for (var k = 0; k < 3; k++) {
+        it.over[i * 3 + k] = over[i][k];
+      }
     }
   }
 

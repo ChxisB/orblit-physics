@@ -199,8 +199,10 @@ class World {
   void wake(uint32_t row);
 
   /// Makes a joint where the bodies stand, waking both. False, and nothing
-  /// changed, if it cannot be made.
-  bool join(const OrblitPhysicsJoint &from);
+  /// changed, if it cannot be made. A path joint is given `count` points, three
+  /// floats each, as `path`.
+  bool join(const OrblitPhysicsJoint &from, const float *path = nullptr,
+            uint32_t count = 0);
 
   /// Removes a joint, waking both its bodies. False if there was none.
   bool unjoin(OrblitPhysicsId id);

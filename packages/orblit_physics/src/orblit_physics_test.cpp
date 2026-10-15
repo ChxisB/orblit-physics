@@ -1900,6 +1900,197 @@ void giving() {
   check(near(softSettled, 0.5f, 0.03f), "and brings it back to the end and holds it there");
 }
 
+/// Turns a joint's frame so its x axis points along z.
+void aboutZ(OrblitPhysicsJoint &joint) {
+  joint.rotation[1] = -0.70710678f;
+  joint.rotation[3] = 0.70710678f;
+}
+
+void coupling() {
+  // Two wheels on hinges to the world, a motor on the left one and a gear
+  // between them. The right turns half as far the other way.
+  const auto wheels = [](OrblitPhysics *world, bool geared) {
+    submit(world, boxAt(2, 0.3f, 0.0f, 3.0f, 0.0f));
+    submit(world, boxAt(3, 0.3f, 1.0f, 3.0f, 0.0f));
+    OrblitPhysicsJoint spindle = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 0, 2, 0.0f, 3.0f, 0.0f);
+    aboutZ(spindle);
+    spindle.speed = 4.0f;
+    spindle.strength = 200.0f;
+    join(world, spindle);
+    spindle = jointOf(2, ORBLIT_PHYSICS_JOINT_HINGE, 0, 3, 1.0f, 3.0f, 0.0f);
+    aboutZ(spindle);
+    join(world, spindle);
+    OrblitPhysicsJoint gear = jointOf(3, ORBLIT_PHYSICS_JOINT_GEAR, 2, 3, 0.5f, 3.0f, 0.0f);
+    aboutZ(gear);
+    gear.ratio = -0.5f;
+    if (geared) join(world, gear);
+  };
+
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  wheels(physics, true);
+  run(physics, 0.5f);
+  const float left = stateOf(physics, 1).angles[0];
+  const float right = stateOf(physics, 2).angles[0];
+  check(left > 0.8f && near(right, -0.5f * left, 0.03f),
+        "a gear turns the second wheel half as far the other way");
+  run(physics, 2.5f);
+  check(near(spinOf(physics, 3, 2), -0.5f * spinOf(physics, 2, 2), 0.1f) &&
+            std::fabs(spinOf(physics, 2, 2)) > 3.0f,
+        "and as fast, while the first goes round twice and more");
+  check(std::fabs(stateOf(physics, 3).offset[0]) < 0.05f,
+        "with the ratio kept over turns, which a pose cannot count");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  wheels(physics, false);
+  run(physics, 0.5f);
+  check(std::fabs(stateOf(physics, 2).angles[0]) < 0.01f,
+        "without the gear the second wheel stays where it was");
+  orblit_physics_destroy(physics);
+
+  // A rack on a rail along x, a pinion above it, and the pinion driven. The
+  // rack moves a quarter metre for each radian.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.2f, 0.0f, 2.2f, 0.0f));
+  submit(physics, boxAt(3, 0.2f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_SLIDER, 0, 2, 0.0f, 2.2f, 0.0f);
+  join(physics, rail);
+  OrblitPhysicsJoint axle = jointOf(2, ORBLIT_PHYSICS_JOINT_HINGE, 0, 3, 0.0f, 3.0f, 0.0f);
+  aboutZ(axle);
+  axle.speed = 2.0f;
+  axle.strength = 100.0f;
+  join(physics, axle);
+  OrblitPhysicsJoint teeth = jointOf(3, ORBLIT_PHYSICS_JOINT_RACK, 2, 3, 0.0f, 2.6f, 0.0f);
+  teeth.axisB[2] = 1.0f;
+  teeth.ratio = 0.25f;
+  check(join(physics, teeth), "a rack and pinion is made");
+  run(physics, 1.0f);
+  const float turned = stateOf(physics, 2).angles[0];
+  check(turned > 1.5f && near(coordinateOf(physics, 2, 0), 0.25f * turned, 0.02f),
+        "a rack moves a quarter metre for each radian its pinion turns");
+  orblit_physics_destroy(physics);
+
+  // Two weights over two pulleys. The heavier comes down, and the lighter
+  // goes up as far as the ratio says.
+  const auto weights = [](OrblitPhysics *world, float ratio) {
+    OrblitPhysicsCommand heavy = boxAt(2, 0.1f, -1.0f, 1.0f, 0.0f);
+    heavy.mass = 2.0f;
+    submit(world, heavy);
+    submit(world, boxAt(3, 0.1f, 1.0f, 1.0f, 0.0f));
+    OrblitPhysicsJoint rope = jointOf(1, ORBLIT_PHYSICS_JOINT_PULLEY, 2, 3, -1.0f, 1.0f, 0.0f);
+    rope.to[0] = 1.0f;
+    rope.to[1] = 1.0f;
+    rope.over[0][0] = -1.0f;
+    rope.over[0][1] = 3.0f;
+    rope.over[1][0] = 1.0f;
+    rope.over[1][1] = 3.0f;
+    rope.ratio = ratio;
+    return join(world, rope);
+  };
+  physics = orblit_physics_create(nullptr);
+  check(weights(physics, 1.0f), "a pulley is made");
+  run(physics, 0.5f);
+  const float fall = 1.0f - heightOf(physics, 2);
+  check(near(fall, 0.41f, 0.06f) && near(heightOf(physics, 3) - 1.0f, fall, 0.02f),
+        "weights of two and one over a pulley move at a third of gravity");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  weights(physics, 2.0f);
+  run(physics, 0.5f);
+  const float drop = 1.0f - heightOf(physics, 2);
+  check(drop > 0.5f && near(heightOf(physics, 3) - 1.0f, 0.5f * drop, 0.03f),
+        "with a ratio of two the far side comes up half as far");
+  orblit_physics_destroy(physics);
+
+  // A bad ratio is a joint that is not made.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.2f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint nan = jointOf(1, ORBLIT_PHYSICS_JOINT_GEAR, 2, 0, 0.0f, 3.0f, 0.0f);
+  nan.ratio = std::nanf("");
+  check(!join(physics, nan), "a gear with no ratio is refused");
+  orblit_physics_destroy(physics);
+}
+
+void trailing() {
+  // A ball on a path of a slope and then a flat, hung from the world.
+  const float way[] = {0.0f, 3.0f, 0.0f, 3.0f, 1.5f, 0.0f, 6.0f, 1.5f, 0.0f};
+  const float along = 0.894427f;
+  const float down = 0.447214f;
+  const auto start = [&way](OrblitPhysics *world, const OrblitPhysicsCommand &body,
+                            const OrblitPhysicsJoint &rail) {
+    submit(world, body);
+    return orblit_physics_join_path(world, &rail, way, 3);
+  };
+
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const OrblitPhysicsCommand ball = sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f);
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_PATH, 0, 2, 0.0f, 3.0f, 0.0f);
+  submit(physics, ball);
+  check(!join(physics, rail), "a path joint with no path is not made");
+  check(!orblit_physics_join_path(physics, &rail, way, 1) &&
+            !orblit_physics_join_path(physics, &rail, nullptr, 3),
+        "nor one with too few points or none");
+  check(orblit_physics_join_path(physics, &rail, way, 3), "and one with a path is");
+  run(physics, 1.0f);
+  const float arc = stateOf(physics, 1).offset[0];
+  check(near(arc, 2.15f, 0.15f), "a ball on a path slides down it at gravity along the slope");
+  check(near(coordinateOf(physics, 2, 0), along * arc, 0.02f) &&
+            near(heightOf(physics, 2), 3.0f - down * arc, 0.02f),
+        "and stays on the line");
+  run(physics, 0.6f);
+  check(near(heightOf(physics, 2), 1.5f, 0.02f) && coordinateOf(physics, 2, 0) > 4.0f,
+        "and follows it round the corner on to the flat");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint stop = rail;
+  limitTo(stop, 0, 0.0f, 2.0f);
+  start(physics, ball, stop);
+  run(physics, 2.0f);
+  check(near(stateOf(physics, 1).offset[0], 2.0f, 0.05f), "a limit on the first way stops it at a length");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint ride = rail;
+  ride.speed = 1.0f;
+  ride.strength = 100.0f;
+  start(physics, ball, ride);
+  run(physics, 1.0f);
+  check(near(stateOf(physics, 1).offset[0], 1.0f, 0.1f), "a motor takes it along at its speed");
+  orblit_physics_destroy(physics);
+
+  // A box that keeps its x along the path turns as the slope becomes the flat.
+  const auto bank = [&](bool follow) {
+    OrblitPhysics *world = orblit_physics_create(nullptr);
+    OrblitPhysicsJoint carried = rail;
+    carried.follow = follow;
+    carried.rotation[2] = -0.229753f;
+    carried.rotation[3] = 0.973249f;
+    start(world, boxAt(2, 0.2f, 0.0f, 3.0f, 0.0f), carried);
+    run(world, 1.8f);
+    const float turned = turnOf(world, 2);
+    orblit_physics_destroy(world);
+    return turned;
+  };
+  check(near(bank(true), 0.4636f, 0.06f), "following turns the box to level on the flat");
+  check(bank(false) < 0.05f, "and without it the box is left as it was");
+
+  // A path in the frame of a body that rises carries the ball up with it.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand lift = boxAt(4, 0.2f, 0.0f, 3.0f, 0.0f);
+  lift.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, lift);
+  submit(physics, ball);
+  drive(physics, 4, 0.0f, 1.0f, 0.0f, 0.0f);
+  const float level[] = {-5.0f, 3.0f, 0.0f, 5.0f, 3.0f, 0.0f};
+  OrblitPhysicsJoint carry = jointOf(1, ORBLIT_PHYSICS_JOINT_PATH, 4, 2, 0.0f, 3.0f, 0.0f);
+  check(orblit_physics_join_path(physics, &carry, level, 2), "a path on a moving body is made");
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 4.0f, 0.1f), "and is carried with the body it is on");
+  orblit_physics_destroy(physics);
+}
+
 void swinging() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(2, 0.1f, 1.0f, 3.0f, 0.0f));
@@ -2356,7 +2547,7 @@ void refusingJoints() {
   bad.kind = 0;
   made = made || join(physics, bad);
   bad = good;
-  bad.kind = 8;
+  bad.kind = 12;
   made = made || join(physics, bad);
   bad = good;
   bad.at[0] = std::nanf("");
@@ -5760,6 +5951,8 @@ int main() {
   welding();
   carrying();
   giving();
+  coupling();
+  trailing();
   swinging();
   hinging();
   sliding();

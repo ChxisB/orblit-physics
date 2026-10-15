@@ -837,6 +837,11 @@ JointDescription describe(const OrblitPhysicsJoint &from) {
   made.goalRatio = from.goalRatio;
   made.limitHertz = from.limitHertz;
   made.limitRatio = from.limitRatio;
+  made.ratio = from.ratio;
+  made.axisB = vectorOf(from.axisB);
+  made.over[0] = vectorOf(from.over[0]);
+  made.over[1] = vectorOf(from.over[1]);
+  made.follow = from.follow;
   made.breakingForce = from.breakingForce;
   made.breakingTorque = from.breakingTorque;
   made.collide = from.collide;
@@ -849,7 +854,10 @@ JointDescription describe(const OrblitPhysicsJoint &from) {
 /// limit or a spring's rest may be as far as it likes.
 bool isMakeable(const OrblitPhysicsJoint &from) {
   for (int i = 0; i < 3; ++i) {
-    if (!std::isfinite(from.at[i]) || !std::isfinite(from.to[i])) return false;
+    for (const float v : {from.at[i], from.to[i], from.axisB[i], from.over[0][i],
+                          from.over[1][i]}) {
+      if (!std::isfinite(v)) return false;
+    }
   }
   for (int i = 0; i < 4; ++i) {
     if (!std::isfinite(from.rotation[i])) return false;
@@ -861,7 +869,7 @@ bool isMakeable(const OrblitPhysicsJoint &from) {
     }
   }
   for (const float v : {from.swing, from.speed, from.strength, from.goal,
-                        from.goalHertz, from.goalRatio, from.limitHertz,
+                        from.ratio, from.goalHertz, from.goalRatio, from.limitHertz,
                         from.limitRatio, from.breakingForce,
                         from.breakingTorque}) {
     if (std::isnan(v)) return false;
@@ -871,9 +879,22 @@ bool isMakeable(const OrblitPhysicsJoint &from) {
 
 } // namespace
 
-bool World::join(const OrblitPhysicsJoint &from) {
+bool World::join(const OrblitPhysicsJoint &from, const float *path,
+                 uint32_t count) {
   if (!isMakeable(from)) return false;
-  const JointDescription made = describe(from);
+  JointDescription made = describe(from);
+  if (path != nullptr) {
+    if (from.kind != ORBLIT_PHYSICS_JOINT_PATH) return false;
+    if (count < 2 || count > kMostPathPoints) return false;
+    for (uint32_t i = 0; i < count; ++i) {
+      const Vec3 point = vectorOf(path + 3 * i);
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+          !std::isfinite(point.z)) {
+        return false;
+      }
+      made.path.push_back(point);
+    }
+  }
   if (!joints_.add(made, bodies_)) return false;
 
   wakeEnds(made.a, made.b);
