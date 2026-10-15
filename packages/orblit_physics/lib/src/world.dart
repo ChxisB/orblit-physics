@@ -787,8 +787,9 @@ final class Joint {
   /// motor takes it along at `speed` metres a second, never harder than
   /// `strength` newtons, and a [goal] holds a place. A spring on `alongX`
   /// pulls it to a place along the line, and [softLimit] makes the ends of
-  /// the limit springs. Past the ends the line goes on straight, so give it a limit
-  /// unless it should run off.
+  /// the limit springs. Past the ends the line goes on straight and the
+  /// distance along it keeps counting, so a limit at the line's length stops
+  /// what runs off the end. Without one it runs off.
   ///
   /// The second body keeps its own turn unless [follow] is set, when its x
   /// axis is kept along the line as well and it is free to roll about it. The

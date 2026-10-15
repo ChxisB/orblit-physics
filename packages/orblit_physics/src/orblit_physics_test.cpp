@@ -2052,6 +2052,23 @@ void trailing() {
   orblit_physics_destroy(physics);
 
   physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint end = rail;
+  limitTo(end, 0, 0.0f, 6.354f);
+  start(physics, ball, end);
+  run(physics, 4.0f);
+  check(near(stateOf(physics, 1).offset[0], 6.354f, 0.05f) &&
+            near(coordinateOf(physics, 2, 0), 6.0f, 0.05f),
+        "a limit at the end of the path stops what runs off it");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  start(physics, ball, rail);
+  run(physics, 4.0f);
+  check(stateOf(physics, 1).offset[0] > 7.0f && near(heightOf(physics, 2), 1.5f, 0.02f),
+        "and with none it runs on along the last piece gone on straight");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
   OrblitPhysicsJoint ride = rail;
   ride.speed = 1.0f;
   ride.strength = 100.0f;

@@ -89,14 +89,22 @@ Nearest nearestOnPath(const Track &track, const Vec3 &to) {
     const float size = length(run);
     // Points that touch were dropped when the path was laid, so a run has a
     // direction and a length.
-    const float along = clamped(dot(to - from, run) / (size * size), 0.0f, 1.0f);
+    const float raw = dot(to - from, run) / (size * size);
+    const float along = clamped(raw, 0.0f, 1.0f);
     const Vec3 at = from + run * along;
     const float gap = lengthSquared(to - at);
     if (gap >= least) continue;
     least = gap;
     best.point = at;
     best.tangent = run * (1.0f / size);
-    best.arc = track.arc[i] + along * size;
+
+    // The line goes on past each end, and how far along it keeps counting
+    // there. Held at the end instead, a limit at the end of a rail would
+    // never be passed, so it would never stop what runs off.
+    const bool first = i == 0;
+    const bool last = i + 2 == track.points.size();
+    const bool past = (first && raw < 0.0f) || (last && raw > 1.0f);
+    best.arc = track.arc[i] + (past ? raw : along) * size;
   }
   return best;
 }

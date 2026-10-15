@@ -1329,6 +1329,26 @@ void main() {
         expect(physics.jointStateOf(1)!.offset[0], closeTo(2.0, 0.05));
       });
 
+      test('keeps counting past its end, on the line gone on straight', () {
+        ball(const Joint.path());
+        for (var i = 0; i < 240; i++) {
+          physics.step(1 / 60);
+        }
+        final arc = physics.jointStateOf(1)!.offset[0];
+        expect(arc, greaterThan(7.0));
+        expect(physics.transformOf(2)![1], closeTo(1.5, 0.02));
+      });
+
+      test('stops at a limit set at its end, which a ball ran off', () {
+        // The line is 3.354 and then 3 long.
+        ball(const Joint.path(limit: JointLimit(0.0, 6.354)));
+        for (var i = 0; i < 240; i++) {
+          physics.step(1 / 60);
+        }
+        expect(physics.jointStateOf(1)!.offset[0], closeTo(6.354, 0.05));
+        expect(physics.transformOf(2)![0], closeTo(6.0, 0.05));
+      });
+
       test('is driven along by a motor', () {
         ball(const Joint.path(speed: 1.0, strength: 100.0));
         for (var i = 0; i < 60; i++) {
