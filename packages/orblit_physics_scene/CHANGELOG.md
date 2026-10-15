@@ -1,3 +1,12 @@
+## 0.12.0
+
+- Read the new joint fields of a joint component: `springs`, `softHertz`,
+  `softRatio`, `goal`, `goalHertz`, `goalRatio`, `ratio`, `axisB`, `over`,
+  `path` and `follow`.
+- Make gear, rack, pulley and path joints. A pulley with other than two
+  `over` points is refused.
+- Needs `orblit_physics` 0.14.0 and `orblit_scene` 0.17.0.
+
 ## 0.11.0
 
 - Make characters from body components with `BodyMotion.character`, with `walk` to say what each asks for once a step, and `crouch` and `isCrouching` for its stance.
