@@ -34,9 +34,12 @@
 namespace orblit {
 
 /// The six ways `b` can move, in the order the header names them, then the
-/// motor, which drives the first or the fourth.
-constexpr int kJointRows = 7;
+/// motor, which drives the first or the fourth, then a spring on each of the
+/// six. A way may have a spring, and a limit or a lock besides, so it may have
+/// two rows.
 constexpr int kMotorRow = 6;
+constexpr int kSpringRow = 7;
+constexpr int kJointRows = 13;
 
 /// How a joint was asked for, in the engine's own numbers.
 struct JointDescription {
@@ -53,6 +56,14 @@ struct JointDescription {
   float swing = 0.0f;
   float speed = 0.0f;
   float strength = 0.0f;
+  float goal = 0.0f;
+  float goalHertz = 0.0f;
+  float goalRatio = 0.0f;
+  float springHertz[6] = {};
+  float springRatio[6] = {};
+  float springRest[6] = {};
+  float limitHertz = 0.0f;
+  float limitRatio = 0.0f;
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
   bool collide = false;
@@ -90,6 +101,26 @@ struct Joint {
   int motor = -1;
   float speed = 0.0f;
   float strength = 0.0f;
+
+  /// A motor with a `goalHertz` holds its way at `goal`, as a spring of that
+  /// frequency and damping ratio would, and never pushes harder than
+  /// `strength`. It has no use for `speed`, which a motor of that kind leaves.
+  float goal = 0.0f;
+  float goalHertz = 0.0f;
+  float goalRatio = 0.0f;
+
+  /// Which ways have a spring, one bit each, and its frequency, damping ratio
+  /// and the place it holds the way at. A spring in the place of a lock is
+  /// what makes it soft, so the lock's bit is gone from `holds`.
+  uint32_t sprung = 0;
+  float springHertz[6] = {};
+  float springRatio[6] = {};
+  float springRest[6] = {};
+
+  /// With a frequency, a limit is a spring that takes over once the way is
+  /// past its end, rather than a wall. Locks are not limits and stay hard.
+  float limitHertz = 0.0f;
+  float limitRatio = 0.0f;
 
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
@@ -237,6 +268,11 @@ class Joints {
     float target = 0.0f;
     float least = 0.0f;
     float most = 0.0f;
+
+    /// A hard row takes all of what a pass finds and none of what it held. A
+    /// soft one takes part and gives part back. See `Softness`.
+    float massScale = 1.0f;
+    float impulseScale = 0.0f;
   };
 
   Held heldFor(const Bodies &bodies, uint32_t index) const;
@@ -246,6 +282,10 @@ class Joints {
   /// and one of those, and a structure that touches none counts from the
   /// joint made first. Ties stay in the order they were made.
   void arrange(const Bodies &bodies);
+
+  /// Builds every row `joint` has this sub-step, of length `h`, onto
+  /// `rows_`, and gives `held` the range they are in.
+  void buildRows(const Bodies &bodies, Held &held, Joint &joint, float h);
 
   /// Solves the rows of one held joint, once, in the order they were built.
   void solveHeld(Bodies &bodies, const Held &held);

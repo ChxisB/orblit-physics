@@ -62,6 +62,30 @@ constexpr float clamped(float v, float low, float high) {
   return v < low ? low : (v > high ? high : v);
 }
 
+/// How a spring is blended into a solver row, for a sub-step of length `h`.
+///
+/// A row that is soft solves for `was - massScale * mass * (speed - target) -
+/// impulseScale * was`, where `target` is `-pushRate` times how far the row is
+/// from where it should be. At the limit of a stiff spring that is the hard
+/// row: a mass scale of one, an impulse scale of nought, a push of `1 / h`.
+/// Implicit in the sub-step, so it cannot gain energy however stiff it is
+/// asked to be.
+struct Softness {
+  float massScale;
+  float impulseScale;
+  float pushRate;
+};
+
+/// The row of a spring of `hertz` and damping `ratio`, where a ratio of one is
+/// critical and nought is none. `h` and `hertz` are positive.
+inline Softness softnessOf(float h, float hertz, float ratio) {
+  const float omega = 2.0f * kPi * hertz;
+  const float a1 = 2.0f * ratio + h * omega;
+  const float a2 = h * omega * a1;
+  const float a3 = 1.0f / (1.0f + a2);
+  return {a2 * a3, a3, omega / a1};
+}
+
 inline float length(const Vec3 &v) { return std::sqrt(dot(v, v)); }
 
 /// Zero rather than a nan when there is no direction to speak of.

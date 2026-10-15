@@ -810,7 +810,9 @@ void World::wakeJoined(uint32_t row) {
 
 // ---------------------------------------------------------------- joints ---
 
-bool World::join(const OrblitPhysicsJoint &from) {
+namespace {
+
+JointDescription describe(const OrblitPhysicsJoint &from) {
   JointDescription made;
   made.id = from.id;
   made.a = from.a;
@@ -823,16 +825,29 @@ bool World::join(const OrblitPhysicsJoint &from) {
   for (int which = 0; which < 6; ++which) {
     made.low[which] = from.low[which];
     made.high[which] = from.high[which];
+    made.springHertz[which] = from.springHertz[which];
+    made.springRatio[which] = from.springRatio[which];
+    made.springRest[which] = from.springRest[which];
   }
   made.swing = from.swing;
   made.speed = from.speed;
   made.strength = from.strength;
+  made.goal = from.goal;
+  made.goalHertz = from.goalHertz;
+  made.goalRatio = from.goalRatio;
+  made.limitHertz = from.limitHertz;
+  made.limitRatio = from.limitRatio;
   made.breakingForce = from.breakingForce;
   made.breakingTorque = from.breakingTorque;
   made.collide = from.collide;
-  // A NaN anywhere is a joint that puts NaN into every body it touches on
-  // its first step, so it is never made. Where it stands must be somewhere
-  // as well; a limit may be as wide as it likes.
+  return made;
+}
+
+/// Whether every number in `from` is one a joint may be made from. A NaN
+/// anywhere is a joint that puts NaN into every body it touches on its first
+/// step, so it is never made. Where it stands must be somewhere as well; a
+/// limit or a spring's rest may be as far as it likes.
+bool isMakeable(const OrblitPhysicsJoint &from) {
   for (int i = 0; i < 3; ++i) {
     if (!std::isfinite(from.at[i]) || !std::isfinite(from.to[i])) return false;
   }
@@ -840,12 +855,25 @@ bool World::join(const OrblitPhysicsJoint &from) {
     if (!std::isfinite(from.rotation[i])) return false;
   }
   for (int i = 0; i < 6; ++i) {
-    if (std::isnan(from.low[i]) || std::isnan(from.high[i])) return false;
+    for (const float v : {from.low[i], from.high[i], from.springHertz[i],
+                          from.springRatio[i], from.springRest[i]}) {
+      if (std::isnan(v)) return false;
+    }
   }
-  for (const float v : {from.swing, from.speed, from.strength,
-                        from.breakingForce, from.breakingTorque}) {
+  for (const float v : {from.swing, from.speed, from.strength, from.goal,
+                        from.goalHertz, from.goalRatio, from.limitHertz,
+                        from.limitRatio, from.breakingForce,
+                        from.breakingTorque}) {
     if (std::isnan(v)) return false;
   }
+  return true;
+}
+
+} // namespace
+
+bool World::join(const OrblitPhysicsJoint &from) {
+  if (!isMakeable(from)) return false;
+  const JointDescription made = describe(from);
   if (!joints_.add(made, bodies_)) return false;
 
   wakeEnds(made.a, made.b);

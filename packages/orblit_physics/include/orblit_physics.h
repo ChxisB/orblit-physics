@@ -1112,6 +1112,36 @@ typedef struct {
   float speed;
   float strength;
 
+  /// HINGE and SLIDER: with `goalHertz` above zero the motor holds its way at
+  /// `goal`, in radians or metres, as a spring of that frequency in hertz and
+  /// that damping ratio would, and never pushes harder than `strength`.
+  /// `speed` is then not read. A ratio of 1 settles without overshooting.
+  float goal;
+  float goalHertz;
+  float goalRatio;
+
+  /// A spring on each way, in the order `limited` names them. A way with a
+  /// frequency above zero is pulled to `springRest`, in metres or radians,
+  /// with that damping ratio. On a way the kind locks, the spring takes the
+  /// lock's place, so the joint gives there. On a way that is free it is the
+  /// only thing that holds it. Past the stiffness a step can follow, about a
+  /// quarter of the sub-step rate, a spring is as stiff as that and no
+  /// stiffer.
+  ///
+  /// The frequency is the one the way has under the load it moves. A way that
+  /// turns a body about a point away from its centre is measured against the
+  /// body swinging about that point, so an arm on a hinge rings at the
+  /// frequency written here and not at a higher one for its own spin.
+  float springHertz[6];
+  float springRatio[6];
+  float springRest[6];
+
+  /// With `limitHertz` above zero a limit is a spring and not a wall: past
+  /// its end the joint is pulled back as that spring would, so it may be
+  /// stretched past it by whatever pushes. Locks stay hard.
+  float limitHertz;
+  float limitRatio;
+
   /// Past this force in newtons, or this torque in newton-metres, the joint
   /// breaks: it is removed, and a BROKE event says so. Zero never breaks.
   float breakingForce;

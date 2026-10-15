@@ -34,8 +34,6 @@ constexpr float kDamping = 10.0f;
 /// steps a second and is not reached at 60.
 constexpr float kMostOfRate = 0.15f;
 
-constexpr float kTwoPi = 6.28318530718f;
-
 /// How many times the points of one manifold are solved against each other
 /// before the bodies take the result. A face has four points that push on one
 /// another, and one sweep leaves the last of them over-corrected. Eight is
@@ -44,18 +42,8 @@ constexpr uint32_t kBlockSweeps = 8;
 
 /// What a soft contact does to the impulse a pass would have made, and how
 /// fast it pushes out of an overlap, for a sub-step of length `h`.
-struct Softness {
-  float massScale;
-  float impulseScale;
-  float pushRate;
-};
-
 Softness softnessFor(float h, float hertz) {
-  const float omega = kTwoPi * std::fmin(hertz, kMostOfRate / h);
-  const float a1 = 2.0f * kDamping + h * omega;
-  const float a2 = h * omega * a1;
-  const float a3 = 1.0f / (1.0f + a2);
-  return {a2 * a3, a3, omega / a1};
+  return softnessOf(h, std::fmin(hertz, kMostOfRate / h), kDamping);
 }
 
 } // namespace

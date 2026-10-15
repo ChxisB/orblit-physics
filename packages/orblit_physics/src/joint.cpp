@@ -29,6 +29,11 @@ constexpr float kMaxTurn = 0.25f;
 /// between them to hold along.
 constexpr float kTouching = 1.0e-5f;
 
+/// The stiffest a spring on a joint is let be, as a share of the sub-step
+/// rate. Past a quarter of it a spring is as stiff as the step can follow, and
+/// a stiffer one is only a hard row with a bigger number written on it.
+constexpr float kMostOfRate = 0.25f;
+
 const Vec3 kAlongX{1.0f, 0.0f, 0.0f};
 const Vec3 kAlongY{0.0f, 1.0f, 0.0f};
 const Vec3 kAlongZ{0.0f, 0.0f, 1.0f};
@@ -113,6 +118,7 @@ Pose poseOf(const Bodies &bodies, uint32_t rowA, uint32_t rowB,
 bool rowAt(const Joint &joint, const Pose &pose, int which, Vec3 &linear,
            Vec3 &turnA, Vec3 &turnB, float &at) {
   if (which == kMotorRow) which = joint.motor;
+  if (which >= kSpringRow) which -= kSpringRow;
 
   if (which == 0 && joint.distance) {
     const Vec3 between = pose.pointB - pose.pointA;
@@ -158,6 +164,162 @@ bool rowAt(const Joint &joint, const Pose &pose, int which, Vec3 &linear,
 /// A turn kept within a half turn either way, which is all an angle measured
 /// from a rotation can say.
 float withinHalfTurn(float radians) { return clamped(radians, -kPi, kPi); }
+
+/// How far `at` is from `place` on way `which`, the short way round for an
+/// angle: a hinge at 3 radians is a quarter turn from one at -3, not six.
+float gapTo(int which, float at, float place) {
+  const float gap = at - place;
+  if (which < 3) return gap;
+  return gap - 2.0f * kPi * std::round(gap / (2.0f * kPi));
+}
+
+/// Where a way stands for one sub-step of length `h`, and how much stiffer than
+/// its own row a spring on it must be to be the spring its owner asked for.
+struct Standing {
+  float at = 0.0f;
+  float h = 0.0f;
+  float reach = 1.0f;
+};
+
+/// A spring of `hertz` and damping `ratio`, as a row of the stiffness a step
+/// can follow. `reach` makes a row that turns a body about a point away from
+/// its centre as stiff as that body is to turn about the point, and not about
+/// itself, which is what a spring on a hinge has to move.
+Softness softAt(float hertz, float ratio, const Standing &standing) {
+  const float limit = kMostOfRate / standing.h;
+  return softnessOf(standing.h, std::fmin(hertz * standing.reach, limit),
+                    ratio * standing.reach);
+}
+
+/// What a row aims for this sub-step: the speed along it, how much impulse it
+/// may carry either way, and how soft it is.
+struct Aim {
+  float target = 0.0f;
+  float least = -kFar;
+  float most = kFar;
+  Softness soft{1.0f, 0.0f, 0.0f};
+};
+
+/// A spring on way `which`: the speed that closes its gap to where it rests,
+/// as fast as its frequency and damping ratio say.
+Aim springAim(const Joint &joint, int which, const Standing &standing) {
+  Aim aim;
+  aim.soft = softAt(joint.springHertz[which], joint.springRatio[which], standing);
+  aim.target = -aim.soft.pushRate *
+               gapTo(which, standing.at, joint.springRest[which]);
+  return aim;
+}
+
+/// The motor: its speed, or with a frequency the speed that closes its gap to
+/// the goal as a spring would, and no harder than its strength either way.
+Aim motorAim(const Joint &joint, const Standing &standing) {
+  Aim aim;
+  aim.target = joint.speed;
+  aim.least = -joint.strength * standing.h;
+  aim.most = joint.strength * standing.h;
+  if (!(joint.goalHertz > 0.0f)) return aim;
+
+  aim.soft = softAt(joint.goalHertz, joint.goalRatio, standing);
+  aim.target = -aim.soft.pushRate *
+               gapTo(joint.motor, standing.at, joint.goal);
+  return aim;
+}
+
+/// A limit that gives: nothing while inside the range, and past an end a spring
+/// about that end. It pushes and pulls, so it can hold what it has stopped and
+/// leave it at the end, not rebound it off.
+Aim softLimitAim(const Joint &joint, float end, float room,
+                 const Standing &standing) {
+  Aim aim;
+  if (room > 0.0f) {
+    aim.least = 0.0f;
+    aim.most = 0.0f;
+    return aim;
+  }
+  aim.soft = softAt(joint.limitHertz, joint.limitRatio, standing);
+  aim.target = aim.soft.pushRate * (end - standing.at);
+  return aim;
+}
+
+/// The nearer end of a range, and only that end. A hard limit lets the joint
+/// close on the end as fast as it likes so long as it will not pass it this
+/// sub-step, so it catches a fast swing on the sub-step it arrives rather than
+/// the one after, and never pulls it back from anywhere short of it. Past the
+/// end it holds still and the position passes put the overshoot back.
+Aim limitAim(const Joint &joint, int which, const Standing &standing) {
+  const float low = joint.least[which];
+  const float high = joint.most[which];
+  const bool lower = standing.at - low < high - standing.at;
+  const float end = lower ? low : high;
+  const float room = lower ? standing.at - low : high - standing.at;
+  if (joint.limitHertz > 0.0f) return softLimitAim(joint, end, room, standing);
+
+  Aim aim;
+  if (lower) {
+    aim.least = 0.0f;
+  } else {
+    aim.most = 0.0f;
+  }
+  if (room > 0.0f) aim.target = (end - standing.at) / standing.h;
+  return aim;
+}
+
+/// Row `slot` of `joint`.
+Aim aimFor(const Joint &joint, int slot, const Standing &standing) {
+  if (slot == kMotorRow) return motorAim(joint, standing);
+  if (slot >= kSpringRow) return springAim(joint, slot - kSpringRow, standing);
+  // Locked. Only the velocity is held here; where it has drifted to is put
+  // back by the position passes, which is what keeps a held joint from adding
+  // energy to what it holds.
+  if (joint.least[slot] == joint.most[slot]) return Aim{};
+  return limitAim(joint, slot, standing);
+}
+
+/// One over the inertia of a body about `axis` through its joint point, `lever`
+/// from its centre: its own spin about the axis plus its mass swung on the
+/// lever. Zero for a body that cannot move that way.
+float inverseInertiaAbout(const Mat3 &inverse, const Vec3 &gain,
+                          const Vec3 &lever, const Vec3 &axis) {
+  const float spin = dot(axis, inverse * axis);
+  if (!(spin > kTiny)) return 0.0f;
+
+  const Vec3 arm = cross(axis, lever);
+  const float swung[3] = {arm.x, arm.y, arm.z};
+  const float give[3] = {gain.x, gain.y, gain.z};
+  float inertia = 1.0f / spin;
+  for (int i = 0; i < 3; ++i) {
+    if (give[i] > kTiny) {
+      inertia += swung[i] * swung[i] / give[i];
+    } else if (std::fabs(swung[i]) > kTiny) {
+      return 0.0f;
+    }
+  }
+  return 1.0f / inertia;
+}
+
+/// Whether the position passes leave way `which` to its own soft limit.
+bool softLimited(const Joint &joint, int which) {
+  return joint.limitHertz > 0.0f && joint.least[which] != joint.most[which];
+}
+
+/// Gives `joint` the springs and the soft limits `from` asks for, once its
+/// kind has said which ways it holds. A spring takes the place of a lock on
+/// its way, which is what makes a lock soft, and sits beside a limit.
+void keepSprings(const JointDescription &from, Joint &joint) {
+  joint.limitHertz = std::fmax(from.limitHertz, 0.0f);
+  joint.limitRatio = std::fmax(from.limitRatio, 0.0f);
+
+  for (int which = 0; which < 6; ++which) {
+    if (!(from.springHertz[which] > 0.0f)) continue;
+    // A cone swings as one, and has no second way to hold apart from it.
+    if (joint.cone && which == 5) continue;
+    joint.sprung |= 1u << which;
+    joint.springHertz[which] = from.springHertz[which];
+    joint.springRatio[which] = std::fmax(from.springRatio[which], 0.0f);
+    joint.springRest[which] = from.springRest[which];
+    if (joint.least[which] == joint.most[which]) joint.holds &= ~(1u << which);
+  }
+}
 
 } // namespace
 
@@ -222,6 +384,9 @@ bool Joints::add(const JointDescription &from, const Bodies &bodies) {
     joint.motor = which;
     joint.speed = from.speed;
     joint.strength = from.strength;
+    joint.goal = from.goal;
+    joint.goalHertz = std::fmax(from.goalHertz, 0.0f);
+    joint.goalRatio = std::fmax(from.goalRatio, 0.0f);
   };
 
   switch (from.kind) {
@@ -267,6 +432,8 @@ bool Joints::add(const JointDescription &from, const Bodies &bodies) {
       for (int which = 0; which < 6; ++which) limit(which);
       break;
   }
+
+  keepSprings(from, joint);
 
   index_.emplace(joint.id, static_cast<uint32_t>(joints_.size()));
   if (joint.a != 0) ++counts_[joint.a];
@@ -450,66 +617,73 @@ void Joints::prepare(Bodies &bodies, float h) {
     if (held.movesA) carried_[held.a] = 1;
     if (held.movesB) carried_[held.b] = 1;
 
-    const uint32_t heldAt = static_cast<uint32_t>(held_.size());
     held.firstRow = static_cast<uint32_t>(rows_.size());
-    const Pose pose = poseOf(bodies, held.a, held.b, joint);
-
-    uint32_t built = 0;
-    const auto build = [&](int which) {
-      Row row;
-      row.held = heldAt;
-      row.which = which;
-      float at = 0.0f;
-      if (!rowAt(joint, pose, which, row.linear, row.turnA, row.turnB, at)) return;
-      row.mass = massAlong(held, row.linear, row.turnA, row.turnB);
-
-      if (which == kMotorRow) {
-        row.target = joint.speed;
-        row.least = -joint.strength * h;
-        row.most = joint.strength * h;
-      } else if (joint.least[which] == joint.most[which]) {
-        // Locked. Only the velocity is held here; where it has drifted to is
-        // put back by the position passes, which is what keeps a held joint
-        // from adding energy to what it holds.
-        row.target = 0.0f;
-        row.least = -kFar;
-        row.most = kFar;
-      } else {
-        // A limit, and only its nearer end. It lets the joint close on that
-        // end as fast as it likes so long as it will not pass it this
-        // sub-step, so it catches a fast swing on the sub-step it arrives
-        // rather than the one after, and never pulls it back from anywhere
-        // short of it.
-        const float low = joint.least[which];
-        const float high = joint.most[which];
-        if (at - low < high - at) {
-          row.target = at > low ? (low - at) / h : 0.0f;
-          row.least = 0.0f;
-          row.most = kFar;
-        } else {
-          row.target = at < high ? (high - at) / h : 0.0f;
-          row.least = -kFar;
-          row.most = 0.0f;
-        }
-      }
-
-      // Last step's impulse, if it still points the way this row may push.
-      // A limit that has swapped ends starts from nothing.
-      joint.impulse[which] = clamped(joint.impulse[which], row.least, row.most);
-      built |= 1u << which;
-      rows_.push_back(row);
-    };
-
-    // The motor first, so a limit on the same axis has the last word.
-    if (joint.motor >= 0) build(kMotorRow);
-    for (int which = 0; which < 6; ++which) {
-      if ((joint.holds & (1u << which)) != 0) build(which);
-    }
-    for (int which = 0; which < kJointRows; ++which) {
-      if ((built & (1u << which)) == 0) joint.impulse[which] = 0.0f;
-    }
+    buildRows(bodies, held, joint, h);
     held.rowCount = static_cast<uint32_t>(rows_.size()) - held.firstRow;
     held_.push_back(held);
+  }
+}
+
+void Joints::buildRows(const Bodies &bodies, Held &held, Joint &joint,
+                       float h) {
+  const uint32_t heldAt = static_cast<uint32_t>(held_.size());
+  const Pose pose = poseOf(bodies, held.a, held.b, joint);
+
+  // How much stiffer a spring on a way that turns a body about its joint
+  // point has to be, for the frequency asked for to be the frequency it has.
+  const auto reachOf = [&held, &pose](const Row &row) {
+    if (lengthSquared(row.linear) > 0.0f || !(row.mass > 0.0f)) return 1.0f;
+    float inverse = 0.0f;
+    if (held.movesA) {
+      inverse += inverseInertiaAbout(held.inertiaA, held.gainA,
+                                     pose.pointA - pose.centreA, row.turnA);
+    }
+    if (held.movesB) {
+      inverse += inverseInertiaAbout(held.inertiaB, held.gainB,
+                                     pose.pointB - pose.centreB, row.turnB);
+    }
+    if (!(inverse > kTiny)) return 1.0f;
+    return std::sqrt(std::fmax(1.0f / (inverse * row.mass), 1.0f));
+  };
+
+  uint32_t built = 0;
+  const auto build = [&](int slot) {
+    Row row;
+    row.held = heldAt;
+    row.which = slot;
+    Standing standing;
+    standing.h = h;
+    if (!rowAt(joint, pose, slot, row.linear, row.turnA, row.turnB, standing.at)) {
+      return;
+    }
+    row.mass = massAlong(held, row.linear, row.turnA, row.turnB);
+    standing.reach = reachOf(row);
+
+    const Aim aim = aimFor(joint, slot, standing);
+    row.target = aim.target;
+    row.least = aim.least;
+    row.most = aim.most;
+    row.massScale = aim.soft.massScale;
+    row.impulseScale = aim.soft.impulseScale;
+
+    // Last step's impulse, if it still points the way this row may push.
+    // A limit that has swapped ends starts from nothing.
+    joint.impulse[slot] = clamped(joint.impulse[slot], row.least, row.most);
+    built |= 1u << slot;
+    rows_.push_back(row);
+  };
+
+  // The motor and the springs first, so a limit or a lock on the same way has
+  // the last word.
+  if (joint.motor >= 0) build(kMotorRow);
+  for (int which = 0; which < 6; ++which) {
+    if ((joint.sprung & (1u << which)) != 0) build(kSpringRow + which);
+  }
+  for (int which = 0; which < 6; ++which) {
+    if ((joint.holds & (1u << which)) != 0) build(which);
+  }
+  for (int slot = 0; slot < kJointRows; ++slot) {
+    if ((built & (1u << slot)) == 0) joint.impulse[slot] = 0.0f;
   }
 }
 
@@ -526,7 +700,9 @@ void Joints::solveHeld(Bodies &bodies, const Held &held) {
     float &impulse = joints_[held.joint].impulse[row.which];
     const float was = impulse;
     impulse = clamped(
-        was - row.mass * (speedAlong(bodies, held, row) - row.target),
+        was - row.massScale * row.mass *
+                  (speedAlong(bodies, held, row) - row.target) -
+            row.impulseScale * was,
         row.least, row.most);
     apply(bodies, held, row, impulse - was);
   }
@@ -558,6 +734,7 @@ void Joints::correctPositions(Bodies &bodies) {
     const Joint &joint = joints_[held.joint];
     for (int which = 0; which < 6; ++which) {
       if ((joint.holds & (1u << which)) == 0) continue;
+      if (softLimited(joint, which)) continue;
 
       // Measured again for every row, because the row before has just moved
       // the bodies, and a correction worked out from where they were is a
@@ -603,7 +780,9 @@ void Joints::strain(const Bodies &bodies, float delta,
     // rows that turn, so each set adds up as a vector. The motor pushes along
     // the row it drives.
     float along[6];
-    for (int which = 0; which < 6; ++which) along[which] = joint.total[which];
+    for (int which = 0; which < 6; ++which) {
+      along[which] = joint.total[which] + joint.total[kSpringRow + which];
+    }
     if (joint.motor >= 0) along[joint.motor] += joint.total[kMotorRow];
     for (float &sum : joint.total) sum = 0.0f;
     joint.force = std::sqrt(along[0] * along[0] + along[1] * along[1] +

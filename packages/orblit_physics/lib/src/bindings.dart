@@ -283,6 +283,30 @@ final class OrblitPhysicsJoint extends Struct {
   external double strength;
 
   @Float()
+  external double goal;
+
+  @Float()
+  external double goalHertz;
+
+  @Float()
+  external double goalRatio;
+
+  @Array(6)
+  external Array<Float> springHertz;
+
+  @Array(6)
+  external Array<Float> springRatio;
+
+  @Array(6)
+  external Array<Float> springRest;
+
+  @Float()
+  external double limitHertz;
+
+  @Float()
+  external double limitRatio;
+
+  @Float()
   external double breakingForce;
 
   @Float()

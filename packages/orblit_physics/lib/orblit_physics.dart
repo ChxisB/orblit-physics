@@ -12,7 +12,11 @@ export 'src/world.dart'
     show
         Joint,
         PhysicsJointKind,
+        JointGoal,
         JointLimit,
+        JointSoftness,
+        JointSpring,
+        JointSprings,
         JointState,
         Layers,
         Physics,

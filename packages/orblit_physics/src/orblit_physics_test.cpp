@@ -1737,6 +1737,169 @@ void carrying() {
         "a chain made from its tip holds the same as one made from its root");
 }
 
+/// Where the lowest points of a body hung on a spring fall, in seconds from the
+/// start: the first two, so the period is the gap between them.
+struct Bounce {
+  float first;
+  float second;
+};
+
+Bounce bounceOf(OrblitPhysics *physics, OrblitPhysicsId id, float seconds) {
+  Bounce found{-1.0f, -1.0f};
+  float before = heightOf(physics, id);
+  bool falling = false;
+  const int steps = static_cast<int>(seconds * 60.0f);
+  for (int i = 1; i <= steps; ++i) {
+    step(physics);
+    const float now = heightOf(physics, id);
+    const bool turned = falling && now > before + 1.0e-5f;
+    if (turned && found.first < 0.0f) {
+      found.first = static_cast<float>(i) / 60.0f;
+    } else if (turned && found.second < 0.0f) {
+      found.second = static_cast<float>(i) / 60.0f;
+    }
+    if (now < before - 1.0e-5f) falling = true;
+    if (now > before + 1.0e-5f) falling = false;
+    before = now;
+  }
+  return found;
+}
+
+void giving() {
+  // A ball on a point joint, with a spring where the lock on up and down was.
+  // A spring of frequency f stretches by g / (2 pi f)^2 under its own weight.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint pivot = jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f);
+  pivot.springHertz[1] = 2.0f;
+  pivot.springRatio[1] = 1.0f;
+  check(join(physics, pivot), "a point joint with a spring on one way is made");
+  run(physics, 3.0f);
+  const float twoHertz = 9.81f / (2.0f * 3.14159265f * 2.0f * 2.0f * 3.14159265f * 2.0f);
+  check(near(heightOf(physics, 2), 3.0f - twoHertz, 0.01f),
+        "a spring takes the lock's place, so a ball on it sags by g over omega squared");
+  check(std::fabs(coordinateOf(physics, 2, 0)) < 0.005f &&
+            std::fabs(coordinateOf(physics, 2, 2)) < 0.005f,
+        "and the ways it did not soften stay locked");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  pivot.springHertz[1] = 0.0f;
+  join(physics, pivot);
+  run(physics, 3.0f);
+  check(near(heightOf(physics, 2), 3.0f, 0.005f), "without it the same ball does not sag");
+  orblit_physics_destroy(physics);
+
+  // A box on a rail, free to slide and held by a spring to a rest a half metre
+  // below the hook. A softer spring stretches further, and a lighter damping
+  // ratio rings.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand box = boxAt(2, 0.1f, 0.0f, 3.0f, 0.0f);
+  box.mass = 1.0f;
+  submit(physics, box);
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_SLIDER, 2, 0, 0.0f, 3.0f, 0.0f);
+  pointUp(rail);
+  rail.springHertz[0] = 1.0f;
+  rail.springRatio[0] = 0.05f;
+  rail.springRest[0] = 0.5f;
+  join(physics, rail);
+  const Bounce rang = bounceOf(physics, 2, 3.0f);
+  check(rang.first > 0.0f && rang.second > 0.0f &&
+            near(rang.second - rang.first, 1.0f, 0.1f),
+        "a spring of one hertz swings a box once a second");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  submit(physics, box);
+  rail.springRatio[0] = 1.0f;
+  join(physics, rail);
+  run(physics, 4.0f);
+  const float oneHertz = 9.81f / (2.0f * 3.14159265f * 2.0f * 3.14159265f);
+  check(near(heightOf(physics, 2), 3.0f - 0.5f - oneHertz, 0.01f),
+        "and settles a rest length plus g over omega squared below the hook");
+  orblit_physics_destroy(physics);
+
+  // An arm out from a horizontal hinge, with the world as `a` so the angle it
+  // reads is the arm's own. A positive turn takes its far end down.
+  const auto arm = [](OrblitPhysics *world) {
+    OrblitPhysicsCommand link = boxAt(2, 0.25f, 0.0f, 3.0f, 0.5f);
+    link.mass = 2.0f;
+    submit(world, link);
+  };
+  OrblitPhysicsJoint hinge = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 0, 2, 0.0f, 3.0f, 0.0f);
+  hinge.rotation[3] = 1.0f;
+  hinge.strength = 50.0f;
+  hinge.goalHertz = 4.0f;
+  hinge.goalRatio = 1.0f;
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = -0.5f;
+  join(physics, hinge);
+  run(physics, 3.0f);
+  float angle = stateOf(physics, 1).angles[0];
+  check(near(angle, -0.5f, 0.06f),
+        "a position motor holds an arm half a radian above level against its weight");
+  check(stateOf(physics, 1).torque > 5.0f && stateOf(physics, 1).torque <= 51.0f,
+        "with the torque it takes, which is no more than its strength");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = 0.5f;
+  join(physics, hinge);
+  run(physics, 3.0f);
+  angle = stateOf(physics, 1).angles[0];
+  check(near(angle, 0.5f, 0.06f), "and half a radian below it, where the weight helps");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = -0.5f;
+  hinge.strength = 1.0f;
+  join(physics, hinge);
+  float lowest = 0.0f;
+  for (int i = 0; i < 120; ++i) {
+    step(physics);
+    lowest = std::fmax(lowest, stateOf(physics, 1).angles[0]);
+  }
+  check(lowest > 1.0f, "a position motor weaker than the load gives way");
+  orblit_physics_destroy(physics);
+
+  // The door of the hinge test flung at a stop, with and without a soft end.
+  const auto fling = [](float hertz, float &widest, float &settled) {
+    OrblitPhysics *world = orblit_physics_create(nullptr);
+    OrblitPhysicsCommand door = boxAt(2, 0.5f, 0.5f, 1.0f, 0.0f);
+    door.size[1] = 1.0f;
+    door.size[2] = 0.05f;
+    submit(world, door);
+    OrblitPhysicsJoint stop = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 2, 0, 0.0f, 1.0f, 0.0f);
+    pointUp(stop);
+    limitTo(stop, 3, -0.5f, 0.5f);
+    stop.limitHertz = hertz;
+    stop.limitRatio = 1.0f;
+    join(world, stop);
+    setMotion(world, 2, 0.0f, 0.0f, 0.0f, 0.0f, -6.0f, 0.0f);
+    widest = 0.0f;
+    for (int i = 0; i < 240; ++i) {
+      step(world);
+      widest = std::fmax(widest, stateOf(world, 1).angles[0]);
+    }
+    settled = stateOf(world, 1).angles[0];
+    orblit_physics_destroy(world);
+  };
+  float hardWidest = 0.0f;
+  float hardSettled = 0.0f;
+  float softWidest = 0.0f;
+  float softSettled = 0.0f;
+  fling(0.0f, hardWidest, hardSettled);
+  fling(1.0f, softWidest, softSettled);
+  check(softWidest > hardWidest + 0.05f && softWidest < 1.2f,
+        "a soft limit gives past its end where a hard one stops at it");
+  check(near(softSettled, 0.5f, 0.03f), "and brings it back to the end and holds it there");
+}
+
 void swinging() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(2, 0.1f, 1.0f, 3.0f, 0.0f));
@@ -5596,6 +5759,7 @@ int main() {
   refusingGround();
   welding();
   carrying();
+  giving();
   swinging();
   hinging();
   sliding();

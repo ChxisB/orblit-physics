@@ -1,5 +1,5 @@
 import 'dart:ffi' show sizeOf;
-import 'dart:math' show cos, max, min, sin, sqrt;
+import 'dart:math' show cos, max, min, pi, sin, sqrt;
 import 'dart:typed_data';
 
 import 'package:orblit_physics/native.dart' as native;
@@ -738,7 +738,7 @@ void main() {
     });
 
     test('its structs are the size the engine reads', () {
-      expect(sizeOf<native.OrblitPhysicsJoint>(), 144);
+      expect(sizeOf<native.OrblitPhysicsJoint>(), 240);
       expect(sizeOf<native.OrblitPhysicsJointState>(), 32);
     });
 
@@ -1013,6 +1013,122 @@ void main() {
       final eight = sagWith(8);
       expect(eight, lessThan(0.003));
       expect(eight, lessThan(one));
+    });
+
+    test('a box on a spring settles a stretch of g over omega squared', () {
+      final world = Physics();
+      addTearDown(world.dispose);
+      world.add(
+        2,
+        shape: const Shape.box(0.1, 0.1, 0.1),
+        mass: 1.0,
+        at: const [0.0, 3.0, 0.0],
+      );
+      // The slider's frame points up and the box is `a`, so the offset it reads
+      // grows as the box falls.
+      world.join(
+        1,
+        const Joint.slider(
+          springs: JointSprings(
+            alongX: JointSpring(hertz: 1.0, ratio: 1.0, rest: 0.5),
+          ),
+        ),
+        a: 2,
+        at: const [0.0, 3.0, 0.0],
+        rotation: const [0.0, 0.0, 0.70710678, 0.70710678],
+      );
+      for (var i = 0; i < 240; i++) {
+        world.step(1 / 60);
+      }
+      const omega = 2 * pi;
+      final height = world.transformOf(2)![1];
+      expect(height, closeTo(3.0 - 0.5 - 9.81 / (omega * omega), 0.01));
+    });
+
+    test('a motor with a goal holds a hinge at an angle against a load', () {
+      final world = Physics();
+      addTearDown(world.dispose);
+      world.add(
+        2,
+        shape: const Shape.box(0.25, 0.25, 0.25),
+        mass: 2.0,
+        at: const [0.0, 3.0, 0.5],
+      );
+      // The world is `a`, so the angle is the arm's own, and a positive turn
+      // takes its far end down.
+      world.join(
+        1,
+        const Joint.hinge(strength: 50.0, goal: JointGoal(-0.5, hertz: 4.0)),
+        a: 0,
+        b: 2,
+        at: const [0.0, 3.0, 0.0],
+      );
+      for (var i = 0; i < 180; i++) {
+        world.step(1 / 60);
+      }
+      final state = world.jointStateOf(1)!;
+      expect(state.angles[0], closeTo(-0.5, 0.06));
+      expect(state.torque, lessThanOrEqualTo(51.0));
+      expect(world.transformOf(2)![1], greaterThan(3.0));
+    });
+
+    test('a spring on a distance joint rests at the length it was made', () {
+      final world = Physics();
+      addTearDown(world.dispose);
+      world.add(
+        2,
+        shape: const Shape.sphere(0.1),
+        mass: 1.0,
+        at: const [0.0, 2.0, 0.0],
+      );
+      world.join(
+        1,
+        const Joint.distance(
+          springs: JointSprings(alongX: JointSpring(hertz: 2.0)),
+        ),
+        a: 2,
+        at: const [0.0, 2.0, 0.0],
+        to: const [0.0, 3.0, 0.0],
+      );
+      for (var i = 0; i < 240; i++) {
+        world.step(1 / 60);
+      }
+      const omega = 4 * pi;
+      expect(
+        world.jointStateOf(1)!.offset[0],
+        closeTo(1.0 + 9.81 / (omega * omega), 0.01),
+      );
+    });
+
+    test('a soft limit gives past its end and brings the joint back', () {
+      double widest(JointSoftness? soft) {
+        final world = Physics();
+        addTearDown(world.dispose);
+        world.add(
+          2,
+          shape: const Shape.box(0.5, 1.0, 0.05),
+          at: const [0.5, 1.0, 0.0],
+        );
+        world.join(
+          1,
+          Joint.hinge(limit: const JointLimit(-0.5, 0.5), softLimit: soft),
+          a: 2,
+          at: const [0.0, 1.0, 0.0],
+          rotation: const [0.0, 0.0, 0.70710678, 0.70710678],
+        );
+        world.drive(2, spin: const [0.0, -6.0, 0.0]);
+        var most = 0.0;
+        for (var i = 0; i < 240; i++) {
+          world.step(1 / 60);
+          most = max(most, world.jointStateOf(1)!.angles[0]);
+        }
+        return most;
+      }
+
+      final hard = widest(null);
+      final soft = widest(const JointSoftness(hertz: 1.0));
+      expect(hard, lessThan(0.53));
+      expect(soft, greaterThan(hard + 0.05));
     });
 
     test('the world refuses a joint it cannot make', () {
