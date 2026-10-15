@@ -275,6 +275,7 @@ bool Joints::add(const JointDescription &from, const Bodies &bodies) {
     ++apart_[PairKey::of(joint.a, joint.b)];
   }
   joints_.push_back(joint);
+  arranged_ = false;
   return true;
 }
 
@@ -302,6 +303,7 @@ bool Joints::remove(OrblitPhysicsId id) {
   for (uint32_t later = at; later < joints_.size(); ++later) {
     index_[joints_[later].id] = later;
   }
+  arranged_ = false;
   return true;
 }
 
@@ -377,19 +379,79 @@ float Joints::massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
   return k > kTiny ? 1.0f / k : 0.0f;
 }
 
+void Joints::arrange(const Bodies &bodies) {
+  const uint32_t count = static_cast<uint32_t>(joints_.size());
+  constexpr uint32_t kUnreached = 0xFFFFFFFFu;
+
+  // The joints on each body, so that a walk outwards from the world visits
+  // each joint once. Joints are few and this is made only when they change.
+  std::unordered_map<OrblitPhysicsId, std::vector<uint32_t>> on;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (joints_[i].a != 0) on[joints_[i].a].push_back(i);
+    if (joints_[i].b != 0) on[joints_[i].b].push_back(i);
+  }
+  const auto anchored = [&bodies](OrblitPhysicsId id) {
+    return id == 0 || !bodies.movable(bodies.rowOf(id));
+  };
+
+  std::vector<uint32_t> depth(count, kUnreached);
+  std::vector<uint32_t> queue;
+  const auto walk = [&]() {
+    for (size_t head = 0; head < queue.size(); ++head) {
+      const uint32_t at = queue[head];
+      for (const OrblitPhysicsId end : {joints_[at].a, joints_[at].b}) {
+        if (anchored(end)) continue;
+        for (const uint32_t next : on[end]) {
+          if (depth[next] != kUnreached) continue;
+          depth[next] = depth[at] + 1;
+          queue.push_back(next);
+        }
+      }
+    }
+  };
+
+  for (uint32_t i = 0; i < count; ++i) {
+    if (anchored(joints_[i].a) || anchored(joints_[i].b)) {
+      depth[i] = 0;
+      queue.push_back(i);
+    }
+  }
+  walk();
+  // What is left holds nothing to the world: a chain in the air, or two
+  // bodies hung from each other. The first made is its root.
+  for (uint32_t i = 0; i < count; ++i) {
+    if (depth[i] != kUnreached) continue;
+    depth[i] = 0;
+    queue.assign(1, i);
+    walk();
+  }
+
+  order_.resize(count);
+  for (uint32_t i = 0; i < count; ++i) order_[i] = i;
+  std::stable_sort(order_.begin(), order_.end(),
+                   [&depth](uint32_t x, uint32_t y) { return depth[x] < depth[y]; });
+  arranged_ = true;
+}
+
 void Joints::prepare(Bodies &bodies, float h) {
   held_.clear();
   rows_.clear();
+  carried_.clear();
+  if (joints_.empty()) return;
+  if (!arranged_) arrange(bodies);
+  carried_.assign(bodies.count(), 0);
 
-  for (uint32_t index = 0; index < joints_.size(); ++index) {
+  for (const uint32_t index : order_) {
     Joint &joint = joints_[index];
-    const Held held = heldFor(bodies, index);
+    Held held = heldFor(bodies, index);
     // Nothing to move. Its impulses are kept, so a joint that went to sleep
     // holding something up starts holding it up again the moment it wakes.
     if (!held.movesA && !held.movesB) continue;
+    if (held.movesA) carried_[held.a] = 1;
+    if (held.movesB) carried_[held.b] = 1;
 
     const uint32_t heldAt = static_cast<uint32_t>(held_.size());
-    held_.push_back(held);
+    held.firstRow = static_cast<uint32_t>(rows_.size());
     const Pose pose = poseOf(bodies, held.a, held.b, joint);
 
     uint32_t built = 0;
@@ -446,6 +508,8 @@ void Joints::prepare(Bodies &bodies, float h) {
     for (int which = 0; which < kJointRows; ++which) {
       if ((built & (1u << which)) == 0) joint.impulse[which] = 0.0f;
     }
+    held.rowCount = static_cast<uint32_t>(rows_.size()) - held.firstRow;
+    held_.push_back(held);
   }
 }
 
@@ -456,15 +520,25 @@ void Joints::warmStart(Bodies &bodies) {
   }
 }
 
-void Joints::correctVelocities(Bodies &bodies) {
-  for (const Row &row : rows_) {
-    const Held &held = held_[row.held];
+void Joints::solveHeld(Bodies &bodies, const Held &held) {
+  for (uint32_t i = held.firstRow; i < held.firstRow + held.rowCount; ++i) {
+    const Row &row = rows_[i];
     float &impulse = joints_[held.joint].impulse[row.which];
     const float was = impulse;
     impulse = clamped(
         was - row.mass * (speedAlong(bodies, held, row) - row.target),
         row.least, row.most);
     apply(bodies, held, row, impulse - was);
+  }
+}
+
+void Joints::correctVelocities(Bodies &bodies, bool leavesFirst) {
+  // Whole joints turn round and their rows do not, because a limit on the
+  // motor's axis is meant to have the last word.
+  if (leavesFirst) {
+    for (size_t i = held_.size(); i-- > 0;) solveHeld(bodies, held_[i]);
+  } else {
+    for (const Held &held : held_) solveHeld(bodies, held);
   }
 }
 
@@ -478,7 +552,9 @@ void Joints::accumulate() {
 }
 
 void Joints::correctPositions(Bodies &bodies) {
-  for (const Held &held : held_) {
+  // Leaves first, so what is left at the root is the least out.
+  for (size_t at = held_.size(); at-- > 0;) {
+    const Held &held = held_[at];
     const Joint &joint = joints_[held.joint];
     for (int which = 0; which < 6; ++which) {
       if ((joint.holds & (1u << which)) == 0) continue;

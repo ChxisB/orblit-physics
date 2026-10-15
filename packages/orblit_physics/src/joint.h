@@ -116,9 +116,13 @@ struct Broken {
   float force = 0.0f;
 };
 
-/// Every joint in a world, in the order they were made — which is the order
-/// they are solved in, so a chain built from its fixed end outwards is solved
-/// that way too, and settles in fewer passes than one solved from its tip.
+/// Every joint in a world, in the order they were made.
+///
+/// They are not solved in that order. A joint is as far from the world, or
+/// from anything that does not move, as the joints between them, and a chain
+/// is solved from its fixed end outwards and back again, a few times over,
+/// ending at the fixed end. The last joint solved is the one that holds
+/// exactly, so it is the one that holds the rest up. See `arrange`.
 class Joints {
  public:
   bool empty() const { return joints_.empty(); }
@@ -172,7 +176,16 @@ class Joints {
   void prepare(Bodies &bodies, float h);
   bool idle() const { return rows_.empty(); }
   void warmStart(Bodies &bodies);
-  void correctVelocities(Bodies &bodies);
+
+  /// Solves every row once. The joints nearest the world go first, or last
+  /// when `leavesFirst`. A caller that makes several passes turns every other
+  /// one round and ends on `leavesFirst`, so a chain's root has the last word.
+  void correctVelocities(Bodies &bodies, bool leavesFirst);
+
+  /// Whether a joint is holding the body in row `row` this step.
+  bool carries(uint32_t row) const {
+    return row < carried_.size() && carried_[row] != 0;
+  }
   /// Adds the sub-step's impulses to the step's.
   void accumulate();
   void correctPositions(Bodies &bodies);
@@ -198,6 +211,10 @@ class Joints {
     Vec3 gainB;
     Mat3 inertiaA;
     Mat3 inertiaB;
+
+    /// This joint's rows in `rows_`, which are kept together.
+    uint32_t firstRow = 0;
+    uint32_t rowCount = 0;
   };
 
   /// One row of one joint, for the velocity passes.
@@ -224,6 +241,15 @@ class Joints {
 
   Held heldFor(const Bodies &bodies, uint32_t index) const;
 
+  /// Puts the joints in `order_`: nearest the world, or to a body that does
+  /// not move, first. A joint's distance is how many joints are between it
+  /// and one of those, and a structure that touches none counts from the
+  /// joint made first. Ties stay in the order they were made.
+  void arrange(const Bodies &bodies);
+
+  /// Solves the rows of one held joint, once, in the order they were built.
+  void solveHeld(Bodies &bodies, const Held &held);
+
   /// How hard it is to change the speed along a row, inverted. Zero when
   /// neither body can move, which makes every impulse along it zero.
   static float massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
@@ -236,6 +262,15 @@ class Joints {
 
   std::vector<Joint> joints_;
   std::unordered_map<OrblitPhysicsId, uint32_t> index_;
+
+  /// Indices into `joints_`, in the order they are solved. Made again when a
+  /// joint is added or removed. A body that stops or starts moving does not
+  /// remake it, which leaves a worse order but never a wrong one.
+  std::vector<uint32_t> order_;
+  bool arranged_ = false;
+
+  /// One flag per body row, set for each body a joint solved this step moves.
+  std::vector<uint8_t> carried_;
 
   /// How many joints each body is on, so a body on none is one lookup.
   std::unordered_map<OrblitPhysicsId, uint32_t> counts_;

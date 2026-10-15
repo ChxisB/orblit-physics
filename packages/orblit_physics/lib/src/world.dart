@@ -641,6 +641,7 @@ final class PhysicsSettings {
     this.subSteps,
     this.velocitySteps,
     this.positionSteps,
+    this.jointSteps,
     this.slop,
     this.contactHertz,
     this.bounceThreshold,
@@ -653,6 +654,10 @@ final class PhysicsSettings {
   final int? subSteps;
   final int? velocitySteps;
   final int? positionSteps;
+
+  /// Passes over the joints in each correcting pass. More of them hold a
+  /// chain with something heavy at its tip, and cost nothing without joints.
+  final int? jointSteps;
   final double? slop;
   final double? contactHertz;
   final double? bounceThreshold;
@@ -790,6 +795,7 @@ class Physics {
       if (settings.positionSteps != null) {
         it.positionSteps = settings.positionSteps!;
       }
+      if (settings.jointSteps != null) it.jointSteps = settings.jointSteps!;
       if (settings.slop != null) it.slop = settings.slop!;
       if (settings.contactHertz != null) {
         it.contactHertz = settings.contactHertz!;

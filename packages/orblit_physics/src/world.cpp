@@ -280,6 +280,7 @@ void World::defaults(OrblitPhysicsSettings *out) {
   out->subSteps = 6;
   out->velocitySteps = 1;
   out->positionSteps = 2;
+  out->jointSteps = 8;
   out->slop = 0.02f;
   out->contactHertz = 50.0f;
   out->bounceThreshold = 1.0f;
@@ -301,6 +302,7 @@ SolverSettings World::solvingFor(const OrblitPhysicsSettings &settings) {
   solving.subSteps = std::max(settings.subSteps, 1u);
   solving.velocitySteps = std::max(settings.velocitySteps, 1u);
   solving.positionSteps = settings.positionSteps;
+  solving.jointSteps = std::max(settings.jointSteps, 1u);
   solving.slop = std::fmax(settings.slop, 0.0f);
   solving.contactHertz = std::fmax(settings.contactHertz, 0.0f);
   solving.bounceThreshold = std::fmax(settings.bounceThreshold, 0.0f);

@@ -68,10 +68,7 @@ void Solver::solve(Bodies &bodies, Joints &joints, float h,
   aim(bodies, h, settings, true);
   joints.warmStart(bodies);
   warmStart(bodies);
-  for (uint32_t i = 0; i < settings.velocitySteps; ++i) {
-    joints.correctVelocities(bodies);
-    correctVelocities(bodies);
-  }
+  solveVelocities(bodies, joints, settings.velocitySteps, settings.jointSteps);
 }
 
 void Solver::relax(Bodies &bodies, Joints &joints, float h,
@@ -79,8 +76,7 @@ void Solver::relax(Bodies &bodies, Joints &joints, float h,
   if (idle(joints)) return;
 
   aim(bodies, h, settings, false);
-  joints.correctVelocities(bodies);
-  correctVelocities(bodies);
+  solveVelocities(bodies, joints, 1, settings.jointSteps);
   joints.accumulate();
   accumulate();
 }
@@ -269,8 +265,22 @@ void Solver::warmStart(Bodies &bodies) {
   }
 }
 
-void Solver::correctVelocities(Bodies &bodies) {
+void Solver::solveVelocities(Bodies &bodies, Joints &joints,
+                             uint32_t contactPasses, uint32_t jointPasses) {
+  // Counted back from the end, so the last round is the one from the leaves
+  // in and the one that solves every contact, whatever the numbers are.
+  const uint32_t rounds =
+      joints.idle() ? contactPasses : std::max(contactPasses, jointPasses);
+  for (uint32_t left = rounds; left-- > 0;) {
+    joints.correctVelocities(bodies, left % 2 == 0);
+    correctVelocities(bodies, joints, left < contactPasses);
+  }
+}
+
+void Solver::correctVelocities(Bodies &bodies, const Joints &joints,
+                               bool all) {
   for (const Pair &pair : pairs_) {
+    if (!all && !joints.carries(pair.a) && !joints.carries(pair.b)) continue;
     for (uint32_t c = 0; c < pair.count; ++c) {
       correctFriction(bodies, pair, rows_[pair.first + c]);
     }

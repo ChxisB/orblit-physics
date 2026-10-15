@@ -363,6 +363,16 @@ typedef struct {
   /// sub-steps.
   uint32_t positionSteps;
 
+  /// Passes over the joints in each correcting pass, so a chain of them has
+  /// time to carry a load from its tip to its root. Each pass goes the other
+  /// way round from the last, and the last goes from the tip in.
+  ///
+  /// A joint with nothing heavier than itself at the end of it holds in one.
+  /// Eight hold a chain of a few links with a body a hundred times their
+  /// weight on it to a few millimetres. They cost nothing on a world with no
+  /// joints. Fewer than one is one.
+  uint32_t jointSteps;
+
   /// How far into a surface a body is let come to rest as it arrives, in
   /// metres. It stops a quarter of this far in, and the contact's spring
   /// takes it back out to where it holds.

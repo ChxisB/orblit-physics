@@ -45,6 +45,7 @@ struct SolverSettings {
   uint32_t subSteps = 6;
   uint32_t velocitySteps = 1;
   uint32_t positionSteps = 2;
+  uint32_t jointSteps = 8;
   float slop = 0.02f;
   float contactHertz = 50.0f;
   float bounceThreshold = 1.0f;
@@ -169,7 +170,18 @@ class Solver {
   void aim(const Bodies &bodies, float h, const SolverSettings &settings,
            bool pushes);
   void warmStart(Bodies &bodies);
-  void correctVelocities(Bodies &bodies);
+
+  /// Makes one pass over the contacts: all of them, or only the ones that
+  /// touch a body `joints` is holding.
+  void correctVelocities(Bodies &bodies, const Joints &joints, bool all);
+
+  /// The velocity passes of a sub-step half. The joints and the contacts take
+  /// turns, because a joint solved alone and then pushed apart by one contact
+  /// pass is solved alone again next time, and a body that both hold twitches.
+  /// The contacts of free bodies get `velocitySteps` passes as they always
+  /// did, and the ones on a jointed body as many as the joints get.
+  void solveVelocities(Bodies &bodies, Joints &joints, uint32_t contactPasses,
+                       uint32_t jointPasses);
   void correctFriction(Bodies &bodies, const Pair &pair, Row &row);
   void correctNormals(Bodies &bodies, const Pair &pair);
   void accumulate();

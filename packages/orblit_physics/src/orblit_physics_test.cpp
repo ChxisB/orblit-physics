@@ -440,8 +440,8 @@ void refusing() {
   orblit_physics_defaults(&settings);
   check(settings.gravity[1] < -9.0f, "the defaults have gravity");
   check(settings.subSteps >= 1 && settings.velocitySteps >= 1 &&
-            settings.positionSteps >= 1,
-        "and a pass to hold contacts with in each sub-step");
+            settings.positionSteps >= 1 && settings.jointSteps >= 1,
+        "and a pass to hold contacts and joints with in each sub-step");
   check(settings.sleeping, "and sleeping on");
 
   OrblitPhysics *physics = orblit_physics_create(&settings);
@@ -1664,6 +1664,77 @@ void welding() {
             std::fabs(state.angles[2]) < 0.01f,
         "two welded boxes thrown spinning at the ground land as one");
   orblit_physics_destroy(physics);
+}
+
+/// How far a chain of welded boxes hung from the world sags with a heavy box
+/// on its tip: the root's and the worst link's distance from where each was
+/// welded, in metres. `tipFirst` makes the joints from the tip inwards, which
+/// is the order a document written leaves-first would give.
+struct Sag {
+  float root;
+  float worst;
+};
+
+Sag weldedChain(int links, float heavy, bool tipFirst, uint32_t jointSteps) {
+  OrblitPhysicsSettings settings;
+  orblit_physics_defaults(&settings);
+  settings.jointSteps = jointSteps;
+  OrblitPhysics *physics = orblit_physics_create(&settings);
+
+  const float spacing = 0.5f;
+  for (int i = 0; i < links; ++i) {
+    OrblitPhysicsCommand link = boxAt(10 + i, 0.2f, spacing * (i + 1), 3.0f, 0.0f);
+    link.mass = i == links - 1 ? heavy : 1.0f;
+    submit(physics, link);
+  }
+  for (int n = 0; n < links; ++n) {
+    const int i = tipFirst ? links - 1 - n : n;
+    // The first link hangs from the world, which is the joint's b end.
+    OrblitPhysicsJoint weld = jointOf(
+        100 + i, ORBLIT_PHYSICS_JOINT_FIXED, i == 0 ? 10 : 10 + i - 1,
+        i == 0 ? 0 : 10 + i, spacing * i, 3.0f, 0.0f);
+    weld.rotation[3] = 1.0f;
+    join(physics, weld);
+  }
+  run(physics, 4.0f);
+
+  Sag sag{0.0f, 0.0f};
+  for (int i = 0; i < links; ++i) {
+    const float away = std::hypot(
+        coordinateOf(physics, 10 + i, 0) - spacing * (i + 1),
+        heightOf(physics, 10 + i) - 3.0f);
+    if (i == 0) sag.root = away;
+    sag.worst = std::fmax(sag.worst, away);
+  }
+  orblit_physics_destroy(physics);
+  return sag;
+}
+
+void carrying() {
+  // Each link is welded to the one before and weighs a kilogram. The tip
+  // carries ten, which is the load a rope of a few joints is asked for.
+  const Sag light = weldedChain(3, 10.0f, false, 8);
+  check(light.root < 0.003f && light.worst < 0.05f,
+        "a chain of three welds holds ten times its weight at the tip");
+
+  const Sag one = weldedChain(3, 10.0f, false, 1);
+  check(light.root < one.root,
+        "and holds it nearer where it was welded than a single pass does");
+
+  // A hundred times the weight on six links is past what a velocity solver
+  // holds exactly. It is bounded, which is the line between a hanging chain
+  // and one that tears off its wall.
+  const Sag heavy = weldedChain(6, 100.0f, false, 8);
+  check(heavy.root < 0.03f && heavy.worst < 0.35f,
+        "six welds carry a hundred times their weight within a third of a metre");
+
+  // The solving order is by distance from the world, not by when a joint was
+  // made, so building the chain from its tip makes no difference.
+  const Sag forward = weldedChain(4, 20.0f, false, 8);
+  const Sag backward = weldedChain(4, 20.0f, true, 8);
+  check(near(forward.root, backward.root, 0.0005f) &&
+            near(forward.worst, backward.worst, 0.002f),
+        "a chain made from its tip holds the same as one made from its root");
 }
 
 void swinging() {
@@ -5524,6 +5595,7 @@ int main() {
   ridges();
   refusingGround();
   welding();
+  carrying();
   swinging();
   hinging();
   sliding();

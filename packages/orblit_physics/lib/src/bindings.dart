@@ -393,6 +393,9 @@ final class OrblitPhysicsSettings extends Struct {
   @Uint32()
   external int positionSteps;
 
+  @Uint32()
+  external int jointSteps;
+
   @Float()
   external double slop;
 

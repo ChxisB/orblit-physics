@@ -977,6 +977,44 @@ void main() {
       expect(heightOf(2), lessThan(1.0));
     });
 
+    test('more passes over the joints hold a heavy tip nearer its weld', () {
+      // How far the root of a chain of three welds sags with ten kilograms on
+      // the tip, in a world that makes `passes` passes over its joints.
+      double sagWith(int passes) {
+        final world = Physics(settings: PhysicsSettings(jointSteps: passes));
+        addTearDown(world.dispose);
+        for (var i = 0; i < 3; i++) {
+          world.add(
+            10 + i,
+            shape: const Shape.box(0.2, 0.2, 0.2),
+            mass: i == 2 ? 10.0 : 1.0,
+            at: [0.5 * (i + 1), 3.0, 0.0],
+          );
+        }
+        for (var i = 0; i < 3; i++) {
+          world.join(
+            100 + i,
+            const Joint.fixed(),
+            a: i == 0 ? 10 : 10 + i - 1,
+            b: i == 0 ? 0 : 10 + i,
+            at: [0.5 * i, 3.0, 0.0],
+          );
+        }
+        for (var i = 0; i < 240; i++) {
+          world.step(1 / 60);
+        }
+        final root = world.transformOf(10)!;
+        final dx = root[0] - 0.5;
+        final dy = root[1] - 3.0;
+        return sqrt(dx * dx + dy * dy);
+      }
+
+      final one = sagWith(1);
+      final eight = sagWith(8);
+      expect(eight, lessThan(0.003));
+      expect(eight, lessThan(one));
+    });
+
     test('the world refuses a joint it cannot make', () {
       physics.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 2.0, 0.0]);
       physics.add(3, shape: const Shape.sphere(0.1), at: const [1.0, 2.0, 0.0]);
@@ -1963,6 +2001,7 @@ void main() {
           subSteps: 2,
           velocitySteps: 2,
           positionSteps: 1,
+          jointSteps: 1,
           sleeping: false,
         ),
       );
