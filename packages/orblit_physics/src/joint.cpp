@@ -741,6 +741,31 @@ const Joint *Joints::find(OrblitPhysicsId id) const {
   return found == index_.end() ? nullptr : &joints_[found->second];
 }
 
+const Joint *Joints::aim(OrblitPhysicsId id, const float *rest, float goal) {
+  const auto found = index_.find(id);
+  if (found == index_.end()) return nullptr;
+  Joint &joint = joints_[found->second];
+
+  bool moved = false;
+  // A way is moved only where it has a spring, so a rest given for a way that
+  // holds by a lock is as ignored as it is when the joint is made. Equal
+  // values are not a move, which is what lets a held pose sleep.
+  for (int which = 0; rest != nullptr && which < 6; ++which) {
+    const bool sprung = (joint.sprung & (1u << which)) != 0;
+    if (!sprung || std::isnan(rest[which])) continue;
+    if (joint.springRest[which] == rest[which]) continue;
+    joint.springRest[which] = rest[which];
+    moved = true;
+  }
+
+  const bool goaled = joint.motor >= 0 && joint.goalHertz > 0.0f;
+  if (goaled && !std::isnan(goal) && joint.goal != goal) {
+    joint.goal = goal;
+    moved = true;
+  }
+  return moved ? &joint : nullptr;
+}
+
 void Joints::drop(OrblitPhysicsId body, std::vector<OrblitPhysicsId> &partners) {
   if (!on(body)) return;
   std::vector<OrblitPhysicsId> going;

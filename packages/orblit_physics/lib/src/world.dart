@@ -1754,6 +1754,33 @@ class Physics {
     return native.physicsUnjoin(_alive, id);
   }
 
+  /// Moves where joint [id]'s springs and goal hold, without making it again.
+  ///
+  /// [rest] is where each of the six ways is pulled to, in the order
+  /// [JointSprings.all] gives them: metres along the frame's axes, then
+  /// radians about them. A null leaves that way where it was, and a null list
+  /// leaves all six. A way with no spring ignores its place, and [goal] is
+  /// ignored by a joint with no [JointGoal], as they are when it is made.
+  ///
+  /// Both bodies wake when a place moved and not otherwise, so aiming at where
+  /// a joint already holds lets what hangs from it sleep. False if there is no
+  /// such joint or a value is infinite.
+  bool aim(int id, {List<double?>? rest, double? goal}) {
+    if (rest != null && rest.length != 6) {
+      throw ArgumentError.value(rest, 'rest', 'Give a place for each of six.');
+    }
+    _flush();
+    final places = rest == null ? nullptr : calloc<Float>(6);
+    try {
+      for (var i = 0; rest != null && i < 6; i++) {
+        places[i] = rest[i] ?? double.nan;
+      }
+      return native.physicsAim(_alive, id, places, goal ?? double.nan);
+    } finally {
+      if (places != nullptr) calloc.free(places);
+    }
+  }
+
   /// How joint `id` stands now, or null if there is no such joint.
   JointState? jointStateOf(int id) {
     _flush();

@@ -1249,6 +1249,25 @@ bool orblit_physics_unjoin(OrblitPhysics *physics, OrblitPhysicsId joint);
 bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
                           OrblitPhysicsJointState *out);
 
+/// Moves where a joint's springs and its goal hold, without making it again.
+///
+/// `rest` is six floats, one for each way in the order `limited` names them:
+/// where a spring on that way pulls it to, in metres or radians. A NaN leaves
+/// that way where it was, and a null `rest` leaves all six. `goal` is where a
+/// motor with a `goalHertz` holds its way, and a NaN leaves it. A way with no
+/// spring, and a goal on a joint with no motor goal, are ignored, as they are
+/// when the joint is made.
+///
+/// This is how a joint follows something that moves: a pose to hold, a limb to
+/// reach with. Nothing about the joint but those places changes. Both bodies
+/// are woken when something moved and not otherwise, so aiming at the place a
+/// joint already holds lets what hangs from it go to sleep.
+///
+/// False, and nothing changed, if there is no such joint or a value is
+/// infinite.
+bool orblit_physics_aim(OrblitPhysics *physics, OrblitPhysicsId joint,
+                        const float *rest, float goal);
+
 // -------------------------------------------------------------- snapshots ---
 //
 // A snapshot is the world at one instant, to go back to. It is for a rollback
