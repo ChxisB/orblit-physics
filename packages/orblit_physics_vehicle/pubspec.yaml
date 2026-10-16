@@ -1,8 +1,8 @@
 name: orblit_physics_vehicle
 description: >-
   A car for an Orblit physics world. A chassis on wheels that are casts, with
-  springs, dampers and anti-roll bars.
-version: 0.1.0
+  springs, dampers, anti-roll bars, tyres, steering and brakes.
+version: 0.2.0
 publish_to: none
 
 environment:

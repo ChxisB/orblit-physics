@@ -429,6 +429,18 @@ car.update(dt);
 physics.step(dt);
 ```
 
+Each wheel has a tyre that holds the car to the ground. A tyre bends like
+rubber, so a parked car stays parked on a slope and a turning one gives a
+steady side force. `VehicleInput` steers, brakes and pulls the handbrake. The
+wheels that steer turn by Ackermann geometry, the inner one more than the
+outer. A brake that can hold a wheel locks it, and a locked tyre grips less
+than a rolling one. `Vehicle(surface:)` takes a function from the body under a
+wheel to its grip, so ice and tarmac can share a world.
+
+```dart
+car.setInput(VehicleInput(steer: 0.5, brake: 0.2));
+```
+
 The wheels have no mass. The chassis still collides, so a car that bottoms
 out rests on its floor. A parked car never sleeps, because its springs push
 it every step. Steering, tyres and an engine are not there yet.

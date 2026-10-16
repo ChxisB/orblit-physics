@@ -1,3 +1,28 @@
+## 0.2.0
+
+- `TyreSpec` and `Tyre`. A tyre holds its patch to the ground with bristles
+  that bend as the patch slips, so a parked car does not creep and a turning
+  car gets a steady side force. The force is limited by grip times load, and
+  falls to `sliding` of that past the peak slip. The bend is solved with the
+  wheel's spin in one implicit step, so a wheel of a few kilograms is stable
+  at 60 steps a second.
+- The bend follows the chassis' real motion, not only the tyre's own force.
+  Without that a tyre on a slope settled into a slide at the speed one step
+  of weight gives.
+- `VehicleInput` takes `steer` from -1 to 1 (left is positive), `brake` from
+  0 to 1 and `handbrake`.
+- Wheels that `steers` turn by Ackermann geometry about the line through the
+  wheels that do not. `VehicleSpec.maxSteer` is the angle at full lock.
+- `WheelSpec.brakeTorque` and `handbrake`. A brake that can stop the wheel in
+  a step locks it, and a locked tyre uses its sliding grip.
+- Weight on each wheel is a plane fit that balances moments about the centre
+  of mass, so a front-heavy car rests level with its front springs loaded.
+  A centre outside the wheels is refused.
+- `Vehicle(surface:)` scales every tyre's grip by the body under it.
+- The patch speed comes from where the chassis was at the last update, not
+  the solver's velocity, which is a sawtooth for a body held by pushes.
+- `WheelState` adds `spin` and `steer`.
+
 ## 0.1.0
 
 - First release. `Vehicle` makes a chassis body in a `Physics` world and,
