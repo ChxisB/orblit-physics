@@ -21,6 +21,7 @@ final class SoftSpec {
     this.iterations = 1,
     this.thickness = 0.01,
     this.friction = 0.5,
+    this.windDrag = 1.0,
   }) : gravity = gravity?.clone() ?? Vector3(0, -9.81, 0) {
     if (!(damping >= 0)) {
       throw ArgumentError.value(damping, 'damping', 'must not be negative');
@@ -54,6 +55,9 @@ final class SoftSpec {
     }
     if (!(friction >= 0)) {
       throw ArgumentError.value(friction, 'friction', 'must not be negative');
+    }
+    if (!(windDrag >= 0 && windDrag.isFinite)) {
+      throw ArgumentError.value(windDrag, 'windDrag', 'must not be negative');
     }
   }
 
@@ -91,4 +95,9 @@ final class SoftSpec {
   /// particle slips when the push along the surface is more than this times the
   /// push out of it.
   final double friction;
+
+  /// How fast, per second, the air takes a particle up to its own speed. It
+  /// counts only for a body given a `SoftAir`, and it is on top of [damping].
+  /// A flag in a 10 m/s wind at 1.0 is pushed at 10 m/s², about gravity.
+  final double windDrag;
 }

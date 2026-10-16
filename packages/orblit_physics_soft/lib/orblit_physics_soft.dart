@@ -6,7 +6,10 @@
 /// particles do not move rigid bodies.
 library;
 
+export 'src/air.dart' show SoftAir;
+export 'src/body_point.dart' show bodyPoint;
 export 'src/physics_surface.dart' show PhysicsSurface;
+export 'src/physics_wind.dart' show PhysicsWind;
 export 'src/soft_body.dart' show SoftBody;
 export 'src/spec.dart' show SoftSpec;
 export 'src/surface.dart' show SoftContact, SoftSurface;

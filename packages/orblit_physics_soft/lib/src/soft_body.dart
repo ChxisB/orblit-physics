@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:vector_math/vector_math_64.dart';
 
+import 'air.dart';
+import 'anchor.dart';
 import 'spec.dart';
 import 'surface.dart';
 
@@ -25,13 +27,21 @@ import 'surface.dart';
 /// between two particles lets one through, and the particles do not meet one
 /// another. A body asleep does not look, so wake it when the surface moves.
 final class SoftBody {
-  SoftBody._(this.spec, this._x, double mass, this._links, this.surface)
-    : _prev = Float64List.fromList(_x),
-      _v = Float64List(_x.length),
-      _inverseMass = 1 / mass,
-      _w = Float64List(_x.length ~/ 3)..fillRange(0, _x.length ~/ 3, 1 / mass),
-      _plane = Float64List(_x.length ~/ 3 * 4),
-      _touch = Uint8List(_x.length ~/ 3);
+  SoftBody._({
+    required this.spec,
+    required Float64List x,
+    required double mass,
+    required _Links links,
+    required this.surface,
+    required this.air,
+  }) : _x = x,
+       _links = links,
+       _prev = Float64List.fromList(x),
+       _v = Float64List(x.length),
+       _inverseMass = 1 / mass,
+       _w = Float64List(x.length ~/ 3)..fillRange(0, x.length ~/ 3, 1 / mass),
+       _plane = Float64List(x.length ~/ 3 * 4),
+       _touch = Uint8List(x.length ~/ 3);
 
   /// A sheet of [columns] by [rows] particles. [across] is the offset from one
   /// particle to the next along a row and [down] to the next row, so their
@@ -46,6 +56,7 @@ final class SoftBody {
     double particleMass = 0.01,
     SoftSpec? spec,
     SoftSurface? surface,
+    SoftAir? air,
   }) {
     if (columns < 2 || rows < 2) {
       throw ArgumentError('A cloth needs 2 columns and 2 rows at least');
@@ -60,11 +71,12 @@ final class SoftBody {
       }
     }
     return SoftBody._(
-      soft,
-      x,
-      particleMass,
-      _clothLinks(columns, rows, x, soft),
-      surface,
+      spec: soft,
+      x: x,
+      mass: particleMass,
+      links: _clothLinks(columns, rows, x, soft),
+      surface: surface,
+      air: air,
     );
   }
 
@@ -75,6 +87,7 @@ final class SoftBody {
     double particleMass = 0.01,
     SoftSpec? spec,
     SoftSurface? surface,
+    SoftAir? air,
   }) {
     if (points.length < 2) {
       throw ArgumentError('A rope needs 2 particles at least');
@@ -92,7 +105,14 @@ final class SoftBody {
     for (var i = 0; i + 2 < points.length; i++) {
       links.bend(i, i + 2, soft.bendCompliance);
     }
-    return SoftBody._(soft, x, particleMass, links.build(), surface);
+    return SoftBody._(
+      spec: soft,
+      x: x,
+      mass: particleMass,
+      links: links.build(),
+      surface: surface,
+      air: air,
+    );
   }
 
   final SoftSpec spec;
@@ -100,6 +120,9 @@ final class SoftBody {
   /// What the particles stay off, or null for a body that falls through
   /// everything.
   final SoftSurface? surface;
+
+  /// The wind the particles are dragged along by, or null for still air.
+  final SoftAir? air;
 
   final Float64List _x;
   final Float64List _prev;
@@ -112,6 +135,11 @@ final class SoftBody {
   /// stay in front of: a normal and the offset along it.
   final Float64List _plane;
   final Uint8List _touch;
+
+  final _anchors = <int, Anchor>{};
+
+  /// The wind at the middle of the body, as of the last step.
+  var _wind = Vector3.zero();
 
   /// Seconds the largest move has been under [sleepSpeed].
   double _still = 0;
@@ -166,10 +194,49 @@ final class SoftBody {
     wake();
   }
 
-  /// Lets a pinned particle go.
+  /// Lets a pinned or attached particle go.
   void release(int i) {
+    _anchors.remove(i);
     _w[i] = _inverseMass;
     wake();
+  }
+
+  /// Holds particle [i] to the point [where] answers, which is asked at the
+  /// start of every step. The particle jumps to it, so a point that moves
+  /// faster than the body can follow stretches the links.
+  ///
+  /// With a [limit], in newtons, the particle lets go when the body pulls on
+  /// it harder than that, averaged over one step. [bodyPoint] gives the point
+  /// for a place on a physics body. A bone is any closure of the caller's own.
+  /// Placing an attached particle by hand is undone by the next step.
+  void attach(int i, Vector3 Function() where, {double? limit}) {
+    RangeError.checkValidIndex(i, _w, 'i', count);
+    if (limit != null && !(limit > 0)) {
+      throw ArgumentError.value(limit, 'limit', 'must be above zero');
+    }
+    final links = _links;
+    final ending = [
+      for (var l = 0; l < links.length; l++)
+        if (links.a[l] == i || links.b[l] == i) l,
+    ];
+    pin(i);
+    _anchors[i] = Anchor(i, where, limit, ending);
+  }
+
+  /// Lets an attached particle hang free. A particle pinned by hand stays.
+  void detach(int i) {
+    if (_anchors.remove(i) != null) release(i);
+  }
+
+  bool isAttached(int i) => _anchors.containsKey(i);
+
+  /// The force, in newtons, the body puts on attached particle [i], averaged
+  /// over the last step. It points the way the body pulls. It is the last
+  /// value while the body sleeps, which is the load it is holding up.
+  Vector3 pullOf(int i) {
+    final anchor = _anchors[i];
+    if (anchor == null) throw StateError('Particle $i is not attached');
+    return anchor.pull.clone();
   }
 
   /// Moves a pinned particle. The links pull the rest after it.
@@ -193,22 +260,93 @@ final class SoftBody {
     if (!(dt > 0)) {
       throw ArgumentError.value(dt, 'dt', 'must be above zero');
     }
+    _follow();
+    _blow();
     if (_asleep) return;
     final span = math.min(dt, SoftSpec.maxStep);
     final pieces = (span / spec.substepLength).ceil();
     final h = span / pieces;
+    for (final anchor in _anchors.values) {
+      anchor.pull.setZero();
+    }
     _look(span);
     for (var s = 0; s < pieces; s++) {
       _integrate(h);
       _solve(h);
+      _gather(h);
       _derive(h);
     }
+    _tear(pieces);
     _rest(span);
   }
 
+  /// Asks each anchor where its particle goes. A body whose anchors have not
+  /// moved stays asleep.
+  void _follow() {
+    for (final anchor in _anchors.values) {
+      final target = anchor.where();
+      if (positionOf(anchor.particle).distanceToSquared(target) > 1e-18) {
+        place(anchor.particle, target);
+      }
+    }
+  }
+
+  /// Samples the wind, and wakes the body if it has changed.
+  void _blow() {
+    final air = this.air;
+    if (air == null) return;
+    final wind = air.windAt(_centre());
+    if (wind.distanceToSquared(_wind) > 1e-12) wake();
+    _wind = wind;
+  }
+
+  Vector3 _centre() {
+    final sum = Vector3.zero();
+    for (var i = 0; i < count; i++) {
+      sum.x += _x[i * 3];
+      sum.y += _x[i * 3 + 1];
+      sum.z += _x[i * 3 + 2];
+    }
+    return sum / count.toDouble();
+  }
+
+  /// How fast the air takes a particle up to its own speed, per second.
+  double get _drag => air == null ? 0 : spec.windDrag;
+
+  /// Adds the force each link put on its anchor in this sub-step. A link
+  /// pushes its ends apart by `lambda` along its length, over the sub-step
+  /// squared, so a stretched link, whose `lambda` is negative, pulls them
+  /// together.
+  void _gather(double h) {
+    final links = _links;
+    for (final anchor in _anchors.values) {
+      for (final l in anchor.links) {
+        final a = links.a[l] * 3;
+        final b = links.b[l] * 3;
+        final length = _length(l);
+        if (length < 1e-12) continue;
+        final sign = links.a[l] == anchor.particle ? 1.0 : -1.0;
+        final scale = sign * links.lambda[l] / (length * h * h);
+        anchor.pull.x += (_x[a] - _x[b]) * scale;
+        anchor.pull.y += (_x[a + 1] - _x[b + 1]) * scale;
+        anchor.pull.z += (_x[a + 2] - _x[b + 2]) * scale;
+      }
+    }
+  }
+
+  /// Turns the sums into means, and lets go of what was pulled too hard.
+  void _tear(int pieces) {
+    for (final anchor in _anchors.values.toList()) {
+      anchor.pull.scale(1 / pieces);
+      final limit = anchor.limit;
+      if (limit != null && anchor.pull.length > limit) release(anchor.particle);
+    }
+  }
+
   void _integrate(double h) {
-    final g = spec.gravity.storage;
-    final keep = math.max(0.0, 1 - spec.damping * h);
+    final drag = _drag;
+    final g = (spec.gravity + _wind * drag).storage;
+    final keep = math.max(0.0, 1 - spec.damping * h) / (1 + drag * h);
     for (var i = 0; i < count; i++) {
       final k = i * 3;
       for (var c = 0; c < 3; c++) {
@@ -243,7 +381,7 @@ final class SoftBody {
     final surface = this.surface;
     if (surface == null) return;
     final skin = spec.thickness;
-    final fall = spec.gravity * (0.5 * span * span);
+    final fall = (spec.gravity + _wind * _drag) * (0.5 * span * span);
     for (var i = 0; i < count; i++) {
       _touch[i] = 0;
       if (_w[i] == 0) continue;
