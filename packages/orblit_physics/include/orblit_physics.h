@@ -363,6 +363,16 @@ typedef struct {
   /// sub-steps.
   uint32_t positionSteps;
 
+  /// Passes over the joints in each correcting pass, so a chain of them has
+  /// time to carry a load from its tip to its root. Each pass goes the other
+  /// way round from the last, and the last goes from the tip in.
+  ///
+  /// A joint with nothing heavier than itself at the end of it holds in one.
+  /// Eight hold a chain of a few links with a body a hundred times their
+  /// weight on it to a few millimetres. They cost nothing on a world with no
+  /// joints. Fewer than one is one.
+  uint32_t jointSteps;
+
   /// How far into a surface a body is let come to rest as it arrives, in
   /// metres. It stops a quarter of this far in, and the contact's spring
   /// takes it back out to where it holds.
@@ -1051,6 +1061,35 @@ typedef enum {
   /// within a quarter turn that is the angle it looks like; further, the
   /// three stop being independent, which is true of any three angles.
   ORBLIT_PHYSICS_JOINT_SIX_AXIS = 7,
+
+  /// Ties how far `b` turns to how far `a` does: `b` turns `ratio` times as
+  /// far as `a`, the same way about their own x axes. Meshed gears turn
+  /// opposite ways, so a ratio is negative for them. `a`'s axis is the frame's
+  /// x. `b`'s is the same unless `axisB` says another. Both bodies are
+  /// usually hinged to something already; this only makes them turn together.
+  /// With a spring on way 0 the teeth give.
+  ORBLIT_PHYSICS_JOINT_GEAR = 8,
+
+  /// Ties how far `a` slides to how far `b` turns: `a` moves `ratio` metres
+  /// along the frame's x, as it stood when the joint was made, for each radian
+  /// `b` turns about its own x, which is `axisB` or the frame's. `at` is the
+  /// point on `a`. The rack is `a` and the pinion is `b`.
+  ORBLIT_PHYSICS_JOINT_RACK = 9,
+
+  /// A rope over two fixed points: the length from `over[0]` to `a`'s point,
+  /// `at`, plus `ratio` times the length from `over[1]` to `b`'s point, `to`,
+  /// stays what it was. As one side goes down the other comes up, by `ratio`
+  /// times as much. It holds in both directions, so it is a rod and not a
+  /// rope: it pushes as well as pulls.
+  ORBLIT_PHYSICS_JOINT_PULLEY = 10,
+
+  /// Keeps `b`'s point on a path, a line of points joined end to end that
+  /// `orblit_physics_join_path` is given, and lets it slide along it. Way 0 is
+  /// how far along the path, in metres from its first point, and `low[0]` and
+  /// `high[0]` limit it. It takes a motor and a spring there. With `follow`
+  /// `b`'s x axis is kept along the path as well, and `b` is free to roll
+  /// about it.
+  ORBLIT_PHYSICS_JOINT_PATH = 11,
 } OrblitPhysicsJointKind;
 
 /// How to make a joint.
@@ -1102,14 +1141,58 @@ typedef struct {
   float speed;
   float strength;
 
+  /// HINGE and SLIDER: with `goalHertz` above zero the motor holds its way at
+  /// `goal`, in radians or metres, as a spring of that frequency in hertz and
+  /// that damping ratio would, and never pushes harder than `strength`.
+  /// `speed` is then not read. A ratio of 1 settles without overshooting.
+  float goal;
+  float goalHertz;
+  float goalRatio;
+
+  /// A spring on each way, in the order `limited` names them. A way with a
+  /// frequency above zero is pulled to `springRest`, in metres or radians,
+  /// with that damping ratio. On a way the kind locks, the spring takes the
+  /// lock's place, so the joint gives there. On a way that is free it is the
+  /// only thing that holds it. Past the stiffness a step can follow, about a
+  /// quarter of the sub-step rate, a spring is as stiff as that and no
+  /// stiffer.
+  ///
+  /// The frequency is the one the way has under the load it moves. A way that
+  /// turns a body about a point away from its centre is measured against the
+  /// body swinging about that point, so an arm on a hinge rings at the
+  /// frequency written here and not at a higher one for its own spin.
+  float springHertz[6];
+  float springRatio[6];
+  float springRest[6];
+
+  /// With `limitHertz` above zero a limit is a spring and not a wall: past
+  /// its end the joint is pulled back as that spring would, so it may be
+  /// stretched past it by whatever pushes. Locks stay hard.
+  float limitHertz;
+  float limitRatio;
+
   /// Past this force in newtons, or this torque in newton-metres, the joint
   /// breaks: it is removed, and a BROKE event says so. Zero never breaks.
   float breakingForce;
   float breakingTorque;
 
+  /// GEAR, RACK and PULLEY: the ratio, as each kind says. Zero keeps `b`
+  /// still, or the rack, or takes `b`'s rope out of it.
+  float ratio;
+
+  /// GEAR and RACK: `b`'s axis, in the world. All zeroes is the frame's x.
+  float axisB[3];
+
+  /// PULLEY: the two fixed points the rope runs over, in the world, for `a`'s
+  /// side and `b`'s.
+  float over[2][3];
+
   /// Whether the two bodies still collide with each other.
   bool collide;
-  bool _reserved[3];
+
+  /// PATH: whether `b`'s x axis is kept along the path.
+  bool follow;
+  bool _reserved[2];
 } OrblitPhysicsJoint;
 
 /// How a joint stands, and how hard it held on the last step.
@@ -1136,6 +1219,24 @@ typedef struct {
 /// the world to itself, a kind that is not one, a NaN in any field, or a point
 /// or rotation that is not finite.
 bool orblit_physics_join(OrblitPhysics *physics, const OrblitPhysicsJoint *joint);
+
+/// Makes a PATH joint, which `orblit_physics_join` cannot because it has no
+/// points to give. `xyz` is `count` points, three floats each, in the world,
+/// that the joint's point on `b` is kept to the line through. `at` is where
+/// that point is on `b`.
+///
+/// The points are copied, in `a`'s frame, so the path goes where `a` goes. A
+/// point that touches the one before it is dropped. The path is corners and
+/// the joint is as sharp at them as the points are, so a curve wants a point
+/// every few degrees of it. To close a loop, end where it began. The point on
+/// `b` is pulled to the nearest place on the path, so it should begin on it.
+///
+/// False, and nothing changed, for a joint that is not a PATH, fewer than two
+/// points once those that touch are one, more than 10,000, a point that is
+/// not finite, or anything `orblit_physics_join` refuses.
+bool orblit_physics_join_path(OrblitPhysics *physics,
+                              const OrblitPhysicsJoint *joint, const float *xyz,
+                              uint32_t count);
 
 /// Removes a joint, waking both its bodies so what it held up falls. False if
 /// there was no such joint.

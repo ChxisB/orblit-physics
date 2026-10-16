@@ -8,7 +8,7 @@
 // a command still takes effect the moment it is given.
 
 import 'dart:ffi';
-import 'dart:math' show pi, sqrt;
+import 'dart:math' show max, pi, sqrt;
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
@@ -457,7 +457,11 @@ enum PhysicsJointKind {
   slider(4),
   distance(5),
   cone(6),
-  sixAxis(7);
+  sixAxis(7),
+  gear(8),
+  rack(9),
+  pulley(10),
+  path(11);
 
   const PhysicsJointKind(this.code);
   final int code;
@@ -474,6 +478,93 @@ final class JointLimit {
 
   final double low;
   final double high;
+}
+
+/// A spring on one way of a joint: it pulls that way to [rest] as a spring of
+/// [hertz] would, with damping [ratio].
+///
+/// On a way the joint locks, a spring takes the lock's place, so the joint
+/// gives there. On a way it leaves free, the spring is the only thing that
+/// holds it.
+///
+/// Hertz is the way's own frequency under the load it moves: a turn is
+/// measured against how hard the body is to swing about the joint, a body
+/// hanging from a slider by its mass. A stiffer spring than a step can follow
+/// is as stiff as one can.
+final class JointSpring {
+  const JointSpring({required this.hertz, this.ratio = 1.0, this.rest})
+    : assert(hertz > 0, 'A spring needs a frequency above nought.'),
+      assert(ratio >= 0, 'A damping ratio is nought or more.');
+
+  /// Cycles a second, undamped, of the body on the end of it.
+  final double hertz;
+
+  /// Nought rings for ever. One settles as quickly as it can without
+  /// overshooting. Above one is sluggish.
+  final double ratio;
+
+  /// Where it pulls the way to, in metres or radians from where the joint was
+  /// made. Null is where it was made, which for a distance joint is the
+  /// length it was made at.
+  final double? rest;
+}
+
+/// How soft the ends of a joint's limits are. With one, a limit is a spring
+/// about its end and not a wall: pushed past, the joint gives and is pulled
+/// back, and what stops there is held at the end. Locks stay hard.
+final class JointSoftness {
+  const JointSoftness({required this.hertz, this.ratio = 1.0})
+    : assert(hertz > 0, 'A spring needs a frequency above nought.'),
+      assert(ratio >= 0, 'A damping ratio is nought or more.');
+
+  final double hertz;
+  final double ratio;
+}
+
+/// A motor that holds its way at [at], in metres or radians, as a spring of
+/// [hertz] and damping [ratio] would, and never pushes harder than the
+/// joint's `strength`. It has no use for the joint's `speed`.
+///
+/// Where a speed motor says how fast to go, this says where to be: an arm held
+/// up, a door held shut, a limb driven to the pose an animation asks for.
+final class JointGoal {
+  const JointGoal(this.at, {required this.hertz, this.ratio = 1.0})
+    : assert(hertz > 0, 'A goal needs a frequency above nought.'),
+      assert(ratio >= 0, 'A damping ratio is nought or more.');
+
+  final double at;
+  final double hertz;
+  final double ratio;
+}
+
+/// A spring on each of the six ways, or none. Named as a six-axis joint names
+/// them: metres along the frame's axes, then radians about them.
+final class JointSprings {
+  const JointSprings({
+    this.alongX,
+    this.alongY,
+    this.alongZ,
+    this.aboutX,
+    this.aboutY,
+    this.aboutZ,
+  });
+
+  final JointSpring? alongX;
+  final JointSpring? alongY;
+  final JointSpring? alongZ;
+  final JointSpring? aboutX;
+  final JointSpring? aboutY;
+  final JointSpring? aboutZ;
+
+  /// In the order the ABI names the ways.
+  List<JointSpring?> get all => [
+    alongX,
+    alongY,
+    alongZ,
+    aboutX,
+    aboutY,
+    aboutZ,
+  ];
 }
 
 /// What a joint holds, apart from where it is.
@@ -499,14 +590,27 @@ final class Joint {
     this.swing = 0.0,
     this.speed = 0.0,
     this.strength = 0.0,
+    this.goal,
+    this.springs = const JointSprings(),
+    this.softLimit,
+    this.ratio = 1.0,
+    this.follow = false,
   });
 
   /// Holds the second body exactly where it is relative to the first: welded.
-  const Joint.fixed() : this._(PhysicsJointKind.fixed);
+  ///
+  /// Give it [springs] to weld it with a give: a rubbery joint that sags under
+  /// load and comes back.
+  const Joint.fixed({JointSprings springs = const JointSprings()})
+    : this._(PhysicsJointKind.fixed, springs: springs);
 
   /// Holds the two points together and lets the bodies turn any way about
   /// them. A pendulum, or a ball and socket with no limit.
-  const Joint.point() : this._(PhysicsJointKind.point);
+  ///
+  /// [springs] on the `along` ways make the points hold with a give, and on
+  /// the `about` ways pull the turn back to rest.
+  const Joint.point({JointSprings springs = const JointSprings()})
+    : this._(PhysicsJointKind.point, springs: springs);
 
   /// Holds the points together and lets the second body turn about the
   /// frame's x axis only: a door, a wheel, a knee. `limit` is the angle it
@@ -514,32 +618,52 @@ final class Joint {
   ///
   /// A motor turns it at `speed` radians a second, never harder than
   /// `strength` newton-metres. No strength is no motor, and a speed of nought
-  /// with a little strength is friction in the joint.
+  /// with a little strength is friction in the joint. A [goal] makes the motor
+  /// hold an angle instead of a speed.
+  ///
+  /// [springs] may put a spring on `aboutX`, the hinge's own way, and
+  /// [softLimit] makes its limit a spring about its end rather than a wall.
   const Joint.hinge({
     JointLimit? limit,
     double speed = 0.0,
     double strength = 0.0,
+    JointGoal? goal,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
   }) : this._(
          PhysicsJointKind.hinge,
          aboutX: limit,
          speed: speed,
          strength: strength,
+         goal: goal,
+         springs: springs,
+         softLimit: softLimit,
        );
 
   /// Lets the second body move along the frame's x axis only, never turning:
   /// a drawer, a piston, a lift on a rail. `limit` is how far, in metres.
   ///
   /// A motor moves it at `speed` metres a second, never harder than
-  /// `strength` newtons.
+  /// `strength` newtons. A [goal] makes it hold a place instead of a speed.
+  ///
+  /// [springs] may put a spring on `alongX`: a box hung on one settles a rest
+  /// length plus gravity over omega squared below its hook. [softLimit] makes
+  /// the ends of the limit springs rather than walls.
   const Joint.slider({
     JointLimit? limit,
     double speed = 0.0,
     double strength = 0.0,
+    JointGoal? goal,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
   }) : this._(
          PhysicsJointKind.slider,
          alongX: limit,
          speed: speed,
          strength: strength,
+         goal: goal,
+         springs: springs,
+         softLimit: softLimit,
        );
 
   /// Keeps a point on each body a distance apart, with both free to turn.
@@ -547,14 +671,39 @@ final class Joint {
   /// With no limit it is a rod as long as the points were apart when it was
   /// made. With one it is a range, in metres: `JointLimit(0, 2)` is a two
   /// metre rope, slack until it is taut.
-  const Joint.distance({JointLimit? limit})
-    : this._(PhysicsJointKind.distance, alongX: limit);
+  ///
+  /// A spring on `alongX` makes it elastic, pulled to its `rest` length,
+  /// which is the length it was made at unless it says otherwise.
+  const Joint.distance({
+    JointLimit? limit,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
+  }) : this._(
+         PhysicsJointKind.distance,
+         alongX: limit,
+         springs: springs,
+         softLimit: softLimit,
+       );
 
   /// Holds the points together and lets the second body's x axis swing up to
   /// `swing` radians from the first's, in any direction: a shoulder or a hip.
   /// `twist` bounds how far it turns about that axis as well.
-  const Joint.cone({required double swing, JointLimit? twist})
-    : this._(PhysicsJointKind.cone, aboutX: twist, swing: swing);
+  ///
+  /// A spring on `aboutY` pulls the swing back towards the first body's x axis
+  /// as it leaves it. `aboutZ` has no way of its own on a cone, because it
+  /// swings as one. A spring on `aboutX` pulls the twist back.
+  const Joint.cone({
+    required double swing,
+    JointLimit? twist,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
+  }) : this._(
+         PhysicsJointKind.cone,
+         aboutX: twist,
+         swing: swing,
+         springs: springs,
+         softLimit: softLimit,
+       );
 
   /// Each of the six ways set on its own: free unless limited, and locked
   /// where a limit's low is its high. For whatever the other kinds do not
@@ -571,6 +720,8 @@ final class Joint {
     JointLimit? aboutX,
     JointLimit? aboutY,
     JointLimit? aboutZ,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
   }) : this._(
          PhysicsJointKind.sixAxis,
          alongX: alongX,
@@ -579,9 +730,97 @@ final class Joint {
          aboutX: aboutX,
          aboutY: aboutY,
          aboutZ: aboutZ,
+         springs: springs,
+         softLimit: softLimit,
+       );
+
+  /// Ties how far the second body turns to how far the first does: it turns
+  /// [ratio] times as far, about its own x axis. Meshed gears turn opposite
+  /// ways, so a ratio is negative for them.
+  ///
+  /// Both bodies are usually hinged to something already, and the gear only
+  /// makes them turn together. Turns are counted over many revolutions, which
+  /// an angle read from a pose cannot do, so the ratio holds after the wheels
+  /// have gone round a hundred times. A spring on `alongX`, the only way a
+  /// coupling has, makes the teeth yield under load and come back.
+  ///
+  /// [Physics.join] takes `axisB` where the second body's axis is not the
+  /// frame's own.
+  const Joint.gear({
+    required double ratio,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.gear, ratio: ratio, springs: springs);
+
+  /// Ties how far the first body slides to how far the second turns: the
+  /// first, the rack, moves [ratio] metres along the frame's x for each
+  /// radian the second, the pinion, turns about its own x.
+  ///
+  /// The rack's direction is fixed in the world from where the joint is made,
+  /// so hinge or slide the rack to what it runs on. A spring on `alongX`
+  /// makes the teeth give.
+  const Joint.rack({
+    required double ratio,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.rack, ratio: ratio, springs: springs);
+
+  /// A rope over two fixed points. The length from the first point to the
+  /// first body's point, plus [ratio] times the length from the second point
+  /// to the second body's, stays what it was when made. As one side goes down
+  /// the other comes up, by [ratio] times as much.
+  ///
+  /// Both ends are given to [Physics.join]: `at` on the first body, `to` on
+  /// the second, and the two fixed points as `over`.
+  ///
+  /// It holds in both directions, so it is a rod and not a rope: it pushes
+  /// as well as pulls. A spring on `alongX` makes it stretch.
+  const Joint.pulley({
+    double ratio = 1.0,
+    JointSprings springs = const JointSprings(),
+  }) : this._(PhysicsJointKind.pulley, ratio: ratio, springs: springs);
+
+  /// Lets the second body slide along a bent line, a rail, a track or a
+  /// chute, and holds it on it. The line is [Physics.join]'s `path`, in the
+  /// world as it stands when the joint is made, and it is carried with the
+  /// first body.
+  ///
+  /// `limit` is how far along it may go, in metres from the first point. A
+  /// motor takes it along at `speed` metres a second, never harder than
+  /// `strength` newtons, and a [goal] holds a place. A spring on `alongX`
+  /// pulls it to a place along the line, and [softLimit] makes the ends of
+  /// the limit springs. Past the ends the line goes on straight and the
+  /// distance along it keeps counting, so a limit at the line's length stops
+  /// what runs off the end. Without one it runs off.
+  ///
+  /// The second body keeps its own turn unless [follow] is set, when its x
+  /// axis is kept along the line as well and it is free to roll about it. The
+  /// corners of the line are sharp, and a loop is closed by repeating its
+  /// first point.
+  const Joint.path({
+    JointLimit? limit,
+    double speed = 0.0,
+    double strength = 0.0,
+    JointGoal? goal,
+    JointSprings springs = const JointSprings(),
+    JointSoftness? softLimit,
+    bool follow = false,
+  }) : this._(
+         PhysicsJointKind.path,
+         alongX: limit,
+         speed: speed,
+         strength: strength,
+         goal: goal,
+         springs: springs,
+         softLimit: softLimit,
+         follow: follow,
        );
 
   final PhysicsJointKind kind;
+
+  /// The ratio a gear, a rack or a pulley ties its two sides at.
+  final double ratio;
+
+  /// Whether a path keeps the second body's x axis along the line.
+  final bool follow;
 
   /// The range of each of the six ways, or null where the kind leaves it
   /// alone: metres along the frame's axes, then radians about them.
@@ -598,6 +837,13 @@ final class Joint {
   /// A hinge's or a slider's motor.
   final double speed;
   final double strength;
+
+  /// What a hinge's or a slider's motor holds its way at, in place of a speed.
+  final JointGoal? goal;
+
+  /// A spring on each way, and how soft the ends of the limits are.
+  final JointSprings springs;
+  final JointSoftness? softLimit;
 
   /// The six limits, in the order the ABI names them.
   List<JointLimit?> get limits => [
@@ -641,6 +887,7 @@ final class PhysicsSettings {
     this.subSteps,
     this.velocitySteps,
     this.positionSteps,
+    this.jointSteps,
     this.slop,
     this.contactHertz,
     this.bounceThreshold,
@@ -653,6 +900,10 @@ final class PhysicsSettings {
   final int? subSteps;
   final int? velocitySteps;
   final int? positionSteps;
+
+  /// Passes over the joints in each correcting pass. More of them hold a
+  /// chain with something heavy at its tip, and cost nothing without joints.
+  final int? jointSteps;
   final double? slop;
   final double? contactHertz;
   final double? bounceThreshold;
@@ -790,6 +1041,7 @@ class Physics {
       if (settings.positionSteps != null) {
         it.positionSteps = settings.positionSteps!;
       }
+      if (settings.jointSteps != null) it.jointSteps = settings.jointSteps!;
       if (settings.slop != null) it.slop = settings.slop!;
       if (settings.contactHertz != null) {
         it.contactHertz = settings.contactHertz!;
@@ -1364,6 +1616,9 @@ class Physics {
     required List<double> at,
     List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
     List<double>? to,
+    List<double>? axisB,
+    List<List<double>>? over,
+    List<List<double>>? path,
     double breakingForce = 0.0,
     double breakingTorque = 0.0,
     bool collide = false,
@@ -1373,22 +1628,15 @@ class Physics {
     // is made.
     _flush();
     final made = calloc<native.OrblitPhysicsJoint>();
+    Pointer<Float>? points;
     try {
+      points = _pathOf(path);
       final it = made.ref;
       it.id = id;
       it.a = a;
       it.b = b;
       it.kind = joint.kind.code;
-      final limits = joint.limits;
-      var limited = 0;
-      for (var i = 0; i < 6; i++) {
-        final limit = limits[i];
-        if (limit == null) continue;
-        limited |= 1 << i;
-        it.low[i] = limit.low;
-        it.high[i] = limit.high;
-      }
-      it.limited = limited;
+      _writeLimits(it, joint);
       _write3(it.at, at);
       for (var i = 0; i < 4; i++) {
         it.rotation[i] = rotation[i];
@@ -1397,12 +1645,105 @@ class Physics {
       it.swing = joint.swing;
       it.speed = joint.speed;
       it.strength = joint.strength;
+      _writeGive(it, joint, _lengthOf(joint, at, to));
+      _writeTie(it, joint, axisB: axisB, over: over);
       it.breakingForce = breakingForce;
       it.breakingTorque = breakingTorque;
       it.collide = collide;
-      return native.physicsJoin(_alive, made);
+      if (points == null || path == null) {
+        return native.physicsJoin(_alive, made);
+      }
+      return native.physicsJoinPath(_alive, made, points, path.length);
     } finally {
+      if (points != null) calloc.free(points);
       calloc.free(made);
+    }
+  }
+
+  /// A path's points as the flat floats the ABI takes, or null for none. The
+  /// caller frees it.
+  Pointer<Float>? _pathOf(List<List<double>>? path) {
+    if (path == null) return null;
+    final flat = calloc<Float>(max(path.length * 3, 1));
+    for (var i = 0; i < path.length; i++) {
+      final point = path[i];
+      if (point.length != 3) {
+        calloc.free(flat);
+        throw ArgumentError.value(point, 'path', 'A point is x, y and z.');
+      }
+      flat[i * 3] = point[0];
+      flat[i * 3 + 1] = point[1];
+      flat[i * 3 + 2] = point[2];
+    }
+    return flat;
+  }
+
+  void _writeLimits(native.OrblitPhysicsJoint it, Joint joint) {
+    final limits = joint.limits;
+    var limited = 0;
+    for (var i = 0; i < 6; i++) {
+      final limit = limits[i];
+      if (limit == null) continue;
+      limited |= 1 << i;
+      it.low[i] = limit.low;
+      it.high[i] = limit.high;
+    }
+    it.limited = limited;
+  }
+
+  /// Writes what a coupling or a path adds to a joint: its ratio, the axis of
+  /// its second body, the two fixed points of a pulley, and whether a path
+  /// turns its body to follow.
+  void _writeTie(
+    native.OrblitPhysicsJoint it,
+    Joint joint, {
+    List<double>? axisB,
+    List<List<double>>? over,
+  }) {
+    it.ratio = joint.ratio;
+    it.follow = joint.follow;
+    if (axisB != null) _write3(it.axisB, axisB);
+    if (over == null) return;
+    if (over.length != 2) {
+      throw ArgumentError.value(over, 'over', 'A pulley has two points.');
+    }
+    for (var i = 0; i < 2; i++) {
+      for (var k = 0; k < 3; k++) {
+        it.over[i * 3 + k] = over[i][k];
+      }
+    }
+  }
+
+  /// The length a distance joint is made at, which is where a spring on it
+  /// rests unless it says otherwise.
+  double _lengthOf(Joint joint, List<double> at, List<double>? to) {
+    if (joint.kind != PhysicsJointKind.distance || to == null) return 0.0;
+    final dx = to[0] - at[0];
+    final dy = to[1] - at[1];
+    final dz = to[2] - at[2];
+    return sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  /// Writes the goal, the springs and the soft limit of `joint` into `it`.
+  void _writeGive(native.OrblitPhysicsJoint it, Joint joint, double length) {
+    final goal = joint.goal;
+    if (goal != null) {
+      it.goal = goal.at;
+      it.goalHertz = goal.hertz;
+      it.goalRatio = goal.ratio;
+    }
+    final springs = joint.springs.all;
+    for (var i = 0; i < 6; i++) {
+      final spring = springs[i];
+      if (spring == null) continue;
+      it.springHertz[i] = spring.hertz;
+      it.springRatio[i] = spring.ratio;
+      it.springRest[i] = spring.rest ?? (i == 0 ? length : 0.0);
+    }
+    final soft = joint.softLimit;
+    if (soft != null) {
+      it.limitHertz = soft.hertz;
+      it.limitRatio = soft.ratio;
     }
   }
 

@@ -62,6 +62,30 @@ constexpr float clamped(float v, float low, float high) {
   return v < low ? low : (v > high ? high : v);
 }
 
+/// How a spring is blended into a solver row, for a sub-step of length `h`.
+///
+/// A row that is soft solves for `was - massScale * mass * (speed - target) -
+/// impulseScale * was`, where `target` is `-pushRate` times how far the row is
+/// from where it should be. At the limit of a stiff spring that is the hard
+/// row: a mass scale of one, an impulse scale of nought, a push of `1 / h`.
+/// Implicit in the sub-step, so it cannot gain energy however stiff it is
+/// asked to be.
+struct Softness {
+  float massScale;
+  float impulseScale;
+  float pushRate;
+};
+
+/// The row of a spring of `hertz` and damping `ratio`, where a ratio of one is
+/// critical and nought is none. `h` and `hertz` are positive.
+inline Softness softnessOf(float h, float hertz, float ratio) {
+  const float omega = 2.0f * kPi * hertz;
+  const float a1 = 2.0f * ratio + h * omega;
+  const float a2 = h * omega * a1;
+  const float a3 = 1.0f / (1.0f + a2);
+  return {a2 * a3, a3, omega / a1};
+}
+
 inline float length(const Vec3 &v) { return std::sqrt(dot(v, v)); }
 
 /// Zero rather than a nan when there is no direction to speak of.
@@ -162,6 +186,39 @@ inline Quat integrate(const Quat &q, const Vec3 &spin, float delta) {
   const Quat stepped = d * q;
   return normalised(
       Quat{q.x + stepped.x, q.y + stepped.y, q.z + stepped.z, q.w + stepped.w});
+}
+
+/// The shortest turn that takes unit vector `from` onto unit vector `to`. Half
+/// a turn about any axis across them when they point opposite ways.
+inline Quat turnOnto(const Vec3 &from, const Vec3 &to) {
+  const float cosine = dot(from, to);
+  if (cosine < -1.0f + kTiny) {
+    Vec3 across, other;
+    perpendiculars(from, across, other);
+    return {across.x, across.y, across.z, 0.0f};
+  }
+  const Vec3 axis = cross(from, to);
+  return normalised(Quat{axis.x, axis.y, axis.z, 1.0f + cosine});
+}
+
+/// The rotation whose x, y and z axes are the given unit vectors, which must be
+/// at right angles and right-handed.
+inline Quat fromAxes(const Vec3 &x, const Vec3 &y, const Vec3 &z) {
+  const float trace = x.x + y.y + z.z;
+  if (trace > 0.0f) {
+    const float s = 0.5f / std::sqrt(trace + 1.0f);
+    return {(y.z - z.y) * s, (z.x - x.z) * s, (x.y - y.x) * s, 0.25f / s};
+  }
+  if (x.x > y.y && x.x > z.z) {
+    const float s = 2.0f * std::sqrt(1.0f + x.x - y.y - z.z);
+    return {0.25f * s, (y.x + x.y) / s, (z.x + x.z) / s, (y.z - z.y) / s};
+  }
+  if (y.y > z.z) {
+    const float s = 2.0f * std::sqrt(1.0f + y.y - x.x - z.z);
+    return {(y.x + x.y) / s, 0.25f * s, (z.y + y.z) / s, (z.x - x.z) / s};
+  }
+  const float s = 2.0f * std::sqrt(1.0f + z.z - x.x - y.y);
+  return {(z.x + x.z) / s, (z.y + y.z) / s, 0.25f * s, (x.y - y.x) / s};
 }
 
 // ------------------------------------------------------------------------- //

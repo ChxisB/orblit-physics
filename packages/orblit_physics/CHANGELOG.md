@@ -1,3 +1,24 @@
+## 0.14.0
+
+- Add `springs` to every joint kind. A way with a spring gives and comes back
+  instead of holding hard, by `JointSpring(hertz:, ratio:, rest:)`.
+- Add `softLimit`, which makes the ends of a limit springs that push and pull
+  past the end and do nothing inside it.
+- Add `goal` to hinges, sliders and paths. The motor holds its way at a place
+  against a load and never pushes harder than `strength`.
+- Add `Joint.gear`, `Joint.rack` and `Joint.pulley`, which tie one coordinate
+  of the second body to the first by a ratio. Turns are counted over many
+  revolutions.
+- Add `Joint.path`, which holds a body on a bent line given to `join` as
+  `path`, with limits, motors, goals and springs along it. A limit at the
+  line's length stops what runs off its end.
+- Add `axisB` and `over` to `join`.
+- `jointSteps` is new and defaults to 8. Joints are solved from the world
+  outwards, each pass the other way round from the last, and contacts on a
+  jointed body take a pass between them. A world with no joints is unchanged.
+- `OrblitPhysicsJoint` is 280 bytes and has kinds 8 to 11, gear, rack,
+  pulley and path. A native caller rebuilds against the new header.
+
 ## 0.13.0
 
 - Add `setStance` for a character's crouch, with its feet kept in place and a room check before it stands.

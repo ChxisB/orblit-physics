@@ -280,6 +280,7 @@ void World::defaults(OrblitPhysicsSettings *out) {
   out->subSteps = 6;
   out->velocitySteps = 1;
   out->positionSteps = 2;
+  out->jointSteps = 8;
   out->slop = 0.02f;
   out->contactHertz = 50.0f;
   out->bounceThreshold = 1.0f;
@@ -301,6 +302,7 @@ SolverSettings World::solvingFor(const OrblitPhysicsSettings &settings) {
   solving.subSteps = std::max(settings.subSteps, 1u);
   solving.velocitySteps = std::max(settings.velocitySteps, 1u);
   solving.positionSteps = settings.positionSteps;
+  solving.jointSteps = std::max(settings.jointSteps, 1u);
   solving.slop = std::fmax(settings.slop, 0.0f);
   solving.contactHertz = std::fmax(settings.contactHertz, 0.0f);
   solving.bounceThreshold = std::fmax(settings.bounceThreshold, 0.0f);
@@ -808,7 +810,9 @@ void World::wakeJoined(uint32_t row) {
 
 // ---------------------------------------------------------------- joints ---
 
-bool World::join(const OrblitPhysicsJoint &from) {
+namespace {
+
+JointDescription describe(const OrblitPhysicsJoint &from) {
   JointDescription made;
   made.id = from.id;
   made.a = from.a;
@@ -821,28 +825,75 @@ bool World::join(const OrblitPhysicsJoint &from) {
   for (int which = 0; which < 6; ++which) {
     made.low[which] = from.low[which];
     made.high[which] = from.high[which];
+    made.springHertz[which] = from.springHertz[which];
+    made.springRatio[which] = from.springRatio[which];
+    made.springRest[which] = from.springRest[which];
   }
   made.swing = from.swing;
   made.speed = from.speed;
   made.strength = from.strength;
+  made.goal = from.goal;
+  made.goalHertz = from.goalHertz;
+  made.goalRatio = from.goalRatio;
+  made.limitHertz = from.limitHertz;
+  made.limitRatio = from.limitRatio;
+  made.ratio = from.ratio;
+  made.axisB = vectorOf(from.axisB);
+  made.over[0] = vectorOf(from.over[0]);
+  made.over[1] = vectorOf(from.over[1]);
+  made.follow = from.follow;
   made.breakingForce = from.breakingForce;
   made.breakingTorque = from.breakingTorque;
   made.collide = from.collide;
-  // A NaN anywhere is a joint that puts NaN into every body it touches on
-  // its first step, so it is never made. Where it stands must be somewhere
-  // as well; a limit may be as wide as it likes.
+  return made;
+}
+
+/// Whether every number in `from` is one a joint may be made from. A NaN
+/// anywhere is a joint that puts NaN into every body it touches on its first
+/// step, so it is never made. Where it stands must be somewhere as well; a
+/// limit or a spring's rest may be as far as it likes.
+bool isMakeable(const OrblitPhysicsJoint &from) {
   for (int i = 0; i < 3; ++i) {
-    if (!std::isfinite(from.at[i]) || !std::isfinite(from.to[i])) return false;
+    for (const float v : {from.at[i], from.to[i], from.axisB[i], from.over[0][i],
+                          from.over[1][i]}) {
+      if (!std::isfinite(v)) return false;
+    }
   }
   for (int i = 0; i < 4; ++i) {
     if (!std::isfinite(from.rotation[i])) return false;
   }
   for (int i = 0; i < 6; ++i) {
-    if (std::isnan(from.low[i]) || std::isnan(from.high[i])) return false;
+    for (const float v : {from.low[i], from.high[i], from.springHertz[i],
+                          from.springRatio[i], from.springRest[i]}) {
+      if (std::isnan(v)) return false;
+    }
   }
-  for (const float v : {from.swing, from.speed, from.strength,
-                        from.breakingForce, from.breakingTorque}) {
+  for (const float v : {from.swing, from.speed, from.strength, from.goal,
+                        from.ratio, from.goalHertz, from.goalRatio, from.limitHertz,
+                        from.limitRatio, from.breakingForce,
+                        from.breakingTorque}) {
     if (std::isnan(v)) return false;
+  }
+  return true;
+}
+
+} // namespace
+
+bool World::join(const OrblitPhysicsJoint &from, const float *path,
+                 uint32_t count) {
+  if (!isMakeable(from)) return false;
+  JointDescription made = describe(from);
+  if (path != nullptr) {
+    if (from.kind != ORBLIT_PHYSICS_JOINT_PATH) return false;
+    if (count < 2 || count > kMostPathPoints) return false;
+    for (uint32_t i = 0; i < count; ++i) {
+      const Vec3 point = vectorOf(path + 3 * i);
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+          !std::isfinite(point.z)) {
+        return false;
+      }
+      made.path.push_back(point);
+    }
   }
   if (!joints_.add(made, bodies_)) return false;
 

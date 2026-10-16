@@ -440,8 +440,8 @@ void refusing() {
   orblit_physics_defaults(&settings);
   check(settings.gravity[1] < -9.0f, "the defaults have gravity");
   check(settings.subSteps >= 1 && settings.velocitySteps >= 1 &&
-            settings.positionSteps >= 1,
-        "and a pass to hold contacts with in each sub-step");
+            settings.positionSteps >= 1 && settings.jointSteps >= 1,
+        "and a pass to hold contacts and joints with in each sub-step");
   check(settings.sleeping, "and sleeping on");
 
   OrblitPhysics *physics = orblit_physics_create(&settings);
@@ -1666,6 +1666,448 @@ void welding() {
   orblit_physics_destroy(physics);
 }
 
+/// How far a chain of welded boxes hung from the world sags with a heavy box
+/// on its tip: the root's and the worst link's distance from where each was
+/// welded, in metres. `tipFirst` makes the joints from the tip inwards, which
+/// is the order a document written leaves-first would give.
+struct Sag {
+  float root;
+  float worst;
+};
+
+Sag weldedChain(int links, float heavy, bool tipFirst, uint32_t jointSteps) {
+  OrblitPhysicsSettings settings;
+  orblit_physics_defaults(&settings);
+  settings.jointSteps = jointSteps;
+  OrblitPhysics *physics = orblit_physics_create(&settings);
+
+  const float spacing = 0.5f;
+  for (int i = 0; i < links; ++i) {
+    OrblitPhysicsCommand link = boxAt(10 + i, 0.2f, spacing * (i + 1), 3.0f, 0.0f);
+    link.mass = i == links - 1 ? heavy : 1.0f;
+    submit(physics, link);
+  }
+  for (int n = 0; n < links; ++n) {
+    const int i = tipFirst ? links - 1 - n : n;
+    // The first link hangs from the world, which is the joint's b end.
+    OrblitPhysicsJoint weld = jointOf(
+        100 + i, ORBLIT_PHYSICS_JOINT_FIXED, i == 0 ? 10 : 10 + i - 1,
+        i == 0 ? 0 : 10 + i, spacing * i, 3.0f, 0.0f);
+    weld.rotation[3] = 1.0f;
+    join(physics, weld);
+  }
+  run(physics, 4.0f);
+
+  Sag sag{0.0f, 0.0f};
+  for (int i = 0; i < links; ++i) {
+    const float away = std::hypot(
+        coordinateOf(physics, 10 + i, 0) - spacing * (i + 1),
+        heightOf(physics, 10 + i) - 3.0f);
+    if (i == 0) sag.root = away;
+    sag.worst = std::fmax(sag.worst, away);
+  }
+  orblit_physics_destroy(physics);
+  return sag;
+}
+
+void carrying() {
+  // Each link is welded to the one before and weighs a kilogram. The tip
+  // carries ten, which is the load a rope of a few joints is asked for.
+  const Sag light = weldedChain(3, 10.0f, false, 8);
+  check(light.root < 0.003f && light.worst < 0.05f,
+        "a chain of three welds holds ten times its weight at the tip");
+
+  const Sag one = weldedChain(3, 10.0f, false, 1);
+  check(light.root < one.root,
+        "and holds it nearer where it was welded than a single pass does");
+
+  // A hundred times the weight on six links is past what a velocity solver
+  // holds exactly. It is bounded, which is the line between a hanging chain
+  // and one that tears off its wall.
+  const Sag heavy = weldedChain(6, 100.0f, false, 8);
+  check(heavy.root < 0.03f && heavy.worst < 0.35f,
+        "six welds carry a hundred times their weight within a third of a metre");
+
+  // The solving order is by distance from the world, not by when a joint was
+  // made, so building the chain from its tip makes no difference.
+  const Sag forward = weldedChain(4, 20.0f, false, 8);
+  const Sag backward = weldedChain(4, 20.0f, true, 8);
+  check(near(forward.root, backward.root, 0.0005f) &&
+            near(forward.worst, backward.worst, 0.002f),
+        "a chain made from its tip holds the same as one made from its root");
+}
+
+/// Where the lowest points of a body hung on a spring fall, in seconds from the
+/// start: the first two, so the period is the gap between them.
+struct Bounce {
+  float first;
+  float second;
+};
+
+Bounce bounceOf(OrblitPhysics *physics, OrblitPhysicsId id, float seconds) {
+  Bounce found{-1.0f, -1.0f};
+  float before = heightOf(physics, id);
+  bool falling = false;
+  const int steps = static_cast<int>(seconds * 60.0f);
+  for (int i = 1; i <= steps; ++i) {
+    step(physics);
+    const float now = heightOf(physics, id);
+    const bool turned = falling && now > before + 1.0e-5f;
+    if (turned && found.first < 0.0f) {
+      found.first = static_cast<float>(i) / 60.0f;
+    } else if (turned && found.second < 0.0f) {
+      found.second = static_cast<float>(i) / 60.0f;
+    }
+    if (now < before - 1.0e-5f) falling = true;
+    if (now > before + 1.0e-5f) falling = false;
+    before = now;
+  }
+  return found;
+}
+
+void giving() {
+  // A ball on a point joint, with a spring where the lock on up and down was.
+  // A spring of frequency f stretches by g / (2 pi f)^2 under its own weight.
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint pivot = jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f);
+  pivot.springHertz[1] = 2.0f;
+  pivot.springRatio[1] = 1.0f;
+  check(join(physics, pivot), "a point joint with a spring on one way is made");
+  run(physics, 3.0f);
+  const float twoHertz = 9.81f / (2.0f * 3.14159265f * 2.0f * 2.0f * 3.14159265f * 2.0f);
+  check(near(heightOf(physics, 2), 3.0f - twoHertz, 0.01f),
+        "a spring takes the lock's place, so a ball on it sags by g over omega squared");
+  check(std::fabs(coordinateOf(physics, 2, 0)) < 0.005f &&
+            std::fabs(coordinateOf(physics, 2, 2)) < 0.005f,
+        "and the ways it did not soften stay locked");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  pivot.springHertz[1] = 0.0f;
+  join(physics, pivot);
+  run(physics, 3.0f);
+  check(near(heightOf(physics, 2), 3.0f, 0.005f), "without it the same ball does not sag");
+  orblit_physics_destroy(physics);
+
+  // A box on a rail, free to slide and held by a spring to a rest a half metre
+  // below the hook. A softer spring stretches further, and a lighter damping
+  // ratio rings.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand box = boxAt(2, 0.1f, 0.0f, 3.0f, 0.0f);
+  box.mass = 1.0f;
+  submit(physics, box);
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_SLIDER, 2, 0, 0.0f, 3.0f, 0.0f);
+  pointUp(rail);
+  rail.springHertz[0] = 1.0f;
+  rail.springRatio[0] = 0.05f;
+  rail.springRest[0] = 0.5f;
+  join(physics, rail);
+  const Bounce rang = bounceOf(physics, 2, 3.0f);
+  check(rang.first > 0.0f && rang.second > 0.0f &&
+            near(rang.second - rang.first, 1.0f, 0.1f),
+        "a spring of one hertz swings a box once a second");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  submit(physics, box);
+  rail.springRatio[0] = 1.0f;
+  join(physics, rail);
+  run(physics, 4.0f);
+  const float oneHertz = 9.81f / (2.0f * 3.14159265f * 2.0f * 3.14159265f);
+  check(near(heightOf(physics, 2), 3.0f - 0.5f - oneHertz, 0.01f),
+        "and settles a rest length plus g over omega squared below the hook");
+  orblit_physics_destroy(physics);
+
+  // An arm out from a horizontal hinge, with the world as `a` so the angle it
+  // reads is the arm's own. A positive turn takes its far end down.
+  const auto arm = [](OrblitPhysics *world) {
+    OrblitPhysicsCommand link = boxAt(2, 0.25f, 0.0f, 3.0f, 0.5f);
+    link.mass = 2.0f;
+    submit(world, link);
+  };
+  OrblitPhysicsJoint hinge = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 0, 2, 0.0f, 3.0f, 0.0f);
+  hinge.rotation[3] = 1.0f;
+  hinge.strength = 50.0f;
+  hinge.goalHertz = 4.0f;
+  hinge.goalRatio = 1.0f;
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = -0.5f;
+  join(physics, hinge);
+  run(physics, 3.0f);
+  float angle = stateOf(physics, 1).angles[0];
+  check(near(angle, -0.5f, 0.06f),
+        "a position motor holds an arm half a radian above level against its weight");
+  check(stateOf(physics, 1).torque > 5.0f && stateOf(physics, 1).torque <= 51.0f,
+        "with the torque it takes, which is no more than its strength");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = 0.5f;
+  join(physics, hinge);
+  run(physics, 3.0f);
+  angle = stateOf(physics, 1).angles[0];
+  check(near(angle, 0.5f, 0.06f), "and half a radian below it, where the weight helps");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  arm(physics);
+  hinge.goal = -0.5f;
+  hinge.strength = 1.0f;
+  join(physics, hinge);
+  float lowest = 0.0f;
+  for (int i = 0; i < 120; ++i) {
+    step(physics);
+    lowest = std::fmax(lowest, stateOf(physics, 1).angles[0]);
+  }
+  check(lowest > 1.0f, "a position motor weaker than the load gives way");
+  orblit_physics_destroy(physics);
+
+  // The door of the hinge test flung at a stop, with and without a soft end.
+  const auto fling = [](float hertz, float &widest, float &settled) {
+    OrblitPhysics *world = orblit_physics_create(nullptr);
+    OrblitPhysicsCommand door = boxAt(2, 0.5f, 0.5f, 1.0f, 0.0f);
+    door.size[1] = 1.0f;
+    door.size[2] = 0.05f;
+    submit(world, door);
+    OrblitPhysicsJoint stop = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 2, 0, 0.0f, 1.0f, 0.0f);
+    pointUp(stop);
+    limitTo(stop, 3, -0.5f, 0.5f);
+    stop.limitHertz = hertz;
+    stop.limitRatio = 1.0f;
+    join(world, stop);
+    setMotion(world, 2, 0.0f, 0.0f, 0.0f, 0.0f, -6.0f, 0.0f);
+    widest = 0.0f;
+    for (int i = 0; i < 240; ++i) {
+      step(world);
+      widest = std::fmax(widest, stateOf(world, 1).angles[0]);
+    }
+    settled = stateOf(world, 1).angles[0];
+    orblit_physics_destroy(world);
+  };
+  float hardWidest = 0.0f;
+  float hardSettled = 0.0f;
+  float softWidest = 0.0f;
+  float softSettled = 0.0f;
+  fling(0.0f, hardWidest, hardSettled);
+  fling(1.0f, softWidest, softSettled);
+  check(softWidest > hardWidest + 0.05f && softWidest < 1.2f,
+        "a soft limit gives past its end where a hard one stops at it");
+  check(near(softSettled, 0.5f, 0.03f), "and brings it back to the end and holds it there");
+}
+
+/// Turns a joint's frame so its x axis points along z.
+void aboutZ(OrblitPhysicsJoint &joint) {
+  joint.rotation[1] = -0.70710678f;
+  joint.rotation[3] = 0.70710678f;
+}
+
+void coupling() {
+  // Two wheels on hinges to the world, a motor on the left one and a gear
+  // between them. The right turns half as far the other way.
+  const auto wheels = [](OrblitPhysics *world, bool geared) {
+    submit(world, boxAt(2, 0.3f, 0.0f, 3.0f, 0.0f));
+    submit(world, boxAt(3, 0.3f, 1.0f, 3.0f, 0.0f));
+    OrblitPhysicsJoint spindle = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 0, 2, 0.0f, 3.0f, 0.0f);
+    aboutZ(spindle);
+    spindle.speed = 4.0f;
+    spindle.strength = 200.0f;
+    join(world, spindle);
+    spindle = jointOf(2, ORBLIT_PHYSICS_JOINT_HINGE, 0, 3, 1.0f, 3.0f, 0.0f);
+    aboutZ(spindle);
+    join(world, spindle);
+    OrblitPhysicsJoint gear = jointOf(3, ORBLIT_PHYSICS_JOINT_GEAR, 2, 3, 0.5f, 3.0f, 0.0f);
+    aboutZ(gear);
+    gear.ratio = -0.5f;
+    if (geared) join(world, gear);
+  };
+
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  wheels(physics, true);
+  run(physics, 0.5f);
+  const float left = stateOf(physics, 1).angles[0];
+  const float right = stateOf(physics, 2).angles[0];
+  check(left > 0.8f && near(right, -0.5f * left, 0.03f),
+        "a gear turns the second wheel half as far the other way");
+  run(physics, 2.5f);
+  check(near(spinOf(physics, 3, 2), -0.5f * spinOf(physics, 2, 2), 0.1f) &&
+            std::fabs(spinOf(physics, 2, 2)) > 3.0f,
+        "and as fast, while the first goes round twice and more");
+  check(std::fabs(stateOf(physics, 3).offset[0]) < 0.05f,
+        "with the ratio kept over turns, which a pose cannot count");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  wheels(physics, false);
+  run(physics, 0.5f);
+  check(std::fabs(stateOf(physics, 2).angles[0]) < 0.01f,
+        "without the gear the second wheel stays where it was");
+  orblit_physics_destroy(physics);
+
+  // A rack on a rail along x, a pinion above it, and the pinion driven. The
+  // rack moves a quarter metre for each radian.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.2f, 0.0f, 2.2f, 0.0f));
+  submit(physics, boxAt(3, 0.2f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_SLIDER, 0, 2, 0.0f, 2.2f, 0.0f);
+  join(physics, rail);
+  OrblitPhysicsJoint axle = jointOf(2, ORBLIT_PHYSICS_JOINT_HINGE, 0, 3, 0.0f, 3.0f, 0.0f);
+  aboutZ(axle);
+  axle.speed = 2.0f;
+  axle.strength = 100.0f;
+  join(physics, axle);
+  OrblitPhysicsJoint teeth = jointOf(3, ORBLIT_PHYSICS_JOINT_RACK, 2, 3, 0.0f, 2.6f, 0.0f);
+  teeth.axisB[2] = 1.0f;
+  teeth.ratio = 0.25f;
+  check(join(physics, teeth), "a rack and pinion is made");
+  run(physics, 1.0f);
+  const float turned = stateOf(physics, 2).angles[0];
+  check(turned > 1.5f && near(coordinateOf(physics, 2, 0), 0.25f * turned, 0.02f),
+        "a rack moves a quarter metre for each radian its pinion turns");
+  orblit_physics_destroy(physics);
+
+  // Two weights over two pulleys. The heavier comes down, and the lighter
+  // goes up as far as the ratio says.
+  const auto weights = [](OrblitPhysics *world, float ratio) {
+    OrblitPhysicsCommand heavy = boxAt(2, 0.1f, -1.0f, 1.0f, 0.0f);
+    heavy.mass = 2.0f;
+    submit(world, heavy);
+    submit(world, boxAt(3, 0.1f, 1.0f, 1.0f, 0.0f));
+    OrblitPhysicsJoint rope = jointOf(1, ORBLIT_PHYSICS_JOINT_PULLEY, 2, 3, -1.0f, 1.0f, 0.0f);
+    rope.to[0] = 1.0f;
+    rope.to[1] = 1.0f;
+    rope.over[0][0] = -1.0f;
+    rope.over[0][1] = 3.0f;
+    rope.over[1][0] = 1.0f;
+    rope.over[1][1] = 3.0f;
+    rope.ratio = ratio;
+    return join(world, rope);
+  };
+  physics = orblit_physics_create(nullptr);
+  check(weights(physics, 1.0f), "a pulley is made");
+  run(physics, 0.5f);
+  const float fall = 1.0f - heightOf(physics, 2);
+  check(near(fall, 0.41f, 0.06f) && near(heightOf(physics, 3) - 1.0f, fall, 0.02f),
+        "weights of two and one over a pulley move at a third of gravity");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  weights(physics, 2.0f);
+  run(physics, 0.5f);
+  const float drop = 1.0f - heightOf(physics, 2);
+  check(drop > 0.5f && near(heightOf(physics, 3) - 1.0f, 0.5f * drop, 0.03f),
+        "with a ratio of two the far side comes up half as far");
+  orblit_physics_destroy(physics);
+
+  // A bad ratio is a joint that is not made.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, boxAt(2, 0.2f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint nan = jointOf(1, ORBLIT_PHYSICS_JOINT_GEAR, 2, 0, 0.0f, 3.0f, 0.0f);
+  nan.ratio = std::nanf("");
+  check(!join(physics, nan), "a gear with no ratio is refused");
+  orblit_physics_destroy(physics);
+}
+
+void trailing() {
+  // A ball on a path of a slope and then a flat, hung from the world.
+  const float way[] = {0.0f, 3.0f, 0.0f, 3.0f, 1.5f, 0.0f, 6.0f, 1.5f, 0.0f};
+  const float along = 0.894427f;
+  const float down = 0.447214f;
+  const auto start = [&way](OrblitPhysics *world, const OrblitPhysicsCommand &body,
+                            const OrblitPhysicsJoint &rail) {
+    submit(world, body);
+    return orblit_physics_join_path(world, &rail, way, 3);
+  };
+
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  const OrblitPhysicsCommand ball = sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f);
+  OrblitPhysicsJoint rail = jointOf(1, ORBLIT_PHYSICS_JOINT_PATH, 0, 2, 0.0f, 3.0f, 0.0f);
+  submit(physics, ball);
+  check(!join(physics, rail), "a path joint with no path is not made");
+  check(!orblit_physics_join_path(physics, &rail, way, 1) &&
+            !orblit_physics_join_path(physics, &rail, nullptr, 3),
+        "nor one with too few points or none");
+  check(orblit_physics_join_path(physics, &rail, way, 3), "and one with a path is");
+  run(physics, 1.0f);
+  const float arc = stateOf(physics, 1).offset[0];
+  check(near(arc, 2.15f, 0.15f), "a ball on a path slides down it at gravity along the slope");
+  check(near(coordinateOf(physics, 2, 0), along * arc, 0.02f) &&
+            near(heightOf(physics, 2), 3.0f - down * arc, 0.02f),
+        "and stays on the line");
+  run(physics, 0.6f);
+  check(near(heightOf(physics, 2), 1.5f, 0.02f) && coordinateOf(physics, 2, 0) > 4.0f,
+        "and follows it round the corner on to the flat");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint stop = rail;
+  limitTo(stop, 0, 0.0f, 2.0f);
+  start(physics, ball, stop);
+  run(physics, 2.0f);
+  check(near(stateOf(physics, 1).offset[0], 2.0f, 0.05f), "a limit on the first way stops it at a length");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint end = rail;
+  limitTo(end, 0, 0.0f, 6.354f);
+  start(physics, ball, end);
+  run(physics, 4.0f);
+  check(near(stateOf(physics, 1).offset[0], 6.354f, 0.05f) &&
+            near(coordinateOf(physics, 2, 0), 6.0f, 0.05f),
+        "a limit at the end of the path stops what runs off it");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  start(physics, ball, rail);
+  run(physics, 4.0f);
+  check(stateOf(physics, 1).offset[0] > 7.0f && near(heightOf(physics, 2), 1.5f, 0.02f),
+        "and with none it runs on along the last piece gone on straight");
+  orblit_physics_destroy(physics);
+
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsJoint ride = rail;
+  ride.speed = 1.0f;
+  ride.strength = 100.0f;
+  start(physics, ball, ride);
+  run(physics, 1.0f);
+  check(near(stateOf(physics, 1).offset[0], 1.0f, 0.1f), "a motor takes it along at its speed");
+  orblit_physics_destroy(physics);
+
+  // A box that keeps its x along the path turns as the slope becomes the flat.
+  const auto bank = [&](bool follow) {
+    OrblitPhysics *world = orblit_physics_create(nullptr);
+    OrblitPhysicsJoint carried = rail;
+    carried.follow = follow;
+    carried.rotation[2] = -0.229753f;
+    carried.rotation[3] = 0.973249f;
+    start(world, boxAt(2, 0.2f, 0.0f, 3.0f, 0.0f), carried);
+    run(world, 1.8f);
+    const float turned = turnOf(world, 2);
+    orblit_physics_destroy(world);
+    return turned;
+  };
+  check(near(bank(true), 0.4636f, 0.06f), "following turns the box to level on the flat");
+  check(bank(false) < 0.05f, "and without it the box is left as it was");
+
+  // A path in the frame of a body that rises carries the ball up with it.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand lift = boxAt(4, 0.2f, 0.0f, 3.0f, 0.0f);
+  lift.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, lift);
+  submit(physics, ball);
+  drive(physics, 4, 0.0f, 1.0f, 0.0f, 0.0f);
+  const float level[] = {-5.0f, 3.0f, 0.0f, 5.0f, 3.0f, 0.0f};
+  OrblitPhysicsJoint carry = jointOf(1, ORBLIT_PHYSICS_JOINT_PATH, 4, 2, 0.0f, 3.0f, 0.0f);
+  check(orblit_physics_join_path(physics, &carry, level, 2), "a path on a moving body is made");
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 4.0f, 0.1f), "and is carried with the body it is on");
+  orblit_physics_destroy(physics);
+}
+
 void swinging() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(2, 0.1f, 1.0f, 3.0f, 0.0f));
@@ -2122,7 +2564,7 @@ void refusingJoints() {
   bad.kind = 0;
   made = made || join(physics, bad);
   bad = good;
-  bad.kind = 8;
+  bad.kind = 12;
   made = made || join(physics, bad);
   bad = good;
   bad.at[0] = std::nanf("");
@@ -5524,6 +5966,10 @@ int main() {
   ridges();
   refusingGround();
   welding();
+  carrying();
+  giving();
+  coupling();
+  trailing();
   swinging();
   hinging();
   sliding();

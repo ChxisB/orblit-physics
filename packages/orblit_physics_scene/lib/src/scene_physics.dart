@@ -1030,6 +1030,22 @@ class ScenePhysics {
     worldOf(_document, id).decompose(at, rotation, Vector3.zero());
     final middle = physics.transformOf(b)!;
 
+    // A pulley with other than two points is not one. The world would make
+    // it from nothing, which is worse than not making it.
+    if (joint.kind == JointKind.pulley && joint.over.length != 2) return;
+
+    // The points a coupling or a path names are the joint's own, and move
+    // with the entity into the world.
+    final frame = Matrix4.compose(at, rotation, Vector3.all(1));
+    List<double> inWorld(Vector3 local) {
+      final point = frame.transformed3(local);
+      return [point.x, point.y, point.z];
+    }
+
+    final across = joint.axisB.length2 > 0
+        ? frame.rotated3(joint.axisB.clone())
+        : null;
+
     final made = physics.join(
       number,
       _jointFor(joint),
@@ -1038,6 +1054,13 @@ class ScenePhysics {
       at: [at.x, at.y, at.z],
       rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
       to: [middle[0], middle[1], middle[2]],
+      axisB: across == null ? null : [across.x, across.y, across.z],
+      over: joint.kind == JointKind.pulley
+          ? [for (final point in joint.over) inWorld(point)]
+          : null,
+      path: joint.kind == JointKind.path
+          ? [for (final point in joint.path) inWorld(point)]
+          : null,
       breakingForce: joint.breakingForce,
       breakingTorque: joint.breakingTorque,
       collide: joint.collide,
@@ -1056,23 +1079,73 @@ class ScenePhysics {
           : JointLimit(range.low, range.high);
     }
 
+    JointSpring? springOf(JointAxis axis) {
+      final give = joint.springs[axis];
+      if (give == null || !(give.hertz > 0) || !give.hertz.isFinite) {
+        return null;
+      }
+      return JointSpring(
+        hertz: give.hertz,
+        ratio: give.ratio,
+        rest: switch (give.rest) {
+          final rest? when axis.turns => radians(rest),
+          final rest? => rest,
+          null => null,
+        },
+      );
+    }
+
+    final springs = JointSprings(
+      alongX: springOf(JointAxis.alongX),
+      alongY: springOf(JointAxis.alongY),
+      alongZ: springOf(JointAxis.alongZ),
+      aboutX: springOf(JointAxis.aboutX),
+      aboutY: springOf(JointAxis.aboutY),
+      aboutZ: springOf(JointAxis.aboutZ),
+    );
+    final soft = joint.softHertz > 0
+        ? JointSoftness(hertz: joint.softHertz, ratio: joint.softRatio)
+        : null;
+
+    // A goal is in degrees for a hinge and metres for a slider or a path,
+    // and a motor without one is a motor of speed.
+    JointGoal? goalOf({required bool turning}) => joint.goalHertz > 0
+        ? JointGoal(
+            turning ? radians(joint.goal) : joint.goal,
+            hertz: joint.goalHertz,
+            ratio: joint.goalRatio,
+          )
+        : null;
+
     return switch (joint.kind) {
-      JointKind.fixed => const Joint.fixed(),
-      JointKind.point => const Joint.point(),
+      JointKind.fixed => Joint.fixed(springs: springs),
+      JointKind.point => Joint.point(springs: springs),
       JointKind.hinge => Joint.hinge(
         limit: limitOf(JointAxis.aboutX),
         speed: radians(joint.speed),
         strength: joint.strength,
+        goal: goalOf(turning: true),
+        springs: springs,
+        softLimit: soft,
       ),
       JointKind.slider => Joint.slider(
         limit: limitOf(JointAxis.alongX),
         speed: joint.speed,
         strength: joint.strength,
+        goal: goalOf(turning: false),
+        springs: springs,
+        softLimit: soft,
       ),
-      JointKind.distance => Joint.distance(limit: limitOf(JointAxis.alongX)),
+      JointKind.distance => Joint.distance(
+        limit: limitOf(JointAxis.alongX),
+        springs: springs,
+        softLimit: soft,
+      ),
       JointKind.cone => Joint.cone(
         swing: radians(joint.swing),
         twist: limitOf(JointAxis.aboutX),
+        springs: springs,
+        softLimit: soft,
       ),
       JointKind.sixAxis => Joint.sixAxis(
         alongX: limitOf(JointAxis.alongX),
@@ -1081,6 +1154,20 @@ class ScenePhysics {
         aboutX: limitOf(JointAxis.aboutX),
         aboutY: limitOf(JointAxis.aboutY),
         aboutZ: limitOf(JointAxis.aboutZ),
+        springs: springs,
+        softLimit: soft,
+      ),
+      JointKind.gear => Joint.gear(ratio: joint.ratio, springs: springs),
+      JointKind.rack => Joint.rack(ratio: joint.ratio, springs: springs),
+      JointKind.pulley => Joint.pulley(ratio: joint.ratio, springs: springs),
+      JointKind.path => Joint.path(
+        limit: limitOf(JointAxis.alongX),
+        speed: joint.speed,
+        strength: joint.strength,
+        goal: goalOf(turning: false),
+        springs: springs,
+        softLimit: soft,
+        follow: joint.follow,
       ),
     };
   }

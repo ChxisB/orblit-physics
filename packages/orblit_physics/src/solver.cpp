@@ -34,8 +34,6 @@ constexpr float kDamping = 10.0f;
 /// steps a second and is not reached at 60.
 constexpr float kMostOfRate = 0.15f;
 
-constexpr float kTwoPi = 6.28318530718f;
-
 /// How many times the points of one manifold are solved against each other
 /// before the bodies take the result. A face has four points that push on one
 /// another, and one sweep leaves the last of them over-corrected. Eight is
@@ -44,18 +42,8 @@ constexpr uint32_t kBlockSweeps = 8;
 
 /// What a soft contact does to the impulse a pass would have made, and how
 /// fast it pushes out of an overlap, for a sub-step of length `h`.
-struct Softness {
-  float massScale;
-  float impulseScale;
-  float pushRate;
-};
-
 Softness softnessFor(float h, float hertz) {
-  const float omega = kTwoPi * std::fmin(hertz, kMostOfRate / h);
-  const float a1 = 2.0f * kDamping + h * omega;
-  const float a2 = h * omega * a1;
-  const float a3 = 1.0f / (1.0f + a2);
-  return {a2 * a3, a3, omega / a1};
+  return softnessOf(h, std::fmin(hertz, kMostOfRate / h), kDamping);
 }
 
 } // namespace
@@ -68,10 +56,7 @@ void Solver::solve(Bodies &bodies, Joints &joints, float h,
   aim(bodies, h, settings, true);
   joints.warmStart(bodies);
   warmStart(bodies);
-  for (uint32_t i = 0; i < settings.velocitySteps; ++i) {
-    joints.correctVelocities(bodies);
-    correctVelocities(bodies);
-  }
+  solveVelocities(bodies, joints, settings.velocitySteps, settings.jointSteps);
 }
 
 void Solver::relax(Bodies &bodies, Joints &joints, float h,
@@ -79,8 +64,7 @@ void Solver::relax(Bodies &bodies, Joints &joints, float h,
   if (idle(joints)) return;
 
   aim(bodies, h, settings, false);
-  joints.correctVelocities(bodies);
-  correctVelocities(bodies);
+  solveVelocities(bodies, joints, 1, settings.jointSteps);
   joints.accumulate();
   accumulate();
 }
@@ -269,8 +253,22 @@ void Solver::warmStart(Bodies &bodies) {
   }
 }
 
-void Solver::correctVelocities(Bodies &bodies) {
+void Solver::solveVelocities(Bodies &bodies, Joints &joints,
+                             uint32_t contactPasses, uint32_t jointPasses) {
+  // Counted back from the end, so the last round is the one from the leaves
+  // in and the one that solves every contact, whatever the numbers are.
+  const uint32_t rounds =
+      joints.idle() ? contactPasses : std::max(contactPasses, jointPasses);
+  for (uint32_t left = rounds; left-- > 0;) {
+    joints.correctVelocities(bodies, left % 2 == 0);
+    correctVelocities(bodies, joints, left < contactPasses);
+  }
+}
+
+void Solver::correctVelocities(Bodies &bodies, const Joints &joints,
+                               bool all) {
   for (const Pair &pair : pairs_) {
+    if (!all && !joints.carries(pair.a) && !joints.carries(pair.b)) continue;
     for (uint32_t c = 0; c < pair.count; ++c) {
       correctFriction(bodies, pair, rows_[pair.first + c]);
     }

@@ -283,15 +283,51 @@ final class OrblitPhysicsJoint extends Struct {
   external double strength;
 
   @Float()
+  external double goal;
+
+  @Float()
+  external double goalHertz;
+
+  @Float()
+  external double goalRatio;
+
+  @Array(6)
+  external Array<Float> springHertz;
+
+  @Array(6)
+  external Array<Float> springRatio;
+
+  @Array(6)
+  external Array<Float> springRest;
+
+  @Float()
+  external double limitHertz;
+
+  @Float()
+  external double limitRatio;
+
+  @Float()
   external double breakingForce;
 
   @Float()
   external double breakingTorque;
 
+  @Float()
+  external double ratio;
+
+  @Array(3)
+  external Array<Float> axisB;
+
+  @Array(6)
+  external Array<Float> over;
+
   @Bool()
   external bool collide;
 
-  @Array(3)
+  @Bool()
+  external bool follow;
+
+  @Array(2)
   external Array<Uint8> reserved;
 }
 
@@ -392,6 +428,9 @@ final class OrblitPhysicsSettings extends Struct {
 
   @Uint32()
   external int positionSteps;
+
+  @Uint32()
+  external int jointSteps;
 
   @Float()
   external double slop;
@@ -730,6 +769,21 @@ external int physicsFooting(
 external bool physicsJoin(
   Pointer<OrblitPhysicsStruct> physics,
   Pointer<OrblitPhysicsJoint> joint,
+);
+
+@Native<
+  Bool Function(
+    Pointer<OrblitPhysicsStruct>,
+    Pointer<OrblitPhysicsJoint>,
+    Pointer<Float>,
+    Uint32,
+  )
+>(symbol: 'orblit_physics_join_path', assetId: kOrblitPhysicsAsset)
+external bool physicsJoinPath(
+  Pointer<OrblitPhysicsStruct> physics,
+  Pointer<OrblitPhysicsJoint> joint,
+  Pointer<Float> points,
+  int count,
 );
 
 @Native<Bool Function(Pointer<OrblitPhysicsStruct>, Uint64)>(

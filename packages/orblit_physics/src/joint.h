@@ -8,10 +8,13 @@
 // when the joint is made, so the solver has one kind of row to solve rather
 // than seven kinds of joint.
 //
-// Two kinds bend that. A distance joint's one row is along the line between
+// Four kinds bend that. A distance joint's one row is along the line between
 // its points rather than along an axis of its frame, and a cone's swing row is
 // along whichever way it is swinging, because a cone limits how far it swings
-// rather than which way.
+// rather than which way. A path joint's frame is wherever the path is, so its
+// rows are measured along the path at the point nearest `b`. A coupling holds
+// one row only, whose coordinate is a sum of the two bodies' own: a gear's
+// turns, a rack's slide and a pinion's turn, a rope's two lengths.
 //
 // A row is a lever, an effective mass and an accumulated impulse, the same as
 // a contact's, solved in the same passes: velocity passes that stop it moving
@@ -34,9 +37,60 @@
 namespace orblit {
 
 /// The six ways `b` can move, in the order the header names them, then the
-/// motor, which drives the first or the fourth.
-constexpr int kJointRows = 7;
+/// motor, which drives the first or the fourth, then a spring on each of the
+/// six. A way may have a spring, and a limit or a lock besides, so it may have
+/// two rows.
 constexpr int kMotorRow = 6;
+constexpr int kSpringRow = 7;
+constexpr int kJointRows = 13;
+
+/// The most points a path joint is given.
+constexpr uint32_t kMostPathPoints = 10000;
+
+/// What a coupling ties together, for the kinds that tie a coordinate of `a` to
+/// one of `b` and do not hold one body's place against the other's.
+enum class Tied : uint8_t { None, Gear, Rack, Pulley };
+
+/// A coupling's one coordinate, and the sum it keeps.
+///
+/// The coordinate is made of turns, and a turn is not a thing a pose holds: a
+/// body that has gone round three times is in the pose it began in. So it is
+/// summed, a sub-step at a time, from how far each body turned since it was
+/// last looked at.
+struct Tie {
+  Tied kind = Tied::None;
+
+  /// Gear: how far `b` turns for each turn of `a`, the same way about their
+  /// own x axes. Rack: how far `a` moves along `axis` for each radian `b` turns.
+  /// Pulley: how much rope comes off `b`'s side for one off `a`'s.
+  float ratio = 0.0f;
+
+  /// Rack: the way `a` slides, in the world, as it was when the joint was made.
+  Vec3 axis;
+
+  /// Pulley: the two points the rope runs over, in the world.
+  Vec3 over[2];
+
+  /// The coordinate when the joint was made, which is what it keeps.
+  float constant = 0.0f;
+
+  /// Gear and rack: how far `a` and `b` have turned about their axes, and the
+  /// rotation each had when that was last added up.
+  float turned[2] = {};
+  Quat last[2];
+};
+
+/// A path for a joint's point on `b` to follow, in `a`'s frame, or in the world
+/// when `a` is the world.
+struct Track {
+  std::vector<Vec3> points;
+
+  /// How far along the path each point is, in metres, from the first.
+  std::vector<float> arc;
+
+  /// Whether `b`'s x axis is kept along the path as well as its point on it.
+  bool follow = false;
+};
 
 /// How a joint was asked for, in the engine's own numbers.
 struct JointDescription {
@@ -53,6 +107,19 @@ struct JointDescription {
   float swing = 0.0f;
   float speed = 0.0f;
   float strength = 0.0f;
+  float goal = 0.0f;
+  float goalHertz = 0.0f;
+  float goalRatio = 0.0f;
+  float springHertz[6] = {};
+  float springRatio[6] = {};
+  float springRest[6] = {};
+  float limitHertz = 0.0f;
+  float limitRatio = 0.0f;
+  float ratio = 0.0f;
+  Vec3 axisB;
+  Vec3 over[2];
+  std::vector<Vec3> path;
+  bool follow = false;
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
   bool collide = false;
@@ -91,6 +158,33 @@ struct Joint {
   float speed = 0.0f;
   float strength = 0.0f;
 
+  /// A motor with a `goalHertz` holds its way at `goal`, as a spring of that
+  /// frequency and damping ratio would, and never pushes harder than
+  /// `strength`. It has no use for `speed`, which a motor of that kind leaves.
+  float goal = 0.0f;
+  float goalHertz = 0.0f;
+  float goalRatio = 0.0f;
+
+  /// Which ways have a spring, one bit each, and its frequency, damping ratio
+  /// and the place it holds the way at. A spring in the place of a lock is
+  /// what makes it soft, so the lock's bit is gone from `holds`.
+  uint32_t sprung = 0;
+  float springHertz[6] = {};
+  float springRatio[6] = {};
+  float springRest[6] = {};
+
+  /// With a frequency, a limit is a spring that takes over once the way is
+  /// past its end, rather than a wall. Locks are not limits and stay hard.
+  float limitHertz = 0.0f;
+  float limitRatio = 0.0f;
+
+  /// A coupling holds its coordinate as way 0, and has no frame to hold the
+  /// others by. A path joint's point follows `track`, which gives way 0 its
+  /// arc length and the rest their frame.
+  Tie tie;
+  Track track;
+  bool onPath() const { return !track.points.empty(); }
+
   float breakingForce = 0.0f;
   float breakingTorque = 0.0f;
   bool collide = false;
@@ -116,9 +210,13 @@ struct Broken {
   float force = 0.0f;
 };
 
-/// Every joint in a world, in the order they were made — which is the order
-/// they are solved in, so a chain built from its fixed end outwards is solved
-/// that way too, and settles in fewer passes than one solved from its tip.
+/// Every joint in a world, in the order they were made.
+///
+/// They are not solved in that order. A joint is as far from the world, or
+/// from anything that does not move, as the joints between them, and a chain
+/// is solved from its fixed end outwards and back again, a few times over,
+/// ending at the fixed end. The last joint solved is the one that holds
+/// exactly, so it is the one that holds the rest up. See `arrange`.
 class Joints {
  public:
   bool empty() const { return joints_.empty(); }
@@ -172,7 +270,16 @@ class Joints {
   void prepare(Bodies &bodies, float h);
   bool idle() const { return rows_.empty(); }
   void warmStart(Bodies &bodies);
-  void correctVelocities(Bodies &bodies);
+
+  /// Solves every row once. The joints nearest the world go first, or last
+  /// when `leavesFirst`. A caller that makes several passes turns every other
+  /// one round and ends on `leavesFirst`, so a chain's root has the last word.
+  void correctVelocities(Bodies &bodies, bool leavesFirst);
+
+  /// Whether a joint is holding the body in row `row` this step.
+  bool carries(uint32_t row) const {
+    return row < carried_.size() && carried_[row] != 0;
+  }
   /// Adds the sub-step's impulses to the step's.
   void accumulate();
   void correctPositions(Bodies &bodies);
@@ -198,6 +305,10 @@ class Joints {
     Vec3 gainB;
     Mat3 inertiaA;
     Mat3 inertiaB;
+
+    /// This joint's rows in `rows_`, which are kept together.
+    uint32_t firstRow = 0;
+    uint32_t rowCount = 0;
   };
 
   /// One row of one joint, for the velocity passes.
@@ -205,10 +316,12 @@ class Joints {
     uint32_t held = 0;
     int which = 0;
 
-    /// Pushing along `linear` at `b`'s point moves `b` along it and `a` the
-    /// other way; `turnA` and `turnB` are how that turns each. A row about
-    /// an axis has no `linear`, and both turns are the axis.
-    Vec3 linear;
+    /// Pushing along the row moves `b` along `linearB` and `a` along
+    /// `linearA` the other way; `turnA` and `turnB` are how that turns each.
+    /// Most rows have one `linear` for both. A row about an axis has none, and
+    /// both turns are the axis. A coupling has a different row for each body.
+    Vec3 linearA;
+    Vec3 linearB;
     Vec3 turnA;
     Vec3 turnB;
     float mass = 0.0f;
@@ -220,13 +333,32 @@ class Joints {
     float target = 0.0f;
     float least = 0.0f;
     float most = 0.0f;
+
+    /// A hard row takes all of what a pass finds and none of what it held. A
+    /// soft one takes part and gives part back. See `Softness`.
+    float massScale = 1.0f;
+    float impulseScale = 0.0f;
   };
 
   Held heldFor(const Bodies &bodies, uint32_t index) const;
 
+  /// Puts the joints in `order_`: nearest the world, or to a body that does
+  /// not move, first. A joint's distance is how many joints are between it
+  /// and one of those, and a structure that touches none counts from the
+  /// joint made first. Ties stay in the order they were made.
+  void arrange(const Bodies &bodies);
+
+  /// Builds every row `joint` has this sub-step, of length `h`, onto
+  /// `rows_`, and gives `held` the range they are in.
+  void buildRows(const Bodies &bodies, Held &held, Joint &joint, float h);
+
+  /// Solves the rows of one held joint, once, in the order they were built.
+  void solveHeld(Bodies &bodies, const Held &held);
+
   /// How hard it is to change the speed along a row, inverted. Zero when
   /// neither body can move, which makes every impulse along it zero.
-  static float massAlong(const Held &held, const Vec3 &linear, const Vec3 &turnA,
+  static float massAlong(const Held &held, const Vec3 &linearA,
+                         const Vec3 &linearB, const Vec3 &turnA,
                          const Vec3 &turnB);
 
   static float speedAlong(const Bodies &bodies, const Held &held,
@@ -236,6 +368,15 @@ class Joints {
 
   std::vector<Joint> joints_;
   std::unordered_map<OrblitPhysicsId, uint32_t> index_;
+
+  /// Indices into `joints_`, in the order they are solved. Made again when a
+  /// joint is added or removed. A body that stops or starts moving does not
+  /// remake it, which leaves a worse order but never a wrong one.
+  std::vector<uint32_t> order_;
+  bool arranged_ = false;
+
+  /// One flag per body row, set for each body a joint solved this step moves.
+  std::vector<uint8_t> carried_;
 
   /// How many joints each body is on, so a body on none is one lookup.
   std::unordered_map<OrblitPhysicsId, uint32_t> counts_;

@@ -220,6 +220,13 @@ bool orblit_physics_join(OrblitPhysics *physics, const OrblitPhysicsJoint *joint
   return physics->world.join(*joint);
 }
 
+bool orblit_physics_join_path(OrblitPhysics *physics,
+                              const OrblitPhysicsJoint *joint, const float *xyz,
+                              uint32_t count) {
+  if (physics == nullptr || joint == nullptr || xyz == nullptr) return false;
+  return physics->world.join(*joint, xyz, count);
+}
+
 bool orblit_physics_unjoin(OrblitPhysics *physics, OrblitPhysicsId joint) {
   if (physics == nullptr) return false;
   return physics->world.unjoin(joint);

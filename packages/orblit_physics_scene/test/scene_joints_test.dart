@@ -295,6 +295,259 @@ void main() {
     });
   });
 
+  group('give', () {
+    test('a spring on a distance joint rests below its hook', () {
+      // A ball a metre below a hook on a spring of two hertz. It settles a
+      // rest length plus gravity over omega squared down.
+      scene = ScenePhysics(
+        sceneOf([
+          body('ball', at: Vector3(0, 2, 0)),
+          joint(
+            'hook',
+            JointComponent(
+              kind: JointKind.distance,
+              springs: const {JointAxis.alongX: JointGive(2)},
+            ),
+            parent: 'ball',
+            at: Vector3(0, 1, 0),
+          ),
+        ]),
+      );
+      run(scene, 4);
+
+      const omega = 4 * math.pi;
+      final length = 3 - middleOf(scene, 'ball').y;
+      expect(length, closeTo(1 + 9.81 / (omega * omega), 0.01));
+    });
+
+    test('a spring with its own rest pulls to it, in degrees', () {
+      // A bar hinged at one end, held up by a spring that rests at -40
+      // degrees. It sags below that by gravity over the spring.
+      scene = ScenePhysics(
+        sceneOf([
+          body('bar', at: Vector3(0.5, 3, 0), shape: bar()),
+          joint(
+            'hinge',
+            JointComponent(
+              springs: const {JointAxis.aboutX: JointGive(8, rest: -40)},
+            ),
+            parent: 'bar',
+            at: Vector3(-0.5, 0, 0),
+            rotation: Vector3(0, -90, 0),
+          ),
+        ]),
+      );
+      run(scene, 3);
+
+      final settled = stateOf(scene, 'hinge')!.angles[0];
+      expect(settled, lessThan(toRadians(-40) + 0.01));
+      expect(settled, greaterThan(toRadians(-40) - 0.4));
+    });
+
+    test('a goal holds a hinge at an angle against its weight', () {
+      scene = ScenePhysics(
+        sceneOf([
+          body('bar', at: Vector3(0.5, 3, 0), shape: bar()),
+          joint(
+            'hinge',
+            JointComponent(goal: -40, goalHertz: 6, strength: 1000),
+            parent: 'bar',
+            at: Vector3(-0.5, 0, 0),
+            rotation: Vector3(0, -90, 0),
+          ),
+        ]),
+      );
+      run(scene, 2);
+
+      expect(stateOf(scene, 'hinge')!.angles[0], closeTo(toRadians(-40), 0.03));
+    });
+
+    test('a soft limit gives past its end where a hard one does not', () {
+      double lowest({required double hertz}) {
+        scene = ScenePhysics(
+          sceneOf([
+            body('bar', at: Vector3(0.5, 3, 0), shape: bar()),
+            joint(
+              'hinge',
+              JointComponent(
+                limits: const {JointAxis.aboutX: JointRange(-30, 30)},
+                softHertz: hertz,
+              ),
+              parent: 'bar',
+              at: Vector3(-0.5, 0, 0),
+              rotation: Vector3(0, -90, 0),
+            ),
+          ]),
+        );
+        run(scene, 3);
+        final angle = stateOf(scene, 'hinge')!.angles[0];
+        scene.dispose();
+        return angle;
+      }
+
+      final hard = lowest(hertz: 0);
+      final soft = lowest(hertz: 1);
+      expect(hard, closeTo(toRadians(-30), 0.02));
+      expect(soft, lessThan(hard - 0.1));
+    });
+  });
+
+  group('machines', () {
+    test('a path carries a ball down a slope and round a corner', () {
+      // The line is in the joint's own frame: a slope of one in two, then a
+      // flat. The ball starts at the top of it.
+      scene = ScenePhysics(
+        sceneOf([
+          body(
+            'ball',
+            at: Vector3(0, 3, 0),
+            shape: BodyComponent(shape: BodyShape.sphere, radius: 0.1),
+          ),
+          joint(
+            'rail',
+            JointComponent(
+              kind: JointKind.path,
+              path: [
+                Vector3(0, 0, 0),
+                Vector3(3, -1.5, 0),
+                Vector3(6, -1.5, 0),
+              ],
+            ),
+            parent: 'ball',
+          ),
+        ]),
+      );
+      run(scene, 1.6);
+
+      final ball = middleOf(scene, 'ball');
+      expect(ball.y, closeTo(1.5, 0.03));
+      expect(ball.x, greaterThan(4));
+    });
+
+    test('a path with a limit stops the ball at a length', () {
+      scene = ScenePhysics(
+        sceneOf([
+          body(
+            'ball',
+            at: Vector3(0, 3, 0),
+            shape: BodyComponent(shape: BodyShape.sphere, radius: 0.1),
+          ),
+          joint(
+            'rail',
+            JointComponent(
+              kind: JointKind.path,
+              limits: const {JointAxis.alongX: JointRange(0, 2)},
+              path: [Vector3(0, 0, 0), Vector3(6, -3, 0)],
+            ),
+            parent: 'ball',
+          ),
+        ]),
+      );
+      run(scene, 3);
+
+      expect(stateOf(scene, 'rail')!.offset[0], closeTo(2, 0.05));
+    });
+
+    test('a pulley with its points in the joint frame lifts one weight', () {
+      // The light weight hangs under the heavy one in the tree, which is how
+      // a document says which two a joint holds. Its joint entity sits at the
+      // heavy weight's middle, because that is where the rope is tied.
+      scene = ScenePhysics(
+        sceneOf([
+          body(
+            'heavy',
+            at: Vector3(-1, 1, 0),
+            shape: BodyComponent(size: Vector3(0.2, 0.2, 0.2), mass: 2),
+          ),
+          body(
+            'light',
+            parent: 'heavy',
+            at: Vector3(2, 0, 0),
+            shape: BodyComponent(size: Vector3(0.2, 0.2, 0.2)),
+          ),
+          joint(
+            'rope',
+            JointComponent(
+              kind: JointKind.pulley,
+              over: [Vector3(0, 2, 0), Vector3(2, 2, 0)],
+            ),
+            parent: 'light',
+            at: Vector3(-2, 0, 0),
+          ),
+        ]),
+      );
+      run(scene, 0.5);
+
+      final fall = 1 - middleOf(scene, 'heavy').y;
+      expect(fall, closeTo(0.41, 0.06));
+      expect(middleOf(scene, 'light').y - 1, closeTo(fall, 0.02));
+    });
+
+    test('a pulley with the wrong number of points is not made', () {
+      scene = ScenePhysics(
+        sceneOf([
+          body('heavy', at: Vector3(-1, 1, 0)),
+          body('light', parent: 'heavy', at: Vector3(2, 0, 0)),
+          joint(
+            'rope',
+            JointComponent(kind: JointKind.pulley, over: [Vector3(0, 2, 0)]),
+            parent: 'light',
+          ),
+        ]),
+      );
+
+      final number = scene.jointOf('rope')!;
+      expect(scene.physics.jointStateOf(number), isNull);
+    });
+
+    test('a gear ties the turn of a body to the one it hangs under', () {
+      // A carrier turns on the world and a wheel hangs under it, hinged to it
+      // at its own middle. The gear keeps the wheel's own turn minus the
+      // carrier's at minus one times it, so the wheel turns against the
+      // carrier twice as far as the carrier turns.
+      final upright = Vector3(0, 0, 90);
+      scene = ScenePhysics(
+        sceneOf([
+          body(
+            'carrier',
+            at: Vector3(0, 3, 0),
+            shape: BodyComponent(size: Vector3(0.4, 0.2, 0.4)),
+          ),
+          joint(
+            'axle',
+            JointComponent(speed: 60, strength: 1000),
+            parent: 'carrier',
+            rotation: upright,
+          ),
+          body(
+            'wheel',
+            parent: 'carrier',
+            at: Vector3(1.5, 0, 0),
+            shape: BodyComponent(size: Vector3(0.4, 0.2, 0.4)),
+          ),
+          joint(
+            'bearing',
+            JointComponent(),
+            parent: 'wheel',
+            rotation: upright,
+          ),
+          joint(
+            'mesh',
+            JointComponent(kind: JointKind.gear, ratio: -1),
+            parent: 'wheel',
+            rotation: upright,
+          ),
+        ]),
+      );
+      run(scene, 0.5);
+
+      final carrier = stateOf(scene, 'axle')!.angles[0];
+      final against = stateOf(scene, 'bearing')!.angles[0];
+      expect(carrier, greaterThan(0.3));
+      expect(against, closeTo(-2 * carrier, 0.05));
+    });
+  });
+
   group('edits', () {
     SceneDocument pendulum() => sceneOf([
       body('ball', at: Vector3(1, 3, 0)),
