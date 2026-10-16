@@ -229,7 +229,9 @@ void main() {
 
     test('a limp ragdoll comes to rest on the ground', () {
       h.ragdoll.hit('spine', impulse: Vector3(0, 0, 8), spread: 0.03);
-      h.run(3);
+      // The tumble is still settling at 3 s, and where a platform's rounding
+      // sends it decides whether it has stopped by then. By 5 s it is asleep.
+      h.run(6);
       expect(h.ragdoll.isAtRest(), isTrue);
       for (final bone in h.ragdoll.bones) {
         final y = h.bodyOf(bone).y;
