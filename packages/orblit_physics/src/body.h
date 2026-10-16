@@ -237,6 +237,13 @@ class Bodies {
   /// and back: neither has mass, so nothing derived from mass goes stale.
   void steer(uint32_t row, Motion motion) { motion_[row] = motion; }
 
+  /// Swaps what it is made of, keeping where its origin is. For a character
+  /// changing stance: it has no mass, so nothing derived from mass goes stale.
+  void reshape(uint32_t row, const Shape &shape) {
+    shape_[row] = shape;
+    refresh(row);
+  }
+
   /// Makes it fixed, driven or free, keeping where it is. Fixed stops it. A
   /// body that was free and is not any more keeps the velocity of its origin,
   /// which is what a driven body's velocity is. Woken either way, since a body

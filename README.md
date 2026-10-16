@@ -224,7 +224,15 @@ slides down steeper ones, and rides what it stands on: a lift carries it up, a
 turntable turns it, and `footingOf` says by how much, apart from the walk it
 asked for, so an animation plays the walk and not the ride. It pushes free
 bodies it walks into, no harder than `strength`, and is pushed by nothing but
-driven ones. A crate cannot shove a player off a ledge; a closing door can.
+driven ones and other characters. A crate cannot shove a player off a ledge; a
+closing door can. A character that walks into another moves it out of the way
+at half the speed they close at, and never through a wall.
+
+`setStance` changes its shape in place, with the feet kept where they were: a
+crouch comes down from the top. It answers whether the new shape fits, so a
+character under a beam that asks to stand gets false and stays as it was.
+`footingOf` also says whether the last walk met a `wall` or a `ceiling`, beside
+the ground it stands on.
 
 It does not fall on its own. Gravity is part of what it asks for, which is what
 leaves a game to decide what a jump is, how long a player hangs at the top of

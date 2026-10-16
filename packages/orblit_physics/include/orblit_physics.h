@@ -954,7 +954,14 @@ typedef struct {
   /// Standing on something it could stand on. False in the air, on a slope
   /// steeper than it may climb, and on the way up a jump.
   bool grounded;
-  bool _reserved[7];
+
+  /// What stopped its walk this step, beside the ground. A wall is something
+  /// it could not stand on or walk through that was not over its head, and a
+  /// ceiling is something that was. Both are false while it asks for nothing
+  /// that anything is in the way of.
+  bool wall;
+  bool ceiling;
+  bool _reserved[5];
 } OrblitPhysicsFooting;
 
 /// Writes the footing of each of `ids` into `out[i]`.
@@ -964,6 +971,17 @@ typedef struct {
 uint32_t orblit_physics_footing(const OrblitPhysics *physics,
                                 const OrblitPhysicsId *ids, uint32_t count,
                                 OrblitPhysicsFooting *out);
+
+/// Changes the shape character `id` is made of, keeping its feet where they
+/// are: a crouch is a shorter capsule from the same sole.
+///
+/// `shape` and `size` are read as a CREATE command reads them, for a sphere, a
+/// box, a capsule or a cylinder. Returns false, and changes nothing, for an id
+/// that is not a character, for any other kind of shape, and when the new shape
+/// would overlap a body the character does not pass through. That last one is
+/// how a game finds out there is no room to stand up under a beam.
+bool orblit_physics_stance(OrblitPhysics *physics, OrblitPhysicsId id,
+                           uint32_t shape, const float size[4]);
 
 // ----------------------------------------------------------------- joints ---
 //

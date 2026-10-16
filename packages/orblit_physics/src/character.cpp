@@ -64,6 +64,15 @@ constexpr float kAbove = 0.05f;
 /// edge check is not worth making for a surface that faces sideways.
 constexpr float kFlat = 1.0e-3f;
 
+/// A normal that points down by more than this is what is over its head, rather
+/// than a wall it brushed with the top of its capsule.
+constexpr float kOverhead = 0.5f;
+
+/// How much of the closing speed a character gives way at when walked into by
+/// another. Half, so the two share the work and a crowd moves through itself at
+/// half pace rather than the one in front being carried along at full speed.
+constexpr float kYield = 0.5f;
+
 /// Slack on the steepest slope, so a floor that is exactly as steep as allowed
 /// is a floor whichever way the last bit of the float went.
 constexpr float kLevel = 1.0e-4f;
@@ -100,6 +109,11 @@ struct Slid {
   Vec3 at;
   Vec3 velocity;
   bool blocked = false;
+
+  /// What it met that was not a floor: something it could not stand on, and
+  /// whether that was over its head.
+  bool wall = false;
+  bool ceiling = false;
 };
 
 /// `v` with the part along `up` taken out.
@@ -264,6 +278,10 @@ class Walker {
 
       const Underfoot foot = underfoot(out.at, hit);
       if (foot.surface != Surface::floor || foot.edge) out.blocked = true;
+      if (foot.surface != Surface::floor) {
+        const bool overhead = dot(hit.normal, up_) < -kOverhead;
+        (overhead ? out.ceiling : out.wall) = true;
+      }
       if (shoves != nullptr && foot.surface != Surface::floor) {
         shove(row, hit.normal, out.velocity, *shoves);
       }
@@ -384,6 +402,8 @@ class Walker {
     out.at = moved.at - up_ * std::fmax(below.distance - skin(), 0.0f);
     out.velocity = clip(moved.velocity, foot);
     out.blocked = moved.blocked;
+    out.wall = moved.wall;
+    out.ceiling = moved.ceiling;
     return true;
   }
 
@@ -415,8 +435,10 @@ class Walker {
   /// one anybody asked for.
   void shove(uint32_t row, const Vec3 &normal, const Vec3 &velocity,
              std::vector<Shove> &shoves) const {
-    if (bodies_.motion(row) != Motion::free) return;
-    if (character_.strength <= 0.0f || bodies_.inverseMass(row) <= 0.0f) return;
+    const Motion motion = bodies_.motion(row);
+    if (motion != Motion::free && motion != Motion::character) return;
+    if (character_.strength <= 0.0f) return;
+    if (motion == Motion::free && bodies_.inverseMass(row) <= 0.0f) return;
 
     const Vec3 flat = flattened(-normal, up_);
     if (lengthSquared(flat) < kTiny) return;
@@ -424,6 +446,10 @@ class Walker {
 
     const float closing = dot(velocity - bodies_.velocity(row), along);
     if (closing <= 0.0f) return;
+    if (motion == Motion::character) {
+      shoves.push_back({row, along * (kYield * closing), {}});
+      return;
+    }
     const float impulse = std::fmin(closing / bodies_.inverseMass(row),
                                     character_.strength * delta_);
     shoves.push_back({row, along * impulse, bodies_.centre(row)});
@@ -445,8 +471,7 @@ void World::moveCharacters(float delta) {
 
   // Up is against gravity, whatever gravity is. A world with none has no
   // floors to speak of, so it keeps the usual up rather than none.
-  const float fall = length(gravity_);
-  const Vec3 up = fall > kTiny ? gravity_ * (-1.0f / fall) : Vec3{0.0f, 1.0f, 0.0f};
+  const Vec3 up = upwards();
 
   for (Character &character : characters_) {
     const uint32_t row = bodies_.rowOf(character.id);
@@ -503,6 +528,8 @@ void World::moveCharacter(Character &character, uint32_t row, const Vec3 &up,
   }
   at = walked.at;
   Vec3 velocity = walked.velocity;
+  character.wall = walked.wall;
+  character.ceiling = walked.ceiling;
 
   // 4. What is underfoot. Further down if it was standing and is not jumping,
   //    so walking down a stair keeps it on the stair rather than launching it
@@ -546,7 +573,30 @@ void World::moveCharacter(Character &character, uint32_t row, const Vec3 &up,
   bodies_.refresh(row);
   character.wanted = velocity;
 
-  for (const Shove &shove : shoves_) push(shove.row, shove.impulse, shove.at);
+  for (const Shove &shove : shoves_) {
+    if (bodies_.motion(shove.row) == Motion::character) {
+      yield(shove.row, shove.impulse * delta, up, delta);
+    } else {
+      push(shove.row, shove.impulse, shove.at);
+    }
+  }
+}
+
+void World::yield(uint32_t row, const Vec3 &move, const Vec3 &up, float delta) {
+  Character *other = characterOf(bodies_.id(row));
+  if (other == nullptr) return;
+
+  const Walker walker(bodies_, *other, row, up, delta);
+  const Slid moved = walker.slide(bodies_.at(row), move, Vec3{}, 0, nullptr);
+  bodies_.at(row) = moved.at;
+  bodies_.refresh(row);
+
+  // Standing on something that moves, it is put back where it stood on it at
+  // the start of its next step, so where it stands now is where it stood.
+  const uint32_t ground = bodies_.rowOf(other->ground);
+  if (other->grounded && ground != Bodies::kNone) {
+    other->local = unrotate(bodies_.rotation(ground), moved.at - bodies_.at(ground));
+  }
 }
 
 } // namespace orblit

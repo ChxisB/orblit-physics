@@ -26,6 +26,8 @@ dependency_overrides:
     path: $(cd "$ENGINE/packages/orblit_asset" && pwd)
   orblit_mesh:
     path: $(cd "$ENGINE/packages/orblit_mesh" && pwd)
+  orblit_motion:
+    path: $(cd "$ENGINE/packages/orblit_motion" && pwd)
 YAML
 
 cat > packages/orblit_physics_terrain/pubspec_overrides.yaml <<YAML

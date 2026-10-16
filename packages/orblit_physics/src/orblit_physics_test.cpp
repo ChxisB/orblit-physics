@@ -949,6 +949,133 @@ void crowding() {
   orblit_physics_destroy(physics);
 }
 
+/// Asks every character in `who` to walk along x at the paired speed, a step at
+/// a time, with gravity added the way a game does.
+void walkTogether(OrblitPhysics *physics,
+                  const std::vector<std::pair<OrblitPhysicsId, float>> &who,
+                  float seconds) {
+  const int steps = static_cast<int>(seconds / kStep + 0.5f);
+  for (int i = 0; i < steps; ++i) {
+    for (const auto &[id, vx] : who) {
+      OrblitPhysicsCommand ask{};
+      ask.kind = ORBLIT_PHYSICS_VELOCITY;
+      ask.id = id;
+      ask.vector[0] = vx;
+      ask.vector[1] = footingOf(physics, id).velocity[1] - 9.81f * kStep;
+      submit(physics, ask);
+    }
+    orblit_physics_step(physics, kStep);
+  }
+}
+
+bool stanceAs(OrblitPhysics *physics, OrblitPhysicsId id, float radius,
+              float halfHeight) {
+  const float size[4] = {radius, halfHeight, 0.0f, 0.0f};
+  return orblit_physics_stance(physics, id, ORBLIT_PHYSICS_CAPSULE, size);
+}
+
+void crouching() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  // A beam 0.2 m thick with its underside 1.2 m up, across x from -2 to 2.
+  submit(physics, slabAt(3, 2.0f, 0.1f, 2.0f, 0.0f, 1.3f, 0.0f));
+  addCharacter(physics, 2, -3.0f, 0.0f, 0.0f);
+  walkTogether(physics, {{2, 0.0f}}, 0.2f);
+
+  check(stanceAs(physics, 2, 0.3f, 0.2f), "a character with room to crouch crouches");
+  check(near(heightOf(physics, 2), 0.51f, 0.002f),
+        "and keeps its feet where they were, a skin above the ground");
+  walkTogether(physics, {{2, 0.0f}}, 0.2f);
+  check(footingOf(physics, 2).grounded && near(heightOf(physics, 2), 0.51f, 0.002f),
+        "and goes on standing on it");
+
+  walkTogether(physics, {{2, 1.5f}}, 2.0f);
+  const float under = coordinateOf(physics, 2, 0);
+  check(under > -0.2f && under < 0.2f, "crouched, it walks in under the beam");
+  check(!stanceAs(physics, 2, 0.3f, 0.6f),
+        "and cannot stand up under it, which it is told");
+  check(near(heightOf(physics, 2), 0.51f, 0.002f),
+        "leaving it exactly as it was");
+
+  walkTogether(physics, {{2, 1.5f}}, 2.0f);
+  check(coordinateOf(physics, 2, 0) > 2.4f, "it walks out the other side");
+  check(stanceAs(physics, 2, 0.3f, 0.6f), "where it can stand");
+  check(near(heightOf(physics, 2), 0.91f, 0.002f), "with its feet on the ground");
+
+  const float box[4] = {0.5f, 0.5f, 0.5f, 0.0f};
+  check(!orblit_physics_stance(physics, 2, ORBLIT_PHYSICS_HULL, box),
+        "a shape that is not a primitive is refused");
+  check(!stanceAs(physics, 1, 0.3f, 0.6f), "and so is a body that is not a character");
+
+  orblit_physics_destroy(physics);
+}
+
+void touchingWalls() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 1.0f, 0.25f, 1.0f, 2.0f, 0.25f, 0.0f));
+  // A ceiling 2.2 m up, over the whole of the way.
+  submit(physics, slabAt(4, 8.0f, 0.1f, 4.0f, 0.0f, 2.3f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+
+  walkTogether(physics, {{2, 1.0f}}, 0.5f);
+  OrblitPhysicsFooting footing = footingOf(physics, 2);
+  check(!footing.wall && !footing.ceiling, "in the open it touches neither");
+
+  walkTogether(physics, {{2, 1.5f}}, 2.0f);
+  footing = footingOf(physics, 2);
+  check(footing.wall && footing.grounded, "a ledge it cannot climb is a wall");
+  check(!footing.ceiling, "and not a ceiling");
+
+  walkTogether(physics, {{2, -1.5f}}, 0.5f);
+  check(!footingOf(physics, 2).wall, "walking away from it, the wall is let go");
+
+  bool bumped = false;
+  for (int i = 0; i < 12; ++i) {
+    OrblitPhysicsCommand ask{};
+    ask.kind = ORBLIT_PHYSICS_VELOCITY;
+    ask.id = 2;
+    ask.vector[1] = 8.0f;
+    submit(physics, ask);
+    orblit_physics_step(physics, kStep);
+    bumped = bumped || footingOf(physics, 2).ceiling;
+  }
+  check(bumped, "a jump into a low ceiling meets it");
+  check(footingOf(physics, 2).velocity[1] < 1.0f,
+        "and is stopped by it");
+
+  orblit_physics_destroy(physics);
+}
+
+void sharingTheWay() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  addCharacter(physics, 3, 1.0f, 0.0f, 0.0f);
+
+  walkTogether(physics, {{2, 1.5f}, {3, 0.0f}}, 3.0f);
+  const float a = coordinateOf(physics, 2, 0);
+  const float b = coordinateOf(physics, 3, 0);
+  check(b > 1.8f, "a character walked into gives way");
+  check(a > 1.0f, "and the one walking gets past where it stood");
+  check(b - a > 0.55f, "without either walking through the other");
+  check(near(heightOf(physics, 3), 0.91f, 0.005f) && footingOf(physics, 3).grounded,
+        "the one that gave way is still standing on the ground");
+  orblit_physics_destroy(physics);
+
+  OrblitPhysics *walled = orblit_physics_create(nullptr);
+  submit(walled, groundPlane(1));
+  submit(walled, slabAt(4, 0.1f, 1.0f, 2.0f, 1.6f, 1.0f, 0.0f));
+  addCharacter(walled, 2, 0.0f, 0.0f, 0.0f);
+  addCharacter(walled, 3, 1.0f, 0.0f, 0.0f);
+
+  walkTogether(walled, {{2, 1.5f}, {3, 0.0f}}, 3.0f);
+  check(coordinateOf(walled, 3, 0) < 1.21, "one against a wall is not pushed through it");
+  check(coordinateOf(walled, 2, 0) < coordinateOf(walled, 3, 0) - 0.55f,
+        "and the one pushing it is stopped by it");
+  orblit_physics_destroy(walled);
+}
+
 void footings() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, groundPlane(1));
@@ -5383,6 +5510,9 @@ int main() {
   turning();
   pushing();
   crowding();
+  crouching();
+  touchingWalls();
+  sharingTheWay();
   footings();
   resting();
   rolling();

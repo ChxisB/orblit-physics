@@ -5,8 +5,9 @@ import 'package:orblit_physics/orblit_physics.dart';
 import 'package:orblit_scene/orblit_scene.dart';
 import 'package:vector_math/vector_math_64.dart';
 
-import 'pose.dart';
+import 'character_walk.dart';
 import 'compound_parts.dart';
+import 'pose.dart';
 
 /// A [ScenePhysics] at one instant, to go back to with [ScenePhysics.restore].
 ///
@@ -43,6 +44,7 @@ final class ScenePhysicsSnapshot {
       _broken = Set.of(from._broken),
       _nextJoint = from._nextJoint,
       _ignored = Set.of(from._ignored),
+      _crouching = Set.of(from._crouching),
       _owed = from._owed,
       _events = List.of(from._events);
 
@@ -68,6 +70,7 @@ final class ScenePhysicsSnapshot {
   final Set<String> _broken;
   final int _nextJoint;
   final Set<({String a, String b})> _ignored;
+  final Set<int> _crouching;
   final double _owed;
   final List<PhysicsEvent> _events;
 
@@ -235,6 +238,14 @@ class ScenePhysics {
   /// id first so a pair is one entry whichever way it was named.
   final Set<({String a, String b})> _ignored = {};
 
+  /// The characters that are crouching. Their body's shape is the crouched
+  /// one, and their feet are where they were.
+  final Set<int> _crouching = {};
+
+  /// What each character is asked to do, by entity. Not part of a snapshot:
+  /// a walk is the game's, with a playhead the world cannot rewind.
+  final Map<String, CharacterWalk> _walks = {};
+
   double _owed = 0;
   List<PhysicsEvent> _events = const [];
 
@@ -346,6 +357,7 @@ class ScenePhysics {
     final events = <PhysicsEvent>[];
     final sharp = smooth ? _sharpBodies() : const <int>{};
     while (_owed >= step && taken < maxSteps) {
+      _drive();
       physics.step(step);
       events.addAll(physics.events);
       if (smooth) _carry(sharp);
@@ -365,6 +377,51 @@ class ScenePhysics {
       _held.remove(id);
     }
     return taken == 0 && !smooth ? SceneDiff.none : _writeBack();
+  }
+
+  /// Sets what [entity] is asked to do, every step, or stops asking with a
+  /// null [walk].
+  ///
+  /// Only a character has a walk, and an entity that is not one, or that loses
+  /// its body, loses it. Asking replaces what was there. A character with
+  /// none stands where it is and does not fall, as [Physics.addCharacter]
+  /// describes.
+  void walk(String entity, CharacterWalk? walk) {
+    if (walk == null) {
+      _walks.remove(entity);
+      return;
+    }
+    _walks[entity] = walk;
+  }
+
+  /// Makes [entity] crouch, or stand again, and answers whether it now is as
+  /// asked.
+  ///
+  /// A crouch takes the body's `crouchHeight` as the capsule's height, from
+  /// tip to tip, with the feet where they were. Standing needs the room, and
+  /// a character under a beam stays crouched and says so with false. False
+  /// too for an entity that is not a character, or has no `crouchHeight`.
+  /// Rebuilding a character, as any edit to it does, stands it.
+  bool crouch(String entity, bool crouching) {
+    final number = _bodyOf[entity];
+    final body = _document[entity]?[SceneComponents.body];
+    if (number == null || body is! BodyComponent) return false;
+    if (!_isCharacter(body) || !(body.crouchHeight > 0)) return false;
+    if (_crouching.contains(number) == crouching) return true;
+
+    final scale = _scaleOf(entity);
+    final shape = crouching
+        ? _capsule(body.radius, body.crouchHeight, scale)
+        : _shapeOf(number, body, scale);
+    if (!physics.setStance(number, shape)) return false;
+    crouching ? _crouching.add(number) : _crouching.remove(number);
+    return true;
+  }
+
+  /// Whether [entity] is crouching.
+  bool isCrouching(String entity) {
+    final number = _bodyOf[entity];
+    return number != null && _crouching.contains(number);
   }
 
   /// Tells the world about an edit to [document].
@@ -511,6 +568,9 @@ class ScenePhysics {
     _ignored
       ..clear()
       ..addAll(snapshot._ignored);
+    _crouching
+      ..clear()
+      ..addAll(snapshot._crouching);
     _owed = snapshot._owed;
     _events = List.of(snapshot._events);
 
@@ -531,6 +591,7 @@ class ScenePhysics {
       final number = _bodyOf[id];
       if (number != null) {
         physics.remove(number);
+        _crouching.remove(number);
         if (_compoundBodies.remove(number)) physics.dropCompound(number);
         if (_meshBodies.remove(number)) physics.dropMesh(number);
         _partHullKeys.remove(number);
@@ -540,6 +601,7 @@ class ScenePhysics {
 
       final body = _document[id]?[SceneComponents.body];
       if (body is! BodyComponent) {
+        _walks.remove(id);
         if (number != null) {
           _bodyOf.remove(id);
           _entityOf.remove(number);
@@ -596,6 +658,7 @@ class ScenePhysics {
     world.decompose(Vector3.zero(), rotation, scale);
     scale.absolute();
     final at = world.transform3(body.centre.clone());
+    final character = _isCharacter(body);
     final plane = body.shape == BodyShape.plane;
     final mesh = body.shape == BodyShape.mesh;
     final compound =
@@ -608,6 +671,22 @@ class ScenePhysics {
         : compound && !plane
         ? _compoundOf(number, body, scale)
         : _shapeOf(number, body, scale);
+
+    if (character && !compound) {
+      physics.addCharacter(
+        number,
+        shape: shape,
+        at: [at.x, at.y, at.z],
+        rotation: [rotation.x, rotation.y, rotation.z, rotation.w],
+        stepHeight: body.stepHeight,
+        steepest: body.steepest,
+        skin: body.skin,
+        strength: body.strength,
+        friction: body.friction,
+        layers: Layers(is_: body.layers, cares: body.cares),
+      );
+      return;
+    }
 
     physics.add(
       number,
@@ -742,13 +821,7 @@ class ScenePhysics {
         final largest = math.max(scale.x, math.max(scale.y, scale.z));
         return Shape.sphere(body.radius.abs() * largest);
       case BodyShape.capsule:
-        final radius = body.radius.abs() * math.max(scale.x, scale.z);
-        // Height is tip to tip; the solver wants the straight part, from the
-        // middle. None left means all ends and no middle: a ball.
-        final straight = body.height.abs() * scale.y / 2 - radius;
-        return straight > 0
-            ? Shape.capsule(radius, straight)
-            : Shape.sphere(radius);
+        return _capsule(body.radius, body.height, scale);
       case BodyShape.cylinder:
         return Shape.cylinder(
           body.radius.abs() * math.max(scale.x, scale.z),
@@ -761,6 +834,56 @@ class ScenePhysics {
         // The entity's own up, through the body's centre. The world turns and
         // places the normal by the body's pose, so it is given unturned here.
         return const Shape.plane(0, 1, 0);
+    }
+  }
+
+  /// A capsule [height] tall from tip to tip. The solver wants the straight
+  /// part, from the middle, and none left means all ends and no middle: a
+  /// ball.
+  static Shape _capsule(double radius, double height, Vector3 scale) {
+    final round = radius.abs() * math.max(scale.x, scale.z);
+    final straight = height.abs() * scale.y / 2 - round;
+    return straight > 0 ? Shape.capsule(round, straight) : Shape.sphere(round);
+  }
+
+  /// Whether the world can sweep [body] as a character: it says it is one and
+  /// is a shape that has a stance. Anything else it asks for is a driven body.
+  static bool _isCharacter(BodyComponent body) =>
+      body.motion == BodyMotion.character &&
+      (body.shape == BodyShape.capsule ||
+          body.shape == BodyShape.sphere ||
+          body.shape == BodyShape.box ||
+          body.shape == BodyShape.cylinder);
+
+  /// Where the shape's middle is from the entity's origin, in the entity's
+  /// own units. A crouching character's has come down with its head, because
+  /// its feet stayed.
+  Vector3 _centreOf(BodyComponent body, int number) {
+    final centre = body.centre.clone();
+    if (_crouching.contains(number)) {
+      centre.y -= (body.height.abs() - body.crouchHeight.abs()) / 2;
+    }
+    return centre;
+  }
+
+  /// The scale [entity] has in the world.
+  Vector3 _scaleOf(String entity) {
+    final scale = Vector3.zero();
+    worldOf(
+      _document,
+      entity,
+    ).decompose(Vector3.zero(), Quaternion.identity(), scale);
+    return scale..absolute();
+  }
+
+  /// Asks every character with a walk what it wants for the step about to be
+  /// taken.
+  void _drive() {
+    for (final MapEntry(:key, :value) in _walks.entries) {
+      final number = _bodyOf[key];
+      if (number == null) continue;
+      final footing = physics.footingOf(number);
+      physics.drive(number, velocity: value.ask(step, footing));
     }
   }
 
@@ -818,7 +941,7 @@ class ScenePhysics {
 
   static PhysicsMotion _motionOf(BodyMotion motion) => switch (motion) {
     BodyMotion.fixed => PhysicsMotion.fixed,
-    BodyMotion.driven => PhysicsMotion.driven,
+    BodyMotion.driven || BodyMotion.character => PhysicsMotion.driven,
     BodyMotion.free => PhysicsMotion.free,
   };
 
@@ -1123,7 +1246,7 @@ class ScenePhysics {
     // Through the matrix, as placing the body did: `Quaternion.rotated` turns
     // by the inverse, and the entity would jump sideways.
     final offset = rotation.asRotationMatrix().transformed(
-      body.centre.clone()..multiply(scale),
+      _centreOf(body, _bodyOf[entity.id]!)..multiply(scale),
     );
     final at = Vector3(pose[0], pose[1], pose[2])..sub(offset);
     final world = Matrix4.compose(at, rotation, scale);

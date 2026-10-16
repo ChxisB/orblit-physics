@@ -408,6 +408,8 @@ final class PhysicsFooting {
     required this.carried,
     required this.turning,
     required this.grounded,
+    this.wall = false,
+    this.ceiling = false,
   });
 
   /// What is under it, walkable or not, within a step's reach. Zero for
@@ -434,6 +436,14 @@ final class PhysicsFooting {
   /// Standing on something it may stand on. False in the air, on a slope
   /// steeper than it may climb, and on the way up a jump.
   final bool grounded;
+
+  /// What stopped its walk last step, beside the ground it stands on. A wall
+  /// is something it could not stand on or walk through that was not over its
+  /// head, and a ceiling is something that was. Both are false for a step in
+  /// which what it asked for met nothing, which includes standing still against
+  /// a wall: it has to be asking to go into it.
+  final bool wall;
+  final bool ceiling;
 }
 
 /// Which kind of joint, as the ABI numbers them.
@@ -1789,6 +1799,31 @@ class Physics {
 
   // --- characters ----------------------------------------------------------
 
+  /// Changes the shape character `id` is made of, keeping its feet where they
+  /// are, and answers whether it did. A crouch is a shorter capsule from the
+  /// same sole, and standing up is the taller one again.
+  ///
+  /// Takes effect at once, before the next step, so a character that is asked
+  /// to stand under a beam is told it cannot by the answer rather than by what
+  /// it did a step later. False, and nothing changed, for a body that is not a
+  /// character, for any shape but a ball, box, capsule or cylinder, and for a
+  /// shape that would overlap something the character does not pass through:
+  /// there is no room to stand up.
+  bool setStance(int id, Shape shape) {
+    _requireAlive();
+    _flush();
+    final size = calloc<Float>(4);
+    try {
+      size[0] = shape.x;
+      size[1] = shape.y;
+      size[2] = shape.z;
+      size[3] = shape.w;
+      return native.physicsStance(_alive, id, shape.kind, size);
+    } finally {
+      calloc.free(size);
+    }
+  }
+
   /// What character `id` stood on at the end of the last step, or null if it
   /// is not a character.
   PhysicsFooting? footingOf(int id) => footingsOf([id]).single;
@@ -1823,6 +1858,8 @@ class Physics {
           carried: [it.carried[0], it.carried[1], it.carried[2]],
           turning: it.turning,
           grounded: it.grounded,
+          wall: it.wall,
+          ceiling: it.ceiling,
         );
       });
     } finally {

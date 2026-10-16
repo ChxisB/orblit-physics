@@ -56,6 +56,12 @@ struct Character {
   Vec3 carried;
   float turning = 0.0f;
 
+  /// What stopped its walk last step, beside the ground it stands on. A wall is
+  /// anything it could not stand on or walk through that was not over its head,
+  /// and a ceiling is what was.
+  bool wall = false;
+  bool ceiling = false;
+
   /// Where it stood in its ground's own frame, and how that ground was
   /// turned then. The next step puts it back there, wherever the ground went.
   Vec3 local;
@@ -70,11 +76,16 @@ struct Character {
     normal = {};
     carried = {};
     turning = 0.0f;
+    wall = false;
+    ceiling = false;
   }
 };
 
 /// An impulse a character gave a free body, held until the step decides which
 /// of its tries at moving it keeps, so a try it throws away shoves nothing.
+///
+/// For another character, which has no mass to take an impulse, `impulse` is
+/// the velocity it is made to give way at, and `at` is unused.
 struct Shove {
   uint32_t row = 0;
   Vec3 impulse;
