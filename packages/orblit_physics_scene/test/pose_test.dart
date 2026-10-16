@@ -122,6 +122,35 @@ void main() {
       }
     });
 
+    test('turned a quarter and left with a settled tilt keep the angles', () {
+      // A box that landed flat is a few hundred-thousandths of a radian off
+      // the angles it was given, which is nothing and must not read as
+      // turned about X and back about Z.
+      for (final angles in [
+        Vector3(0, 90, 0),
+        Vector3(0, -90, 0),
+        Vector3(0, 270, 0),
+        Vector3(30, 90, 10),
+      ]) {
+        final tilted = turnOf(angles)
+          ..multiply(Matrix3.rotationZ(4e-5))
+          ..multiply(Matrix3.rotationX(-3e-6));
+
+        final kept = eulerOf(tilted, near: angles);
+        expect(kept.x, closeTo(angles.x, 1e-9), reason: '$angles');
+        expect(kept.y, closeTo(angles.y, 1e-2), reason: '$angles');
+        expect(
+          turnOf(kept),
+          sameTurnAs(tilted, within: 1e-4),
+          reason: '$angles',
+        );
+
+        // With nothing known of the angles, nothing is held back.
+        final alone = eulerOf(tilted);
+        expect(turnOf(alone), sameTurnAs(tilted), reason: '$angles alone');
+      }
+    });
+
     test('just short of a quarter turn about Y are still the rotation', () {
       for (final off in [1e-3, 1e-5, 1e-7, 1e-9]) {
         final angles = Vector3(40, 90 - off, -25);

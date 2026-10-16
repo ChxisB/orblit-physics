@@ -43,7 +43,9 @@ struct Contact {
   /// Out of `b` towards `a`, along which this point is pushed apart.
   Vec3 normal;
 
-  /// How far they overlap along the normal. Always positive here.
+  /// How far they overlap along the normal. Negative for a speculative point:
+  /// the two are that far apart, and close enough that the solver holds them
+  /// there rather than let them overlap.
   float depth = 0.0f;
 
   /// Carried over from the last step, if the same point was there.
@@ -92,12 +94,30 @@ inline const Contact &deepest(const Manifold &manifold) {
 bool collide(const Shape &a, const Vec3 &atA, const Quat &rotA, const Shape &b,
              const Vec3 &atB, const Quat &rotB, Manifold &out);
 
+/// `collide`, and where the shapes do not overlap but are within `margin` of
+/// it, the points they would have if they were that much bigger, each with a
+/// negative depth of how far apart it is. A pair that overlaps has the
+/// manifold `collide` gives it.
+///
+/// Only convex shapes against one another, or against a plane, ground or a
+/// mesh, have one, and a compound has those of its parts.
+bool collideNear(const Shape &a, const Vec3 &atA, const Quat &rotA,
+                 const Shape &b, const Vec3 &atB, const Quat &rotB,
+                 float margin, Manifold &out);
+
 /// A shape against ground, the ground being `b`. Defined beside the height
 /// field, because nearly all of it is about which of the field's triangles
 /// may push, and which way.
 bool collideGround(const Shape &a, const Vec3 &atA, const Quat &rotA,
                    const Shape &ground, const Vec3 &atB, const Quat &rotB,
                    Manifold &out);
+
+/// `collideGround` for `a` made `grow` bigger in every direction, as a ball is
+/// bigger than its core. A near miss asks this: whether the shape would touch
+/// if it were that much bigger. Each depth is of the grown shape.
+bool collideGroundGrown(const Shape &a, const Vec3 &atA, const Quat &rotA,
+                        const Shape &ground, const Vec3 &atB, const Quat &rotB,
+                        float grow, Manifold &out);
 
 /// A face being clipped. Eight is the most a quad can have after four cuts.
 struct Poly {

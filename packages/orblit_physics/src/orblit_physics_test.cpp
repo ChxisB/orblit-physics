@@ -3,6 +3,7 @@
 // tool/check_native.sh, not by the package — Dart's tests cover the same
 // ground from the other side of the hook.
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -438,8 +439,9 @@ void refusing() {
   std::memset(&settings, 0, sizeof(settings));
   orblit_physics_defaults(&settings);
   check(settings.gravity[1] < -9.0f, "the defaults have gravity");
-  check(settings.velocitySteps >= 2 && settings.positionSteps >= 1,
-        "and enough passes for friction to work");
+  check(settings.subSteps >= 1 && settings.velocitySteps >= 1 &&
+            settings.positionSteps >= 1,
+        "and a pass to hold contacts with in each sub-step");
   check(settings.sleeping, "and sleeping on");
 
   OrblitPhysics *physics = orblit_physics_create(&settings);
@@ -3237,7 +3239,8 @@ void switching() {
   drive(physics, 3, 3.0f, 0.0f, 0.0f, 0.0f);
   switchTo(physics, 3, ORBLIT_PHYSICS_KINEMATIC);
   run(physics, 1.0f);
-  check(near(coordinateOf(physics, 3, 0), -2.0f, 0.05f) &&
+  // `run` for a second is 59 steps, so the body has moved 2.95 and not 3.
+  check(near(coordinateOf(physics, 3, 0), -2.0f, 0.06f) &&
             near(heightOf(physics, 3), 10.0f, 0.0001f),
         "a free body made driven keeps its velocity and stops feeling gravity");
 
@@ -3617,6 +3620,7 @@ void replaying() {
   OrblitPhysicsSettings other;
   orblit_physics_defaults(&other);
   other.gravity[1] = -1.0f;
+  other.subSteps = 2;
   other.velocitySteps = 2;
   other.positionSteps = 1;
   other.sleeping = false;
@@ -4452,6 +4456,910 @@ void capsulesAgainstBoxes() {
         "a capsule meets a box where the shapes meet, and as deep as they overlap");
 }
 
+// Fixed bodies are found through a tree that is only rebuilt when one of them
+// changes, so a query has to see every way one can change.
+void findingFixedBodies() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+
+  // The id of what a ray fired straight down at `x` meets first, or 0.
+  const auto below = [physics](float x, float *distance = nullptr) {
+    OrblitPhysicsHit hit{};
+    const OrblitPhysicsCast down = rayFrom(x, 100.0f, 0.0f, 0.0f, -1.0f, 0.0f, 200.0f);
+    if (!orblit_physics_cast(physics, &down, &hit)) return OrblitPhysicsId{0};
+    if (distance != nullptr) *distance = hit.distance;
+    return hit.body;
+  };
+  const auto fixedCrate = [physics](OrblitPhysicsId id, float x) {
+    OrblitPhysicsCommand crate = boxAt(id, 0.5f, x, 5.0f, 0.0f);
+    crate.motion = ORBLIT_PHYSICS_STATIC;
+    submit(physics, crate);
+  };
+
+  check(below(0.0f) == 1, "a ray down meets the ground");
+  fixedCrate(2, 0.0f);
+  check(below(0.0f) == 2, "a fixed body added after a cast is met by the next one");
+
+  OrblitPhysicsCommand move{};
+  move.kind = ORBLIT_PHYSICS_PLACE;
+  move.id = 2;
+  move.at[0] = 5.0f;
+  move.at[1] = 5.0f;
+  move.rotation[3] = 1.0f;
+  submit(physics, move);
+  check(below(0.0f) == 1, "and is not met where it was once it has been placed elsewhere");
+  check(below(5.0f) == 2, "but is met where it is");
+
+  // Rows 2 to 5. Taking out the first of them moves the last into its place,
+  // and the last is a fixed body the tree has named by row.
+  fixedCrate(3, 10.0f);
+  fixedCrate(4, 15.0f);
+  submit(physics, sphereAt(5, 0.5f, 20.0f, 50.0f, 0.0f));
+  fixedCrate(6, 25.0f);
+  check(below(10.0f) == 3 && below(15.0f) == 4 && below(25.0f) == 6,
+        "three more fixed bodies are met");
+
+  destroyBody(physics, 3);
+  check(below(10.0f) == 1, "one that is destroyed is not");
+  check(below(15.0f) == 4 && below(25.0f) == 6,
+        "and the others are still found, though the last of them changed row");
+
+  // A free body goes while a fixed one is last. The fixed one takes its row,
+  // and a body made afterwards takes the row the fixed one had.
+  submit(physics, sphereAt(7, 0.5f, 30.0f, 50.0f, 0.0f));
+  fixedCrate(8, 35.0f);
+  check(below(35.0f) == 8, "a fixed body is met after a free one");
+  destroyBody(physics, 7);
+  submit(physics, sphereAt(9, 0.5f, 60.0f, 50.0f, 0.0f));
+  check(below(35.0f) == 8, "and still, when a free body ahead of it is destroyed");
+
+  // A body that is free is not in the tree, and one that is made fixed has to
+  // be. Both before anything has stepped, so the sphere is where it was made.
+  float distance = 0.0f;
+  switchTo(physics, 5, ORBLIT_PHYSICS_STATIC);
+  check(below(20.0f, &distance) == 5 && near(distance, 49.5f, 0.01f),
+        "a body made fixed is found where it stands");
+  switchTo(physics, 4, ORBLIT_PHYSICS_DYNAMIC);
+  run(physics, 3.0f);
+  check(below(15.0f, &distance) == 4 && near(distance, 99.0f, 0.05f),
+        "and one made free is found where it fell to");
+
+  orblit_physics_destroy(physics);
+
+  // Against a count made by hand: a query finds the boxes whose bounds it
+  // meets, fixed or not, and no others.
+  OrblitPhysics *field = orblit_physics_create(nullptr);
+  std::mt19937 dice(5);
+  std::uniform_real_distribution<float> across(-30.0f, 30.0f);
+  std::vector<std::array<float, 2>> placed;
+  for (OrblitPhysicsId id = 1; id <= 400; ++id) {
+    const float x = across(dice);
+    const float z = across(dice);
+    placed.push_back({x, z});
+    OrblitPhysicsCommand box = boxAt(id, 0.5f, x, 0.5f, z);
+    if (id % 4 != 0) box.motion = ORBLIT_PHYSICS_STATIC;
+    submit(field, box);
+  }
+
+  int judged = 0;
+  int wrong = 0;
+  for (int query = 0; query < 200; ++query) {
+    const float x = across(dice);
+    const float z = across(dice);
+    constexpr float kReach = 2.5f;
+    std::vector<OrblitPhysicsId> expected;
+    bool close = false;
+    for (size_t i = 0; i < placed.size(); ++i) {
+      const float gapX = std::fabs(placed[i][0] - x) - kReach;
+      const float gapZ = std::fabs(placed[i][1] - z) - kReach;
+      // Only a box that is a hair from the edge of the query on one axis and
+      // inside it on the other could be judged either way by rounding.
+      if ((std::fabs(gapX) < 0.01f && gapZ < 0.01f) ||
+          (std::fabs(gapZ) < 0.01f && gapX < 0.01f)) {
+        close = true;
+      }
+      if (gapX < 0.0f && gapZ < 0.0f) expected.push_back(static_cast<OrblitPhysicsId>(i + 1));
+    }
+    if (close) continue;
+
+    OrblitPhysicsCast box = pointAt(x, 0.5f, z);
+    box.shape = ORBLIT_PHYSICS_BOX;
+    box.size[0] = 2.0f;
+    box.size[1] = 2.0f;
+    box.size[2] = 2.0f;
+    std::vector<OrblitPhysicsId> found = overlapping(field, box, 64);
+    std::sort(found.begin(), found.end());
+    ++judged;
+    if (found != expected) ++wrong;
+  }
+  check(judged > 150, "enough boxes were asked about to mean something");
+  check(wrong == 0, "a box query finds exactly the bodies it overlaps, fixed or free");
+  orblit_physics_destroy(field);
+
+  // Resting on a fixed body among a great many that are far off.
+  OrblitPhysics *level = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand step = boxAt(1, 0.5f, 0.0f, 0.5f, 0.0f);
+  step.motion = ORBLIT_PHYSICS_STATIC;
+  submit(level, step);
+  std::uniform_real_distribution<float> far(10.0f, 60.0f);
+  for (OrblitPhysicsId id = 2; id <= 300; ++id) {
+    OrblitPhysicsCommand other = boxAt(id, 0.5f, far(dice), 0.5f, far(dice));
+    other.motion = ORBLIT_PHYSICS_STATIC;
+    submit(level, other);
+  }
+  submit(level, sphereAt(400, 0.5f, 0.0f, 4.0f, 0.0f));
+  run(level, 3.0f);
+  check(near(heightOf(level, 400), 1.5f, 0.03f),
+        "a ball dropped among hundreds of fixed boxes rests on the one under it");
+  check(orblit_physics_asleep(level, 400), "and goes to sleep there");
+  orblit_physics_destroy(level);
+}
+
+// --- islands -------------------------------------------------------------- //
+
+/// How many of the bodies from `first` to `last` are awake.
+int awakeAmong(OrblitPhysics *physics, OrblitPhysicsId first, OrblitPhysicsId last) {
+  int awake = 0;
+  for (OrblitPhysicsId id = first; id <= last; ++id) {
+    if (!orblit_physics_asleep(physics, id)) awake++;
+  }
+  return awake;
+}
+
+/// `high` unit boxes standing one on another at `x`, with ids from `first`.
+void stackAt(OrblitPhysics *physics, OrblitPhysicsId first, float x, int high) {
+  for (int i = 0; i < high; ++i) {
+    submit(physics, boxAt(first + static_cast<OrblitPhysicsId>(i), 0.5f, x,
+                          0.5f + static_cast<float>(i), 0.0f));
+  }
+}
+
+/// A world with one stack of `high` boxes, ids 2 up, stepped until all of it
+/// is asleep.
+OrblitPhysics *sleepingStack(int high) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  stackAt(physics, 2, 0.0f, high);
+  const OrblitPhysicsId top = static_cast<OrblitPhysicsId>(1 + high);
+  for (int i = 0; i < 1800 && awakeAmong(physics, 2, top) > 0; ++i) step(physics);
+  return physics;
+}
+
+/// The touch events `steps` steps report, as began plus ended.
+int touchesIn(OrblitPhysics *physics, int steps) {
+  int touches = 0;
+  for (int i = 0; i < steps; ++i) {
+    step(physics);
+    touches += eventsOf(physics, ORBLIT_PHYSICS_TOUCH_BEGAN) +
+               eventsOf(physics, ORBLIT_PHYSICS_TOUCH_ENDED);
+  }
+  return touches;
+}
+
+void wakeBody(OrblitPhysics *physics, OrblitPhysicsId id) {
+  OrblitPhysicsCommand wake{};
+  wake.kind = ORBLIT_PHYSICS_WAKE;
+  wake.id = id;
+  submit(physics, wake);
+}
+
+// What touches a sleeping stack is the island's to remember, so that a stack
+// sleeps whole, wakes whole, and is never reported as having come apart.
+void sleepingIslands() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  stackAt(physics, 2, 0.0f, 5);
+
+  int together = 0;
+  int apart = 0;
+  int ended = 0;
+  for (int i = 0; i < 1800 && awakeAmong(physics, 2, 6) > 0; ++i) {
+    step(physics);
+    const int slept = eventsOf(physics, ORBLIT_PHYSICS_SLEPT);
+    if (slept == 5) together++;
+    if (slept > 0 && slept < 5) apart++;
+    ended += eventsOf(physics, ORBLIT_PHYSICS_TOUCH_ENDED);
+  }
+  check(together == 1 && apart == 0,
+        "a stack of five falls asleep all at once, not a box at a time");
+  check(ended == 0, "and no pair of it is reported as ended while it settles");
+  check(touchesIn(physics, 120) == 0 && awakeAmong(physics, 2, 6) == 0,
+        "and a pair that went to sleep is not reported as ended or begun");
+
+  wakeBody(physics, 6);
+  check(awakeAmong(physics, 2, 6) == 5, "waking the top wakes all of the stack");
+  check(touchesIn(physics, 3) == 0,
+        "and the stack is not reported as touching afresh");
+  orblit_physics_destroy(physics);
+
+  physics = sleepingStack(5);
+  submit(physics, sphereAt(20, 0.25f, 0.0f, 7.0f, 0.0f));
+  int landed = -1;
+  for (int i = 0; i < 120 && landed < 0; ++i) {
+    step(physics);
+    if (eventsOf(physics, ORBLIT_PHYSICS_TOUCH_BEGAN) > 0) landed = i;
+  }
+  check(landed >= 0 && awakeAmong(physics, 2, 6) == 5,
+        "a ball landing on the top wakes the whole stack in that step");
+  orblit_physics_destroy(physics);
+}
+
+void separateIslands() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  stackAt(physics, 2, 0.0f, 3);
+  stackAt(physics, 12, 5.0f, 3);
+  const auto awakeCount = [physics]() {
+    return awakeAmong(physics, 2, 4) + awakeAmong(physics, 12, 14);
+  };
+  for (int i = 0; i < 1800 && awakeCount() > 0; ++i) step(physics);
+  check(awakeCount() == 0, "two stacks that touch nothing both sleep");
+
+  wakeBody(physics, 4);
+  check(awakeAmong(physics, 2, 4) == 3 && awakeAmong(physics, 12, 14) == 0,
+        "and waking one leaves the other asleep");
+  orblit_physics_destroy(physics);
+}
+
+void restoringIslands() {
+  OrblitPhysics *physics = sleepingStack(5);
+  OrblitPhysicsSnapshot *asleep = orblit_physics_snapshot(physics);
+
+  submit(physics, sphereAt(20, 0.25f, 0.0f, 7.0f, 0.0f));
+  run(physics, 1.0f);
+  const bool woken = awakeAmong(physics, 2, 6) > 0;
+  orblit_physics_restore(physics, asleep);
+  check(woken && awakeAmong(physics, 2, 6) == 0,
+        "a stack restored from a snapshot taken asleep is asleep");
+  check(touchesIn(physics, 60) == 0 && awakeAmong(physics, 2, 6) == 0,
+        "and stays asleep without reporting anything");
+
+  wakeBody(physics, 6);
+  check(awakeAmong(physics, 2, 6) == 5 && touchesIn(physics, 3) == 0,
+        "and wakes whole, still touching, when it is disturbed");
+  orblit_physics_snapshot_destroy(asleep);
+  orblit_physics_destroy(physics);
+
+  // A snapshot from before the stack slept holds no island, and restoring it
+  // must not leave one behind from the sleep that came after.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  stackAt(physics, 2, 0.0f, 5);
+  run(physics, 0.2f);
+  OrblitPhysicsSnapshot *awake = orblit_physics_snapshot(physics);
+  for (int i = 0; i < 1800 && awakeAmong(physics, 2, 6) > 0; ++i) step(physics);
+  const bool slept = awakeAmong(physics, 2, 6) == 0;
+  orblit_physics_restore(physics, awake);
+  check(slept && awakeAmong(physics, 2, 6) == 5,
+        "a stack restored from a snapshot taken awake is awake");
+  int together = 0;
+  for (int i = 0; i < 1800 && awakeAmong(physics, 2, 6) > 0; ++i) {
+    step(physics);
+    if (eventsOf(physics, ORBLIT_PHYSICS_SLEPT) == 5) together++;
+  }
+  check(together == 1, "and falls asleep whole again");
+  orblit_physics_snapshot_destroy(awake);
+  orblit_physics_destroy(physics);
+}
+
+void breakingIslands() {
+  OrblitPhysics *physics = sleepingStack(5);
+  OrblitPhysicsCommand destroy{};
+  destroy.kind = ORBLIT_PHYSICS_DESTROY;
+  destroy.id = 4;
+  submit(physics, destroy);
+
+  check(touchesIn(physics, 3) == 2, "destroying one box ends its two pairs and no others");
+  check(awakeAmong(physics, 2, 3) == 0 && awakeAmong(physics, 5, 6) == 0,
+        "and wakes nothing it was only touching");
+
+  wakeBody(physics, 6);
+  check(awakeAmong(physics, 5, 6) == 2, "waking the top wakes what is left of its stack");
+  run(physics, 2.0f);
+  check(near(heightOf(physics, 5), 2.5f, 0.06f) && near(heightOf(physics, 3), 1.5f, 0.06f),
+        "and the box above the gap falls onto the one below it");
+  orblit_physics_destroy(physics);
+}
+
+// Two faces that meet a hair out of true cross at points anywhere along their
+// edges. The four points held have to stay at the corners however the faces
+// are turned, or a stack loses the impulses holding it up every time they
+// change.
+void keepingCorners() {
+  struct Lean {
+    float shift;
+    float yaw;
+  };
+  const Lean leans[] = {{0.0f, 0.01f}, {0.002f, 0.01f}, {0.005f, 0.02f},
+                        {0.01f, -0.015f}, {-0.004f, 0.01f}};
+
+  float worst = 0.0f;
+  bool fourEach = true;
+  for (const Lean &lean : leans) {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    OrblitPhysicsCommand below = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+    below.motion = ORBLIT_PHYSICS_STATIC;
+    below.rotation[3] = 1.0f;
+    OrblitPhysicsCommand above = boxAt(2, 0.5f, lean.shift, 0.99f, 0.003f);
+    above.rotation[1] = std::sin(lean.yaw * 0.5f);
+    above.rotation[3] = std::cos(lean.yaw * 0.5f);
+    submit(physics, below);
+    submit(physics, above);
+    step(physics);
+
+    OrblitPhysicsContact found[16];
+    const uint32_t count = orblit_physics_contacts(physics, found, 16);
+    fourEach = fourEach && count == 4;
+    for (uint32_t i = 0; i < count; ++i) {
+      // How far this point is from the nearest corner of the face under it.
+      const float x = std::fabs(found[i].at[0]);
+      const float z = std::fabs(found[i].at[2]);
+      worst = std::fmax(worst, std::hypot(x - 0.5f, z - 0.5f));
+    }
+    orblit_physics_destroy(physics);
+  }
+  check(fourEach, "a box on a slightly turned box is held at four points");
+  check(worst < 0.05f, "and they are its corners, wherever the two edges cross");
+}
+
+// --- speculative contacts ------------------------------------------------- //
+
+/// A world holding one body that is coming at ground or a wall, and nothing
+/// else. The body is `moving`, and `drive` sets its velocity.
+OrblitPhysics *approaching(const OrblitPhysicsCommand &moving, float vx, float vy,
+                           float vz) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, moving);
+  drive(physics, moving.id, vx, vy, vz, 0.0f);
+  return physics;
+}
+
+// Two surfaces a hair apart and closing are held apart by the solver, not let
+// through and pushed back out.
+void speculating() {
+  {
+    // 1.5 cm over the ground at 3 m/s would be 3.5 cm into it a step later.
+    // It is let in at most a quarter of the slop, which is 5 mm, and the
+    // spring has pushed it part of the way back out by the end of the step.
+    // It is still in the ground, so the contact is held.
+    OrblitPhysics *physics =
+        approaching(sphereAt(2, 0.5f, 0.0f, 0.515f, 0.0f), 0.0f, -3.0f, 0.0f);
+    step(physics);
+    check(heightOf(physics, 2) > 0.4945f,
+          "a ball closing on the ground from 1.5 cm lands 5 mm into it at most and not 3.5 cm");
+    check(heightOf(physics, 2) < 0.4995f, "and not before it is in at all");
+    check(eventsOf(physics, ORBLIT_PHYSICS_TOUCH_BEGAN) == 1,
+          "it is touching from the step the solver holds it");
+    const Listed listed = listContacts(physics);
+    check(listed.total == 1 && near(listed.points[0].depth, -0.015f, 0.001f),
+          "and the contact says how far apart it was");
+    check(impulseOf(listed, 1, 2) > 0.0f, "and what it was stopped with");
+    check(listed.total > 0 && near(listed.points[0].at[1], 0.0075f, 0.002f),
+          "and sits midway across the gap");
+    orblit_physics_destroy(physics);
+  }
+  {
+    OrblitPhysics *physics =
+        approaching(sphereAt(2, 0.5f, 0.0f, 0.55f, 0.0f), 0.0f, 0.0f, 0.0f);
+    step(physics);
+    check(eventsOf(physics, ORBLIT_PHYSICS_TOUCH_BEGAN) == 0 &&
+              listContacts(physics).total == 0,
+          "a ball 5 cm over the ground is not touching it");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // Face to face, so a stop at one corner would turn it. Without gravity,
+    // because a box falling past a wall it hits is turned by the wall's
+    // friction, and that is the contact doing its job.
+    OrblitPhysics *physics = spaceWorld();
+    OrblitPhysicsCommand wall = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+    wall.motion = ORBLIT_PHYSICS_STATIC;
+    submit(physics, wall);
+    submit(physics, boxAt(2, 0.5f, 1.01f, 0.0f, 0.0f));
+    drive(physics, 2, -4.0f, 0.0f, 0.0f, 0.0f);
+    step(physics);
+    float transform[7] = {0};
+    orblit_physics_transform(physics, 2, transform);
+    check(transform[0] > 0.9945f && transform[0] < 0.9995f,
+          "a box closing on a wall from 1 cm stops 5 mm into it at most");
+    float motion[6] = {0};
+    orblit_physics_velocity(physics, 2, motion);
+    check(std::fabs(motion[3]) + std::fabs(motion[4]) + std::fabs(motion[5]) < 0.01f,
+          "and is not turned by being stopped");
+    const Listed listed = listContacts(physics);
+    check(listed.total == 4, "all four corners of its face held it");
+    check(listed.total > 0 && near(listed.points[0].depth, -0.01f, 0.001f),
+          "and each says how far apart it was, with both boxes rounded");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // A corner swinging in is closing on the wall though the centre is not
+    // moving.
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    OrblitPhysicsCommand wall = boxAt(1, 0.5f, 0.0f, 0.0f, 0.0f);
+    wall.motion = ORBLIT_PHYSICS_STATIC;
+    submit(physics, wall);
+    OrblitPhysicsCommand spinner = boxAt(2, 0.5f, 1.05f, 0.0f, 0.0f);
+    submit(physics, spinner);
+    drive(physics, 2, 0.0f, 0.0f, 0.0f, 20.0f);
+    step(physics);
+    float motion[6] = {0};
+    orblit_physics_velocity(physics, 2, motion);
+    check(std::fabs(motion[4]) < 15.0f,
+          "a box spinning a corner into a wall is slowed before it gets there");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // 1 m/s is under 2 cm a step, which the exact contact catches the step
+    // after. A point held for it would cost every resting pair a second one.
+    OrblitPhysics *physics =
+        approaching(sphereAt(2, 0.5f, 0.0f, 0.515f, 0.0f), 0.0f, -1.0f, 0.0f);
+    step(physics);
+    check(listContacts(physics).total == 0,
+          "a ball closing slowly is not held by a point until it touches");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // A sleeper is not in the solver, so the body that reaches it has to be
+    // stopped by the contact that wakes it, and not sunk 9 cm into it first.
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, groundPlane(1));
+    submit(physics, sphereAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+    run(physics, 3.0f);
+    const bool slept = orblit_physics_asleep(physics, 2);
+    submit(physics, sphereAt(3, 0.5f, 1.011f, 0.5f, 0.0f));
+    drive(physics, 3, -10.0f, 0.0f, 0.0f, 0.0f);
+    step(physics);
+    float hitter[7] = {0};
+    float struck[7] = {0};
+    orblit_physics_transform(physics, 3, hitter);
+    orblit_physics_transform(physics, 2, struck);
+    check(slept && hitter[0] - struck[0] > 0.99f,
+          "a ball at 10 m/s reaching a sleeper is stopped at it and not 9 cm in");
+    check(!orblit_physics_asleep(physics, 2), "and it wakes the sleeper");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // Moving at 4 m/s along the ground and 4 m/s down, it is held 9.4 cm off
+    // the surface at its speed, and 8 cm up. Straight down it gets 6.7 cm in
+    // a step, so it does not reach the ground this step.
+    OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.58f, 0.0f);
+    ball.restitution = 0.8f;
+    OrblitPhysics *physics = approaching(ball, 4.0f, -4.0f, 0.0f);
+    step(physics);
+    float motion[6] = {0};
+    orblit_physics_velocity(physics, 2, motion);
+    check(motion[1] < -1.0f,
+          "a bounce is not taken before the ball has reached the surface");
+    orblit_physics_destroy(physics);
+  }
+  {
+    OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 1.5f, 0.0f);
+    ball.restitution = 0.5f;
+    OrblitPhysics *physics = approaching(ball, 0.0f, 0.0f, 0.0f);
+    float rebound = 0.0f;
+    float lowest = 1.0f;
+    for (int i = 0; i < 90; ++i) {
+      step(physics);
+      float motion[6] = {0};
+      orblit_physics_velocity(physics, 2, motion);
+      rebound = std::fmax(rebound, motion[1]);
+      lowest = std::fmin(lowest, heightOf(physics, 2));
+    }
+    // Falls 1 m, so 4.43 m/s at the ground, and half of it back.
+    check(near(rebound, 2.2f, 0.25f), "a ball dropped 1 m with 0.5 bounces back at half the speed");
+    check(lowest > 0.5f - 0.03f, "and is never far into the ground");
+    orblit_physics_destroy(physics);
+  }
+}
+
+void layField(OrblitPhysics *physics) { lay(physics, 1, flat); }
+
+void layMesh(OrblitPhysics *physics) {
+  const float points[] = {-4, 0, -4, 4, 0, -4, 4, 0, 4, -4, 0, 4};
+  const uint32_t indices[] = {0, 2, 1, 0, 3, 2};
+  orblit_physics_mesh(physics, 7, points, 4, indices, 6);
+  OrblitPhysicsCommand floor = groundPlane(1);
+  floor.shape = ORBLIT_PHYSICS_MESH;
+  floor.hull = 7;
+  floor.size[1] = 0.0f;
+  submit(physics, floor);
+}
+
+/// How much lower than `rest` the centre of body `id` gets in 1.5 s of falling
+/// in `physics`. Zero for one that never goes below it. Destroys the world.
+float sunkBelow(OrblitPhysics *physics, OrblitPhysicsId id, float rest) {
+  float lowest = 10.0f;
+  for (int i = 0; i < 90; ++i) {
+    step(physics);
+    lowest = std::fmin(lowest, heightOf(physics, id));
+  }
+  orblit_physics_destroy(physics);
+  return std::fmax(rest - lowest, 0.0f);
+}
+
+/// A world with `ground` laid and `body` dropped onto it.
+OrblitPhysics *droppedOn(void (*ground)(OrblitPhysics *),
+                         const OrblitPhysicsCommand &body) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  ground(physics);
+  submit(physics, body);
+  return physics;
+}
+
+// Ground that is fast approached has a gap to be held across, as a plane has.
+// Without one the body is in before anything holds it, and the soft contact
+// takes its time to push it out.
+void speculatingOnTerrain() {
+  const struct {
+    void (*ground)(OrblitPhysics *);
+    const char *ball;
+    const char *box;
+  } grounds[] = {
+      {layField, "a ball dropped 1 m onto a height field sinks 1 cm at most",
+       "and so does a box"},
+      {layMesh, "a ball dropped 1 m onto a mesh sinks 1 cm at most",
+       "and so does a box on a mesh"},
+  };
+  for (const auto &made : grounds) {
+    // About 4.4 m/s at the ground, 7 cm a step.
+    OrblitPhysics *ball = droppedOn(made.ground, sphereAt(2, 0.2f, 0.0f, 1.2f, 0.0f));
+    check(sunkBelow(ball, 2, 0.2f) < 0.01f, made.ball);
+    OrblitPhysics *box = droppedOn(made.ground, boxAt(2, 0.25f, 0.0f, 1.25f, 0.0f));
+    check(sunkBelow(box, 2, 0.25f) < 0.01f, made.box);
+  }
+  {
+    // Two boxes a metre apart, which is a compound with nothing of its own to
+    // be held off the ground by.
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, groundPlane(1));
+    OrblitPhysicsPart parts[2]{};
+    for (int i = 0; i < 2; ++i) {
+      parts[i].shape = ORBLIT_PHYSICS_BOX;
+      parts[i].size[0] = parts[i].size[1] = parts[i].size[2] = 0.25f;
+      parts[i].at[0] = i == 0 ? -0.5f : 0.5f;
+      parts[i].linear[0] = parts[i].linear[4] = parts[i].linear[8] = 1.0f;
+    }
+    check(orblit_physics_compound(physics, 7, parts, 2), "a compound is laid");
+    OrblitPhysicsCommand body = boxAt(2, 0.25f, 0.0f, 1.25f, 0.0f);
+    body.shape = ORBLIT_PHYSICS_COMPOUND;
+    body.hull = 7;
+    submit(physics, body);
+    check(sunkBelow(physics, 2, 0.25f) < 0.01f,
+          "a compound dropped 1 m onto a plane sinks 1 cm at most");
+  }
+  {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    layField(physics);
+    submit(physics, sphereAt(2, 0.5f, 0.0f, 0.515f, 0.0f));
+    drive(physics, 2, 0.0f, -3.0f, 0.0f, 0.0f);
+    step(physics);
+    check(heightOf(physics, 2) > 0.4945f && heightOf(physics, 2) < 0.4995f,
+          "a ball closing on a height field from 1.5 cm lands 5 mm into it at most");
+    orblit_physics_destroy(physics);
+  }
+}
+
+// --- bounces at the surface, and continuous bodies ------------------------ //
+
+float xOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float transform[7] = {0};
+  orblit_physics_transform(physics, id, transform);
+  return transform[0];
+}
+
+float velocityAlongX(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, id, motion);
+  return motion[0];
+}
+
+// A ball that bounces turns round at the surface. One that is still apart at
+// the start of the step has to get there first, whatever its speed.
+void rebounding() {
+  struct Case {
+    float speed;
+    float gap;
+    const char *reaches;
+    const char *leaves;
+  };
+  const Case cases[] = {
+      {3.5f, 0.04f, "a ball at 3.5 m/s bouncing off a wall 4 cm away gets to it first",
+       "and leaves it at 0.6 of the speed it met it at"},
+      {20.0f, 0.3f, "a ball at 20 m/s bouncing off a wall 30 cm away gets to it first",
+       "and leaves it at 0.6 of the speed it met it at, which is not capped away"},
+  };
+  for (const Case &it : cases) {
+    OrblitPhysics *physics = spaceWorld();
+    submit(physics, slabAt(1, 0.5f, 5.0f, 5.0f, 0.0f, 0.0f, 0.0f));
+    OrblitPhysicsCommand ball = sphereAt(2, 0.1f, 0.6f + it.gap, 0.0f, 0.0f);
+    ball.restitution = 0.6f;
+    submit(physics, ball);
+    drive(physics, 2, -it.speed, 0.0f, 0.0f, 0.0f);
+    step(physics);
+    check(xOf(physics, 2) < 0.601f, it.reaches);
+    check(near(velocityAlongX(physics, 2), 0.6f * it.speed, 0.05f * it.speed),
+          it.leaves);
+    orblit_physics_destroy(physics);
+  }
+  {
+    // Driven at 8 m/s with a cap of 5. The cap holds it before it lands, but
+    // the bounce is worked out from the speed it was driven at, so it comes
+    // back faster than the cap and has to be held to it again.
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, groundPlane(1));
+    OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.55f, 0.0f);
+    ball.restitution = 1.0f;
+    submit(physics, ball);
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.maxSpeed = 5.0f;
+    control(physics, controls);
+    drive(physics, 2, 0.0f, -8.0f, 0.0f, 0.0f);
+    step(physics);
+    check(speedOf(physics, 2) > 4.5f && speedOf(physics, 2) < 5.001f,
+          "a bounce is held to the speed cap like any other speed");
+    orblit_physics_destroy(physics);
+  }
+}
+
+/// One small ball thrown at a thin slab, and what that was thrown with.
+struct Throw {
+  float from = 0.3f;
+  float speed = 2.9f;
+  bool continuous = false;
+  bool kinematic = false;
+  bool sensor = false;
+  bool ignored = false;
+  uint32_t cares = 0xFFFFFFFFu;
+  int steps = 40;
+};
+
+/// The lowest x the ball reaches in `shot.steps` steps, with the slab 1 cm
+/// thick across x = 0 and the ball 2 cm across. Stopped by the slab it stays
+/// at 1 cm or so, and through it it goes to about -1.6 in the default 40.
+float thrownAtSlab(const Throw &shot) {
+  OrblitPhysics *physics = spaceWorld();
+  OrblitPhysicsCommand slab = slabAt(1, 0.005f, 2.0f, 2.0f, 0.0f, 0.0f, 0.0f);
+  slab.sensor = shot.sensor;
+  // A pair interacts when either cares, so both are told not to.
+  slab.layerCares = shot.cares;
+  submit(physics, slab);
+  OrblitPhysicsCommand ball = sphereAt(2, 0.01f, shot.from, 0.0f, 0.0f);
+  ball.layerCares = shot.cares;
+  if (shot.kinematic) ball.motion = ORBLIT_PHYSICS_KINEMATIC;
+  submit(physics, ball);
+  if (shot.ignored) {
+    const OrblitPhysicsRule pass = ruleFor(1, 2, ORBLIT_PHYSICS_RULE_IGNORE);
+    orblit_physics_rule(physics, &pass);
+  }
+  if (shot.continuous) {
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.continuous = true;
+    control(physics, controls);
+  }
+  drive(physics, 2, -shot.speed, 0.0f, 0.0f, 0.0f);
+  float lowest = shot.from;
+  for (int i = 0; i < shot.steps; ++i) {
+    step(physics);
+    lowest = std::fmin(lowest, xOf(physics, 2));
+  }
+  orblit_physics_destroy(physics);
+  return lowest;
+}
+
+/// How many of twelve throws, each a different part of a step from the slab,
+/// went through it.
+int crossings(Throw shot) {
+  int crossed = 0;
+  for (int i = 0; i < 12; ++i) {
+    shot.from = 0.3f + 0.004f * static_cast<float>(i);
+    if (thrownAtSlab(shot) < -0.02f) crossed++;
+  }
+  return crossed;
+}
+
+/// A ball rolled along a floor for a second, and how far it got.
+float rolledAlong(bool continuous, bool boxFloor) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, boxFloor ? slabAt(1, 20.0f, 0.5f, 20.0f, 0.0f, -0.5f, 0.0f)
+                           : groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, 0.5f, 0.0f));
+  if (continuous) {
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.continuous = true;
+    control(physics, controls);
+  }
+  drive(physics, 2, 3.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 1.0f);
+  const float reached = xOf(physics, 2);
+  orblit_physics_destroy(physics);
+  return reached;
+}
+
+// A small thing at a walking pace is under the speed speculative contacts
+// start at, and passes through anything thinner than it moves in a step. A
+// body marked continuous is stopped at the first fixed body it would pass.
+void continuing() {
+  const Throw plain;
+  Throw named;
+  named.continuous = true;
+
+  check(crossings(plain) > 0,
+        "a 2 cm ball at 2.9 m/s goes through a 1 cm slab from some part of a step");
+  check(crossings(named) == 0,
+        "marked continuous it goes through from none of them");
+
+  Throw sensed = named;
+  sensed.sensor = true;
+  check(crossings(sensed) == 12, "a continuous ball is not stopped by a sensor");
+  Throw blind = named;
+  blind.cares = 0x2u;
+  check(crossings(blind) == 12,
+        "or by a layer it does not collide with");
+  Throw passing = named;
+  passing.ignored = true;
+  check(crossings(passing) == 12, "or by a body it has been told to ignore");
+  Throw driven = named;
+  driven.kinematic = true;
+  check(crossings(driven) == 12, "and a driven body is left to the one driving it");
+
+  // A body that was stopped for one step and let go after would still cross
+  // in forty, so the first step is looked at alone: from 2 cm away it is past
+  // the face by then if it was let by, and at it if it was held.
+  const auto pastInOneStep = [](Throw shot) {
+    shot.from = 0.035f;
+    shot.steps = 1;
+    return thrownAtSlab(shot) < 0.0f;
+  };
+  check(pastInOneStep(sensed) && pastInOneStep(blind),
+        "none of those is held at the slab for even a step, a sensor or a layer");
+  check(pastInOneStep(passing), "an ignored body is not held for a step either");
+  check(pastInOneStep(driven), "nor a driven one");
+
+  {
+    // 2 cm from the face at 2.9 m/s, 4.8 cm a step: it would end 1.3 cm past
+    // the middle of the slab, and be pushed out the far side.
+    OrblitPhysics *physics = spaceWorld();
+    submit(physics, slabAt(1, 0.005f, 2.0f, 2.0f, 0.0f, 0.0f, 0.0f));
+    OrblitPhysicsCommand ball = sphereAt(2, 0.01f, 0.035f, 0.0f, 0.0f);
+    ball.restitution = 0.6f;
+    submit(physics, ball);
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.continuous = true;
+    control(physics, controls);
+    drive(physics, 2, -2.9f, 0.0f, 0.0f, 0.0f);
+    step(physics);
+    check(near(xOf(physics, 2), 0.0145f, 0.0003f),
+          "a continuous ball is stopped half a millimetre into what it hit");
+    check(velocityAlongX(physics, 2) < -2.5f,
+          "with the speed it had, for the contact to take");
+    float lowest = 1.0f;
+    for (int i = 0; i < 20; ++i) {
+      step(physics);
+      lowest = std::fmin(lowest, xOf(physics, 2));
+    }
+    check(lowest > 0.0135f, "and it stays on that side");
+    check(velocityAlongX(physics, 2) > 1.0f,
+          "bouncing at 0.6 of the speed it arrived at");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // Slow enough that nothing is held for it, and so nothing but the cast
+    // acts on it. The slab is 1 cm away and the step 2.5 cm long, so it is cut
+    // at 0.42 of the step and has turned 0.42 of the 0.33 rad it would have,
+    // and not swung into the slab with all of it.
+    OrblitPhysics *physics = spaceWorld();
+    submit(physics, slabAt(1, 0.005f, 2.0f, 2.0f, 0.0f, 0.0f, 0.0f));
+    submit(physics, boxAt(2, 0.01f, 0.025f, 0.0f, 0.0f));
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.continuous = true;
+    control(physics, controls);
+    drive(physics, 2, -1.5f, 0.0f, 0.0f, 20.0f);
+    step(physics);
+    check(turnOf(physics, 2) > 0.1f && turnOf(physics, 2) < 0.2f,
+          "a box stopped part way through a step has turned part of the way");
+    orblit_physics_destroy(physics);
+  }
+  {
+    // A body that is already touching what it moves along is not stopped by it.
+    check(near(rolledAlong(true, false), rolledAlong(false, false), 0.01f),
+          "a continuous ball rolls along the ground as a plain one does");
+    check(near(rolledAlong(true, true), rolledAlong(false, true), 0.01f),
+          "and along a box");
+    check(rolledAlong(true, false) > 1.5f, "and gets somewhere");
+  }
+  {
+    // A small ball at rest by a thin slab, hit by a heavy one in the step. The
+    // small ball was not moving when the step began, so nothing was held for
+    // it, and it is thrown through the slab at the speed it is hit with.
+    int through = 0;
+    int stopped = 0;
+    for (int named = 0; named < 2; ++named) {
+      OrblitPhysics *physics = spaceWorld();
+      submit(physics, slabAt(1, 0.005f, 2.0f, 2.0f, 0.0f, 0.0f, 0.0f));
+      submit(physics, sphereAt(2, 0.01f, 0.04f, 0.0f, 0.0f));
+      OrblitPhysicsCommand heavy = sphereAt(3, 0.1f, 0.151f, 0.0f, 0.0f);
+      heavy.mass = 20.0f;
+      submit(physics, heavy);
+      if (named == 1) {
+        OrblitPhysicsControls controls = controlsOf(2);
+        controls.continuous = true;
+        control(physics, controls);
+      }
+      drive(physics, 3, -30.0f, 0.0f, 0.0f, 0.0f);
+      for (int i = 0; i < 10; ++i) step(physics);
+      if (xOf(physics, 2) < -0.02f) through++;
+      else stopped++;
+      orblit_physics_destroy(physics);
+    }
+    check(through == 1 && stopped == 1,
+          "a small ball knocked at a slab in the step goes through unless continuous");
+  }
+}
+
+// A body spawned or teleported into the ground is pushed out. Fast enough, the
+// push is a shove that throws it. Overshooting, it hops. Read as still, it is
+// put to sleep half way up.
+void climbingOut() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, sphereAt(2, 0.5f, 0.0f, -1.5f, 0.0f));
+
+  float last = heightOf(physics, 2);
+  float fastest = 0.0f;
+  float highest = last;
+  bool sleptInside = false;
+  for (int i = 0; i < 240; ++i) {
+    step(physics);
+    const float height = heightOf(physics, 2);
+    fastest = std::fmax(fastest, (height - last) * 60.0f);
+    highest = std::fmax(highest, height);
+    if (height < 0.49f && orblit_physics_asleep(physics, 2)) sleptInside = true;
+    last = height;
+  }
+  check(fastest < 3.5f, "a ball 2 m into the ground climbs out at 3 m/s at most");
+  check(!sleptInside, "and is not put to sleep on the way up");
+  check(highest < 0.505f, "and stops at the ground and does not hop off it");
+  check(near(heightOf(physics, 2), 0.5f, 0.005f) && orblit_physics_asleep(physics, 2),
+        "and comes to rest on it, asleep");
+  orblit_physics_destroy(physics);
+}
+
+// A soft contact that is slack at the surface leaks the load it carries, and a
+// stack sinks through that slack a contact at a time.
+void standingTall() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  stackAt(physics, 2, 0.0f, 10);
+  run(physics, 5.0f);
+  check(heightOf(physics, 11) > 9.48f, "a tower of ten boxes sags 2 cm at most");
+  check(awakeAmong(physics, 2, 11) == 0, "and is asleep");
+  orblit_physics_destroy(physics);
+}
+
+// The soft contact is tuned for 60 steps a second. At half that, a wall still
+// has to come to rest, which a contact stiffer than the step can follow does
+// not.
+void steppingSlowly() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  for (int row = 0; row < 10; ++row) {
+    for (int column = 0; column < 10; ++column) {
+      const OrblitPhysicsId id = static_cast<OrblitPhysicsId>(2 + row * 10 + column);
+      submit(physics, boxAt(id, 0.5f, static_cast<float>(column),
+                            0.5f + static_cast<float>(row), 0.0f));
+    }
+  }
+  for (int i = 0; i < 450 && awakeAmong(physics, 2, 101) > 0; ++i) {
+    orblit_physics_step(physics, 1.0f / 30.0f);
+  }
+  check(awakeAmong(physics, 2, 101) == 0,
+        "a wall of ten by ten boxes stepped at 30 a second falls asleep");
+  check(heightOf(physics, 101) > 9.4f, "and is still standing");
+  orblit_physics_destroy(physics);
+}
+
 int main() {
   compoundChecks();
   meshChecks();
@@ -4545,6 +5453,19 @@ int main() {
   castingConvex();
   snapshottingHulls();
   capsulesAgainstBoxes();
+  findingFixedBodies();
+  sleepingIslands();
+  separateIslands();
+  restoringIslands();
+  breakingIslands();
+  keepingCorners();
+  speculating();
+  speculatingOnTerrain();
+  rebounding();
+  continuing();
+  climbingOut();
+  standingTall();
+  steppingSlowly();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;

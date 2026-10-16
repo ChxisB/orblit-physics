@@ -1,25 +1,71 @@
 #include "solver.h"
 
+#include <algorithm>
+
 namespace orblit {
 namespace {
 
-/// The most one position pass will move a pair apart, in metres.
+/// The most speed a soft contact pushes two bodies apart with, in metres per
+/// second.
 ///
-/// Deep overlap happens — a body spawned inside a wall, a teleport — and
-/// without a ceiling the correction for it is a shove big enough to put the
-/// body somewhere else entirely. Capped, it takes a few frames to climb out,
-/// which looks like nothing at all.
-constexpr float kMaxPush = 0.2f;
+/// Deep overlap happens: a body spawned inside a wall, a teleport. Without a
+/// ceiling the push out of it is a shove big enough to put the body somewhere
+/// else entirely. Capped, it takes a few frames to climb out, which looks like
+/// nothing at all.
+constexpr float kMaxPush = 3.0f;
+
+/// How far into the slop a body that was stopped short of a surface comes to
+/// rest, as a fraction of it. Stopped exactly at the surface it would be on
+/// the edge of touching it, and the contact would come and go with the last
+/// digit of its height. A quarter in is well outside the rounding, and the
+/// push, which starts at the surface, takes it back out to where it holds.
+constexpr float kSettle = 0.25f;
+
+/// How much a contact's spring is damped, as a multiple of critical damping.
+/// Far past critical, so that a stack of springs settles without a beat
+/// running up and down it.
+constexpr float kDamping = 10.0f;
+
+/// The fastest a contact's spring may turn, as a share of the sub-step rate.
+/// A spring that is stiffer than the step can follow goes unstable. At a
+/// quarter, a wall stepped at 30 a second threw boxes off at 13 metres a
+/// second. At this share a wall of ten by ten settles there, and one of 25 by
+/// 20 still comes down. With the default settings it binds below about 55
+/// steps a second and is not reached at 60.
+constexpr float kMostOfRate = 0.15f;
+
+constexpr float kTwoPi = 6.28318530718f;
+
+/// How many times the points of one manifold are solved against each other
+/// before the bodies take the result. A face has four points that push on one
+/// another, and one sweep leaves the last of them over-corrected. Eight is
+/// where the residual stops changing what a box face does.
+constexpr uint32_t kBlockSweeps = 8;
+
+/// What a soft contact does to the impulse a pass would have made, and how
+/// fast it pushes out of an overlap, for a sub-step of length `h`.
+struct Softness {
+  float massScale;
+  float impulseScale;
+  float pushRate;
+};
+
+Softness softnessFor(float h, float hertz) {
+  const float omega = kTwoPi * std::fmin(hertz, kMostOfRate / h);
+  const float a1 = 2.0f * kDamping + h * omega;
+  const float a2 = h * omega * a1;
+  const float a3 = 1.0f / (1.0f + a2);
+  return {a2 * a3, a3, omega / a1};
+}
 
 } // namespace
 
-void Solver::solveVelocities(Bodies &bodies, const Manifold *manifolds,
-                             uint32_t count, Joints &joints, float delta,
-                             const SolverSettings &settings) {
-  prepare(bodies, manifolds, count, settings);
-  joints.prepare(bodies, delta);
-  if (rows_.empty() && joints.idle()) return;
+void Solver::solve(Bodies &bodies, Joints &joints, float h,
+                   const SolverSettings &settings) {
+  joints.prepare(bodies, h);
+  if (idle(joints)) return;
 
+  aim(bodies, h, settings, true);
   joints.warmStart(bodies);
   warmStart(bodies);
   for (uint32_t i = 0; i < settings.velocitySteps; ++i) {
@@ -28,20 +74,30 @@ void Solver::solveVelocities(Bodies &bodies, const Manifold *manifolds,
   }
 }
 
-void Solver::solvePositions(Bodies &bodies, Manifold *manifolds, Joints &joints,
-                            const SolverSettings &settings) {
+void Solver::relax(Bodies &bodies, Joints &joints, float h,
+                   const SolverSettings &settings) {
+  if (idle(joints)) return;
+
+  aim(bodies, h, settings, false);
+  joints.correctVelocities(bodies);
+  correctVelocities(bodies);
+  joints.accumulate();
+  accumulate();
+}
+
+void Solver::finish(Bodies &bodies, Manifold *manifolds, Joints &joints,
+                    const SolverSettings &settings) {
   for (uint32_t i = 0; i < settings.positionSteps; ++i) {
     joints.correctPositions(bodies);
-    correctPositions(bodies, settings);
   }
 
   for (const Pair &pair : pairs_) {
     Manifold &manifold = manifolds[pair.manifold];
     for (uint32_t c = 0; c < pair.count; ++c) {
       const Row &row = rows_[pair.first + c];
-      manifold.points[c].normalImpulse = row.normalImpulse;
-      manifold.points[c].frictionImpulse[0] = row.frictionImpulse[0];
-      manifold.points[c].frictionImpulse[1] = row.frictionImpulse[1];
+      manifold.points[c].normalImpulse = row.total;
+      manifold.points[c].frictionImpulse[0] = row.frictionTotal[0];
+      manifold.points[c].frictionImpulse[1] = row.frictionTotal[1];
     }
   }
 }
@@ -76,11 +132,11 @@ Solver::Pair Solver::pairOf(const Bodies &bodies, const Manifold &manifold) {
   return pair;
 }
 
-void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
-                     uint32_t count,
-                     const SolverSettings &settings) {
+void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
+                     uint32_t count, const SolverSettings &settings) {
   pairs_.clear();
   rows_.clear();
+  const float share = 1.0f / static_cast<float>(settings.subSteps);
 
   for (uint32_t m = 0; m < count; ++m) {
     const Manifold &manifold = manifolds[m];
@@ -106,9 +162,9 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
       row.normal = contact.normal;
       perpendiculars(row.normal, row.tangent[0], row.tangent[1]);
       row.depth = contact.depth;
-      row.normalImpulse = contact.normalImpulse;
-      row.frictionImpulse[0] = contact.frictionImpulse[0];
-      row.frictionImpulse[1] = contact.frictionImpulse[1];
+      row.normalImpulse = contact.normalImpulse * share;
+      row.frictionImpulse[0] = contact.frictionImpulse[0] * share;
+      row.frictionImpulse[1] = contact.frictionImpulse[1] * share;
       row.normalMass = effectiveMass(pair, row, row.normal);
       for (int t = 0; t < 2; ++t) {
         row.tangentMass[t] = effectiveMass(pair, row, row.tangent[t]);
@@ -117,18 +173,89 @@ void Solver::prepare(Bodies &bodies, const Manifold *manifolds,
       // Restitution is decided here, from the speed the bodies met at, not
       // during the passes: by then the solver has already taken that speed
       // away, and a bounce computed from what is left is no bounce at all.
-      const Vec3 relative = bodies.velocity(pair.a) +
-                            cross(bodies.spin(pair.a), row.leverA) -
-                            bodies.velocity(pair.b) -
-                            cross(bodies.spin(pair.b), row.leverB);
-      const float closing = dot(relative, row.normal);
-      row.bounce =
+      const Vec3 relativeSpeed = bodies.velocity(pair.a) +
+                                 cross(bodies.spin(pair.a), row.leverA) -
+                                 bodies.velocity(pair.b) -
+                                 cross(bodies.spin(pair.b), row.leverB);
+      const float closing = dot(relativeSpeed, row.normal);
+      row.rebound =
           closing < -settings.bounceThreshold ? -pair.bounciness * closing : 0.0f;
 
       rows_.push_back(row);
     }
 
+    couple(pair);
     pairs_.push_back(pair);
+  }
+}
+
+void Solver::couple(Pair &pair) const {
+  const Vec3 together = pair.gainA + pair.gainB;
+  for (uint32_t i = 0; i < pair.count; ++i) {
+    const Row &from = rows_[pair.first + i];
+    const Vec3 turnA = cross(from.leverA, from.normal);
+    const Vec3 turnB = cross(from.leverB, from.normal);
+    for (uint32_t j = 0; j < pair.count; ++j) {
+      const Row &to = rows_[pair.first + j];
+      pair.coupling[i][j] =
+          dot(from.normal, mulPerAxis(together, to.normal)) +
+          dot(turnA, pair.inertiaA * cross(to.leverA, to.normal)) +
+          dot(turnB, pair.inertiaB * cross(to.leverB, to.normal));
+    }
+  }
+}
+
+void Solver::aim(const Bodies &bodies, float h, const SolverSettings &settings,
+                 bool pushes) {
+  const Softness soft = softnessFor(h, settings.contactHertz);
+  const float settle = settings.slop * kSettle;
+
+  for (Row &row : rows_) {
+    const Pair &pair = pairs_[row.pair];
+
+    // Where the two contact points have moved to since the narrowphase ran.
+    // Following them is not the same as running it again, but it is right for
+    // the small moves of a sub-step and it costs two rotations.
+    const Vec3 worldA = bodies.at(pair.a) + rotate(bodies.rotation(pair.a), row.localA);
+    const Vec3 worldB = bodies.at(pair.b) + rotate(bodies.rotation(pair.b), row.localB);
+    const float depth = row.depth - dot(worldA - worldB, row.normal);
+
+    row.massScale = 1.0f;
+    row.impulseScale = 0.0f;
+    row.allowed = 0.0f;
+    if (depth < 0.0f) {
+      // Apart. The two may close by the gap and a little more, so that they
+      // come to rest in each other and not on the edge of it.
+      row.allowed = (settle - depth) / h;
+    } else if (pushes) {
+      row.massScale = soft.massScale;
+      row.impulseScale = soft.impulseScale;
+      // The push starts at the surface. A spring that is slack for the first
+      // centimetres still leaks the load it carries, and a stack sinks through
+      // that slack a contact at a time.
+      row.allowed = -std::fmin(depth * soft.pushRate, kMaxPush);
+    }
+  }
+}
+
+bool Solver::bounces(const Row &row) {
+  // A contact that held nothing this step was not reached, and a body that has
+  // not reached a surface has nothing to bounce off.
+  return row.rebound > 0.0f && row.total > 0.0f;
+}
+
+bool Solver::rebounds() const {
+  return std::any_of(rows_.begin(), rows_.end(), bounces);
+}
+
+void Solver::rebound(Bodies &bodies) {
+  for (const Row &row : rows_) {
+    if (!bounces(row)) continue;
+
+    const Pair &pair = pairs_[row.pair];
+    const float closing = dot(relative(bodies, pair, row), row.normal);
+    if (closing >= row.rebound) continue;
+    apply(bodies, pair, row, row.normal * (row.normalMass * (row.rebound - closing)));
   }
 }
 
@@ -143,55 +270,75 @@ void Solver::warmStart(Bodies &bodies) {
 }
 
 void Solver::correctVelocities(Bodies &bodies) {
-  for (Row &row : rows_) {
-    const Pair &pair = pairs_[row.pair];
-
-    // Friction first, bounded by the normal impulse the pass before settled
-    // on. On the very first pass there is no bound and so no friction, which
-    // is why one velocity step is not enough for anything to grip.
-    const float bound = pair.friction * row.normalImpulse;
-    for (int t = 0; t < 2; ++t) {
-      const float sliding =
-          dot(relative(bodies, pair, row) + pair.belt, row.tangent[t]);
-      const float was = row.frictionImpulse[t];
-      row.frictionImpulse[t] =
-          clamped(was - row.tangentMass[t] * sliding, -bound, bound);
-      apply(bodies, pair, row, row.tangent[t] * (row.frictionImpulse[t] - was));
+  for (const Pair &pair : pairs_) {
+    for (uint32_t c = 0; c < pair.count; ++c) {
+      correctFriction(bodies, pair, rows_[pair.first + c]);
     }
-
-    // Then the normal, which may push and never pull: a contact that would
-    // need to hold the bodies together is a contact that has ended.
-    const float closing = dot(relative(bodies, pair, row), row.normal);
-    const float was = row.normalImpulse;
-    row.normalImpulse =
-        std::fmax(was - row.normalMass * (closing - row.bounce), 0.0f);
-    apply(bodies, pair, row, row.normal * (row.normalImpulse - was));
+    correctNormals(bodies, pair);
   }
 }
 
-void Solver::correctPositions(Bodies &bodies, const SolverSettings &settings) {
-  for (const Row &row : rows_) {
-    const Pair &pair = pairs_[row.pair];
+void Solver::correctFriction(Bodies &bodies, const Pair &pair, Row &row) {
+  // Bounded by the normal impulse the pass before settled on. The first pass
+  // of a contact that is new has no bound and so no friction. The pass that
+  // relaxes it is the one that gives it some.
+  const float bound = pair.friction * row.normalImpulse;
+  for (int t = 0; t < 2; ++t) {
+    const float sliding =
+        dot(relative(bodies, pair, row) + pair.belt, row.tangent[t]);
+    const float was = row.frictionImpulse[t];
+    row.frictionImpulse[t] =
+        clamped(was - row.tangentMass[t] * sliding, -bound, bound);
+    apply(bodies, pair, row, row.tangent[t] * (row.frictionImpulse[t] - was));
+  }
+}
 
-    // Where the two contact points have moved to since the narrowphase ran.
-    // Following them is not the same as re-running it, but it is right for
-    // the small corrections a pass makes and it costs two rotations.
-    const Vec3 worldA = bodies.at(pair.a) + rotate(bodies.rotation(pair.a), row.localA);
-    const Vec3 worldB = bodies.at(pair.b) + rotate(bodies.rotation(pair.b), row.localB);
-    const float depth = row.depth - dot(worldA - worldB, row.normal);
+void Solver::correctNormals(Bodies &bodies, const Pair &pair) {
+  // The points of one manifold share two bodies, so each one's impulse moves
+  // the others. Solving them one after another in the bodies, one pass each,
+  // leaves the first point having taken most of a hard stop and the last
+  // having taken the rest from a body already turned, and a box that meets a
+  // wall flat leaves it turning. The points are few, so they are solved
+  // against one another here, in a small matrix, and the bodies are changed
+  // once at the end.
+  float residual[kMaxContacts];
+  float held[kMaxContacts];
+  for (uint32_t i = 0; i < pair.count; ++i) {
+    const Row &row = rows_[pair.first + i];
+    residual[i] = dot(relative(bodies, pair, row), row.normal) + row.allowed;
+    held[i] = row.normalImpulse;
+  }
 
-    const float over = depth - settings.slop;
-    if (over <= 0.0f) continue;
+  for (uint32_t sweep = 0; sweep < kBlockSweeps; ++sweep) {
+    for (uint32_t i = 0; i < pair.count; ++i) {
+      Row &row = rows_[pair.first + i];
+      // May push and never pull: a contact that would need to hold the
+      // bodies together is a contact that has ended. A soft one takes only
+      // part of the push, and gives back part of what it held.
+      const float next = std::fmax(
+          row.normalImpulse -
+              row.massScale * row.normalMass * residual[i] -
+              row.impulseScale * row.normalImpulse,
+          0.0f);
+      const float change = next - row.normalImpulse;
+      row.normalImpulse = next;
+      for (uint32_t j = 0; j < pair.count; ++j) {
+        residual[j] += pair.coupling[i][j] * change;
+      }
+    }
+  }
 
-    const Vec3 leverA = worldA - bodies.centre(pair.a);
-    const Vec3 leverB = worldB - bodies.centre(pair.b);
-    const float push = clamped(over * settings.stiffness, 0.0f, kMaxPush);
-    const Vec3 impulse = row.normal * (row.normalMass * push);
+  for (uint32_t i = 0; i < pair.count; ++i) {
+    const Row &row = rows_[pair.first + i];
+    apply(bodies, pair, row, row.normal * (row.normalImpulse - held[i]));
+  }
+}
 
-    bodies.at(pair.a) += mulPerAxis(impulse, pair.gainA);
-    bodies.turn(pair.a, pair.inertiaA * cross(leverA, impulse), 1.0f);
-    bodies.at(pair.b) -= mulPerAxis(impulse, pair.gainB);
-    bodies.turn(pair.b, -(pair.inertiaB * cross(leverB, impulse)), 1.0f);
+void Solver::accumulate() {
+  for (Row &row : rows_) {
+    row.total += row.normalImpulse;
+    row.frictionTotal[0] += row.frictionImpulse[0];
+    row.frictionTotal[1] += row.frictionImpulse[1];
   }
 }
 

@@ -87,23 +87,67 @@ beside this one:
 
 ### Inside
 
-A step is: find contacts, integrate velocity, solve velocity, integrate
-position, solve position, break joints, move characters, sleep. Velocity and
-position are solved separately
-because they answer different questions — restitution and friction are about
-how things are moving, overlap is about where they are — and the position pass
-runs after integration so it is not correcting a gap that integration is about
-to reopen.
+A step is: find contacts, solve, move characters, report touches, sleep. The
+solve cuts the step into sub-steps, six by default. Each sub-step integrates
+velocity, corrects velocity against the contacts and the joints, moves the
+bodies, and corrects once more with no push in it. That last pass takes back
+the speed the push added, so a stack settles and does not bounce. Contacts are
+found once a step, and each sub-step reads where its bodies have got to from
+those. A short step has a small overlap to correct, and a small correction puts
+little energy into a stack.
 
-Contacts come from a sweep along X and a narrowphase of spheres, boxes,
-capsules, planes and ground, with separating-axis box–box and face clipping. Where two
-shapes meet along a line rather than at a point — a capsule lying on the floor,
-or across a crate — the contact is reported at both ends, because one contact in
-the middle of a line is something to roll off. Manifolds persist between ticks,
-so each pass starts from the impulse that worked last time rather than from
-zero. Bodies that stop moving go to sleep individually and are woken by
-anything that touches them, except that bodies joined together sleep and wake
-as one: half a chain asleep is half a chain that has stopped being held.
+A contact is a spring at `contactHertz` and not a wall. The push starts at the
+surface, and the speed it pushes with is capped. After the sub-steps, a bounce
+turns round the bodies that met, at the speed they met at.
+
+Contacts come from a tree of the fixed bodies and a sweep along X of the rest.
+The narrowphase covers spheres, boxes, capsules, planes and ground, with
+separating-axis box to box and face clipping. Where two shapes meet along a
+line, as a capsule does lying on the floor or across a crate, the contact is
+reported at both ends, because one contact in the middle of a line is something
+to roll off. A box face on a box face keeps the four corners that spread
+furthest. Manifolds persist between ticks, so each pass starts from the impulse
+that worked last time rather than from zero.
+
+A pair that will cross the gap this step gets a contact before it touches, so
+a fast body does not tunnel through a thin wall. The margin is sized by speed
+and is zero under about 3 m/s. `PhysicsControls.continuous` adds a cast along
+the body's move against fixed bodies and ground, for what the margin misses: a
+small body at a walking pace against a thin wall.
+
+Bodies that touch sleep and wake as one island, so a stack goes to sleep whole
+and a heap of 1,000 boxes is asleep within six seconds. Bodies joined together
+sleep and wake as one as well: half a chain asleep is half a chain that has
+stopped being held. A body is put to sleep by the distance it walked as well as
+by its speed.
+
+### Settings and the benchmark
+
+`subSteps` is 6, `contactHertz` is 50, `velocitySteps` is 1 for each sub-step,
+`positionSteps` is 2 for joints and `slop` is 0.02. They are tuned for 60 steps
+a second. At 30 a second a wall of 25 by 20 boxes grows a mode and comes down to
+half its height, as it did before sub-steps. The heap sleeps whole in 6 of 8
+seeds there.
+
+`./tool/benchmark.sh` times a step on the scenes in `bench/benchmark.cpp`.
+These are from one run on an Apple M4 Pro at 60 steps a second, in microseconds
+a step.
+
+| Scene | Mean | Median | Asleep at the end |
+| --- | ---: | ---: | --- |
+| Scatter, 2,000 spheres | 1,826 | 2,100 | 947 of 2,000 |
+| Heap, 1,000 boxes | 1,923 | 389 | all, by step 323 |
+| Wall, 500 boxes | 437 | 27 | all, by step 50 |
+| Wall, 2,000 boxes | 15,255 | 14,447 | 0 of 2,000 |
+| 5,000 fixed boxes and 200 spheres | 149 | 135 | 148 of 200 |
+
+A ray cast against 5,000 static boxes takes 2.3 µs. A 0.2 m sphere fired at a
+0.1 m wall crosses from none of 16 starts at any speed from 5 to 320 m/s.
+
+The wall of 2,000 boxes, 50 wide and 40 high, does not sleep. A mode grows at
+the top row's edge until the wall comes down, and more sub-steps only delay it.
+The median of the heap is the point it falls asleep, so it moves between runs.
+The mean is the figure to compare.
 
 ### Casting
 
@@ -316,9 +360,10 @@ single machine replaying the same inputs at the same fixed step does reproduce
 itself; that is a different and much cheaper guarantee, and it is the one on
 offer.
 
-**Continuous collision.** Fast, small things tunnel. A fixed step small enough
-for the speeds in play is the answer for now, and a cast along where something
-is about to go is the answer for the few cases that cannot afford one.
+**Continuous collision between free bodies.** A body that names `continuous`
+is cast against fixed bodies and ground only. Two free bodies rely on the
+contacts made before they touch. A step short enough for the speeds in play is
+the answer past that.
 
 **The web.** The solver is C++ behind a build hook, so it goes where a native
 toolchain goes. Whether it follows Orblit to the web later is open.

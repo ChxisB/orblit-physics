@@ -32,4 +32,10 @@ bool collideMesh(const Shape &shape, const Vec3 &at, const Quat &rotation,
                  const Shape &mesh, const Vec3 &meshAt, const Quat &meshRotation,
                  Manifold &out);
 
+/// `collideMesh` for `shape` made `grow` bigger in every direction. Each depth
+/// is of the grown shape.
+bool collideMeshGrown(const Shape &shape, const Vec3 &at, const Quat &rotation,
+                      const Shape &mesh, const Vec3 &meshAt, const Quat &meshRotation,
+                      float grow, Manifold &out);
+
 } // namespace orblit

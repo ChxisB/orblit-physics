@@ -57,6 +57,17 @@ Matrix4 worldOf(
   return world;
 }
 
+/// How close to a quarter turn about Y a rotation must be, as the cosine of
+/// the Y angle, for X to be let go. Float rounding is the whole of what is
+/// there to read when nothing is known of the angles it had.
+const _roundingBand = 1e-6;
+
+/// The same, when the angles it had are known. A body that lands flat keeps a
+/// tilt of a few hundred-thousandths of a radian that nothing levels, and X
+/// read from that is a large angle that means nothing, so the crate would be
+/// shown turned about X and back about Z.
+const _settledBand = 1e-3;
+
 /// A rotation as degrees about X, Y and Z: the inverse of [rotationOf].
 ///
 /// Every rotation can be written two ways in these three angles, and any of
@@ -68,33 +79,52 @@ Matrix4 worldOf(
 /// A quarter turn about Y — a crate turned to face sideways — is where X and Z
 /// turn about the same axis and only how far they turn between them is known.
 /// There X keeps the angle [near] gives it, or none, and Z takes the rest.
+/// With [near] that holds within a thousandth of the quarter turn, and the
+/// angles then differ from the rotation by about that.
 Vector3 eulerOf(Matrix3 rotation, {Vector3? near}) {
   double r(int row, int column) => rotation.entry(row, column);
 
   final cosY = math.sqrt(r(0, 0) * r(0, 0) + r(1, 0) * r(1, 0));
   final y = math.atan2(-r(2, 0), cosY);
+  final band = near == null ? _roundingBand : _settledBand;
+
   // Near the quarter turn the angle X is read from is two numbers each about
-  // as small as the rounding in them, and means nothing.
-  final x = cosY > 1e-6 ? math.atan2(r(2, 1), r(2, 2)) : radians(near?.x ?? 0);
-  // Z from what is left once X is taken back out, rather than from the matrix
-  // as it came: whatever X turned out to be, Z makes up the difference, so the
-  // angles always describe the rotation they were read from.
+  // as small as the noise in them, and means nothing. It is then the angle
+  // [near] has, in whichever of the two writings is the one nearby, which is
+  // a half turn out in the other.
+  final held = radians(near?.x ?? 0);
+  final writings = cosY > band
+      ? [_written(rotation, y, math.atan2(r(2, 1), r(2, 2)))]
+      : [_written(rotation, y, held), _written(rotation, y, held - math.pi)];
+  if (near == null) return writings.first;
+
+  // The other writing of the same rotation: half a turn about X and Z, and Y
+  // reflected about a quarter turn.
+  final candidates = [
+    for (final found in writings) ...[
+      _unwrapped(found, near),
+      _unwrapped(Vector3(found.x + 180, 180 - found.y, found.z + 180), near),
+    ],
+  ];
+  return candidates.reduce(
+    (a, b) => _apart(a, near) <= _apart(b, near) ? a : b,
+  );
+}
+
+/// The angles for [rotation] given Y and X, in degrees. Z is read from what is
+/// left once X is taken back out, rather than from the matrix as it came:
+/// whatever X turned out to be, Z makes up the difference, so the angles always
+/// describe the rotation they were read from.
+Vector3 _written(Matrix3 rotation, double y, double x) {
+  double r(int row, int column) => rotation.entry(row, column);
+
   final sinX = math.sin(x);
   final cosX = math.cos(x);
   final z = math.atan2(
     sinX * r(0, 2) - cosX * r(0, 1),
     cosX * r(1, 1) - sinX * r(1, 2),
   );
-
-  final found = Vector3(degrees(x), degrees(y), degrees(z));
-  if (near == null) return found;
-
-  // The other writing of the same rotation: half a turn about X and Z, and Y
-  // reflected about a quarter turn.
-  final other = Vector3(found.x + 180, 180 - found.y, found.z + 180);
-  final a = _unwrapped(found, near);
-  final b = _unwrapped(other, near);
-  return _apart(a, near) <= _apart(b, near) ? a : b;
+  return Vector3(degrees(x), degrees(y), degrees(z));
 }
 
 /// Writes into [out] the pose [alpha] of the way from [from] to [to], where

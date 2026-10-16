@@ -1498,6 +1498,35 @@ void main() {
       expect((50.0 - heightOf(2)) / (50.0 - heightOf(3)), closeTo(0.5, 0.03));
     });
 
+    test('continuous holds a small slow ball at a thin wall', () {
+      // 2 cm from the face at 2.9 m/s is 4.8 cm a step, which puts the ball
+      // 1.3 cm past the middle of a wall 1 cm thick, and the contact pushes
+      // it out the far side. That is under the speed contacts are made early.
+      double xAfter({required bool continuous}) {
+        physics.dispose();
+        physics = Physics(
+          settings: const PhysicsSettings(gravity: [0.0, 0.0, 0.0]),
+        );
+        physics.add(
+          2,
+          shape: const Shape.box(0.005, 2.0, 2.0),
+          motion: PhysicsMotion.fixed,
+        );
+        physics.add(
+          3,
+          shape: const Shape.sphere(0.01),
+          at: const [0.035, 0.0, 0.0],
+        );
+        physics.setControls(3, PhysicsControls(continuous: continuous));
+        physics.drive(3, velocity: const [-2.9, 0.0, 0.0]);
+        run(40 / 60);
+        return physics.transformOf(3)![0];
+      }
+
+      expect(xAfter(continuous: false), lessThan(-0.02));
+      expect(xAfter(continuous: true), greaterThan(0.005));
+    });
+
     test('a speed cap holds a fall, and a spin cap holds a spin', () {
       physics.add(
         2,
@@ -1863,6 +1892,7 @@ void main() {
       final other = Physics(
         settings: const PhysicsSettings(
           gravity: [0.0, -1.0, 0.0],
+          subSteps: 2,
           velocitySteps: 2,
           positionSteps: 1,
           sleeping: false,

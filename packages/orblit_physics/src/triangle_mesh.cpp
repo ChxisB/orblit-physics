@@ -132,15 +132,21 @@ Bounds meshBounds(const TriangleMesh *mesh, const Vec3 &at, const Quat &rotation
 bool collideMesh(const Shape &shape, const Vec3 &at, const Quat &rotation,
                  const Shape &mesh, const Vec3 &meshAt, const Quat &meshRotation,
                  Manifold &out) {
+  return collideMeshGrown(shape, at, rotation, mesh, meshAt, meshRotation, 0.0f, out);
+}
+
+bool collideMeshGrown(const Shape &shape, const Vec3 &at, const Quat &rotation,
+                      const Shape &mesh, const Vec3 &meshAt, const Quat &meshRotation,
+                      float grow, Manifold &out) {
   out.count = 0;
   if (mesh.mesh == nullptr || shape.kind == ShapeKind::mesh ||
       shape.kind == ShapeKind::plane || shape.kind == ShapeKind::heightField) return false;
   const Quat back = conjugate(meshRotation);
   const Vec3 localAt = rotate(back, at - meshAt);
   const Quat localRotation = back * rotation;
-  const Convex convex(shape, localAt, localRotation);
+  const Convex convex = Convex(shape, localAt, localRotation).rounded(grow);
   std::vector<Candidate> found;
-  mesh.mesh->visit(shape.boundsAt(localAt, localRotation).grown(1.0e-4f), [&](uint32_t id) {
+  mesh.mesh->visit(shape.boundsAt(localAt, localRotation).grown(1.0e-4f + grow), [&](uint32_t id) {
     touch(mesh.mesh->facet(id), convex, found);
   });
   reduce(found.data(), found.size(), out);

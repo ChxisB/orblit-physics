@@ -650,6 +650,7 @@ class ScenePhysics {
         body.gravityScale == 1 &&
         body.maxSpeed == 0 &&
         body.maxSpin == 0 &&
+        !body.continuous &&
         centre.length2 == 0 &&
         inertia.length2 == 0;
     if (plain) return null;
@@ -663,6 +664,7 @@ class ScenePhysics {
       gravityScale: body.gravityScale,
       maxSpeed: math.max(body.maxSpeed, 0),
       maxSpin: math.max(body.maxSpin, 0),
+      continuous: body.continuous,
       centre: [centre.x, centre.y, centre.z],
       inertia: inertia.length2 == 0
           ? null

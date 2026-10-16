@@ -71,11 +71,13 @@ Clip cutAll(const Surface &surface, const Feature &feature) {
   return *from;
 }
 
-/// A face as a surface: its plane, fenced by one plane through each edge.
-Surface surfaceOf(const Feature &face) {
+/// A face as a surface: its plane, fenced by one plane through each edge. A
+/// shape that is rounded by `radius` has its surface that far out from the
+/// face, so a point is as deep in the rounded shape as it is past this plane.
+Surface surfaceOf(const Feature &face, float radius) {
   Surface s;
   s.normal = face.normal;
-  s.offset = dot(face.normal, face.v[0]);
+  s.offset = dot(face.normal, face.v[0]) + radius;
   for (uint32_t i = 0; i < face.n; ++i) {
     const Vec3 along = face.v[(i + 1) % face.n] - face.v[i];
     const Vec3 out = cross(along, face.normal);
@@ -99,9 +101,9 @@ uint32_t pressFace(const Feature &fa, const Feature &fb, float radiusA,
 
   const float alignA = fa.isFace() ? dot(fa.normal, -normal) : -2.0f;
   const float alignB = fb.isFace() ? dot(fb.normal, normal) : -2.0f;
-  if (alignB >= alignA) return press(surfaceOf(fb), fa, radiusA, out);
+  if (alignB >= alignA) return press(surfaceOf(fb, radiusB), fa, radiusA, out);
 
-  const uint32_t n = press(surfaceOf(fa), fb, radiusB, out);
+  const uint32_t n = press(surfaceOf(fa, radiusA), fb, radiusB, out);
   flip(out, n);
   return n;
 }

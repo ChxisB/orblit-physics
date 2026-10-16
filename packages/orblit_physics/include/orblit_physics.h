@@ -344,29 +344,42 @@ typedef struct {
 typedef struct {
   float gravity[3];
 
-  /// How many passes the solver makes over the contacts correcting velocity.
+  /// How many short steps each step is cut into.
   ///
-  /// Below two, friction does not work at all: friction is bounded by the
-  /// normal impulse from the pass before it, and on the first pass there is
-  /// not one yet.
+  /// Each makes its own pass over the contacts and its own move, and reads the
+  /// overlap from where the bodies have got to. More of them hold a taller
+  /// stack still and cost a step's time in proportion. Fewer than one is one.
+  uint32_t subSteps;
+
+  /// How many passes the solver makes over the contacts in each sub-step,
+  /// correcting velocity. A relaxing pass after the move is on top of these.
+  ///
+  /// One is enough, because a contact starts each sub-step from the impulse
+  /// that held it in the last.
   uint32_t velocitySteps;
 
-  /// Passes correcting the overlap the velocity passes could not prevent.
+  /// Passes correcting the overlap a joint is left with at the end of a step.
+  /// Contacts have no such passes: they push themselves apart in the
+  /// sub-steps.
   uint32_t positionSteps;
 
-  /// How far bodies may sink into each other before it is worth pushing them
-  /// apart, in metres.
+  /// How far into a surface a body is let come to rest as it arrives, in
+  /// metres. It stops a quarter of this far in, and the contact's spring
+  /// takes it back out to where it holds.
   ///
-  /// Not zero, and not a tolerance for sloppiness: solving to exactly touching
-  /// means a resting stack separates and re-collides every frame, and what
-  /// that looks like is a pile of crates buzzing.
+  /// Not zero, and not a tolerance for sloppiness: stopping exactly at the
+  /// surface means a resting stack separates and re-collides every frame, and
+  /// what that looks like is a pile of crates buzzing.
   float slop;
 
-  /// What fraction of the remaining overlap one position pass removes, 0 to 1.
+  /// How stiff two overlapping bodies are, as the frequency of the spring
+  /// between them, in hertz.
   ///
-  /// All of it at once turns a deep overlap into a body flung across the
-  /// level. A fifth of it, several times, settles.
-  float stiffness;
+  /// A stiffer contact gives a smaller overlap under load and a stack that
+  /// takes longer to come to rest. A softer one settles sooner and lets a
+  /// body sink further into a wall it is pushed against. It is held to 0.15
+  /// of the sub-step rate, which is as stiff as the step can follow.
+  float contactHertz;
 
   /// Below this closing speed a collision does not bounce, however elastic it
   /// is, in metres per second.
@@ -871,6 +884,19 @@ typedef struct {
   /// are used as given, whatever `centre` is. Anything else uses the shape's.
   float inertia[3];
 
+  /// Stops the body at the first fixed body its movement this step would take
+  /// it through, after the contacts have had their say, and keeps its velocity
+  /// for the contact it now has. This is for a small body that is fast or has
+  /// just been hit, since a pair that closes quickly is already held apart by
+  /// a speculative contact, and one that is struck during the step is not.
+  ///
+  /// It looks at fixed bodies and ground only. A body it was already inside
+  /// is left to the contacts, so a ball rolling 5 mm into the floor is not
+  /// held back by it. A body moving through a driven or free one is covered by
+  /// the speculative contact alone. Only a free body is stopped, and it costs
+  /// one cast a step while it moves.
+  bool continuous;
+
   /// Sets the controls without waking anything. For a body that has just been
   /// made, so that one made asleep stays asleep with the controls it was made
   /// with. Zero, which is every other caller, wakes as described below.
@@ -1161,6 +1187,9 @@ typedef struct {
   float normal[3];
 
   /// How far they overlapped along the normal when the step began, in metres.
+  /// Negative for a pair that was still apart and closing at about 3 m/s or
+  /// more, which the solver holds off the surface instead of letting through.
+  /// `at` is then midway across the gap.
   float depth;
 
   /// How hard the solver pushed along the normal at this point over that step,
@@ -1175,6 +1204,9 @@ typedef struct {
 /// so the same world lists them the same way every time. With a `capacity` of
 /// zero `out` may be null and the call only counts, which is how to size the
 /// buffer.
+///
+/// A pair closing fast enough to cross the gap this step is listed from the
+/// step before it touches, with a negative `depth`. A touch begins then too.
 ///
 /// Only pairs the solver looked at are here: a pair that has gone to sleep is
 /// not, since nothing examined it. A body removed since the step takes its pairs

@@ -41,9 +41,9 @@ SceneEntity crate({
   },
 );
 
-/// How far a resting body can be from touching exactly: the solver lets it sink
-/// up to its slop, two centimetres, so a contact is not lost and found again
-/// every step, and a little more for the bounce still settling.
+/// How far a resting body can be from touching exactly: the solver lets it in
+/// a quarter of its slop, five millimetres, so a contact is not lost and found
+/// again every step, and a little more for the bounce still settling.
 const resting = 0.03;
 
 SceneDocument sceneOf(List<SceneEntity> entities) =>

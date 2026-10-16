@@ -403,14 +403,17 @@ void convexOnFace(const Facet &f, const Convex &convex,
 }
 
 /// The shape being held against ground, placed in the field's own frame, with
-/// whichever view of it its kind is asked about.
+/// whichever view of it its kind is asked about. `grow` makes it that much
+/// bigger in every direction, for a near miss.
 struct Probe {
-  Probe(const Shape &s, const Vec3 &place, const Quat &rotation)
+  Probe(const Shape &s, const Vec3 &place, const Quat &rotation, float grow)
       : shape(s),
         at(place),
         half(s.axisAt(rotation)),
-        area(s.boundsAt(place, rotation).grown(kOnEdge)),
-        convex(s, place, rotation) {
+        radius(s.radius() + grow),
+        grown(grow > 0.0f),
+        area(s.boundsAt(place, rotation).grown(kOnEdge + grow)),
+        convex(Convex(s, place, rotation).rounded(grow)) {
     if (s.kind != ShapeKind::box) return;
     box.centre = place;
     box.axis[0] = rotate(rotation, {1.0f, 0.0f, 0.0f});
@@ -422,6 +425,8 @@ struct Probe {
   const Shape &shape;
   Vec3 at;
   Vec3 half;
+  float radius;
+  bool grown;
   Bounds area;
   Convex convex;
   Box box;
@@ -434,13 +439,21 @@ void touch(const Facet &f, const Probe &probe, float floor,
     return;
   }
   switch (probe.shape.kind) {
-    case ShapeKind::box: boxAgainst(f, probe.box, floor, into); break;
+    case ShapeKind::box:
+      // The separating axes square a grown box's corners out, which would
+      // make a near miss nearer than it is. The rounded convex is true.
+      if (probe.grown) {
+        convexOnFace(f, probe.convex, into);
+      } else {
+        boxAgainst(f, probe.box, floor, into);
+      }
+      break;
     case ShapeKind::cylinder:
     case ShapeKind::compound:
     case ShapeKind::hull: convexOnFace(f, probe.convex, into); break;
     case ShapeKind::sphere:
     case ShapeKind::capsule:
-      round(f, probe.at, probe.half, probe.shape.radius(), into);
+      round(f, probe.at, probe.half, probe.radius, into);
       break;
     case ShapeKind::mesh:
     case ShapeKind::plane:
@@ -698,6 +711,12 @@ Vec3 Facet::furthest(const Vec3 &direction) const {
 bool collideGround(const Shape &a, const Vec3 &atA, const Quat &rotA,
                    const Shape &ground, const Vec3 &atB, const Quat &rotB,
                    Manifold &out) {
+  return collideGroundGrown(a, atA, rotA, ground, atB, rotB, 0.0f, out);
+}
+
+bool collideGroundGrown(const Shape &a, const Vec3 &atA, const Quat &rotA,
+                        const Shape &ground, const Vec3 &atB, const Quat &rotB,
+                        float grow, Manifold &out) {
   out.count = 0;
   const HeightField *field = ground.field;
   if (field == nullptr || field->empty()) return false;
@@ -708,7 +727,7 @@ bool collideGround(const Shape &a, const Vec3 &atA, const Quat &rotA,
   // Everything below happens in the field's own frame, where sample (c, r)
   // is at (c * spacing, height, r * spacing).
   const Quat back = conjugate(rotB);
-  const Probe probe(a, rotate(back, atA - atB), back * rotA);
+  const Probe probe(a, rotate(back, atA - atB), back * rotA, grow);
 
   int64_t c0, r0, c1, r1;
   if (!field->cellsUnder(probe.area, c0, r0, c1, r1)) return false;

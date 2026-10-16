@@ -367,6 +367,9 @@ final class OrblitPhysicsControls extends Struct {
   external Array<Float> inertia;
 
   @Bool()
+  external bool continuous;
+
+  @Bool()
   external bool quiet;
 }
 
@@ -374,6 +377,9 @@ final class OrblitPhysicsControls extends Struct {
 final class OrblitPhysicsSettings extends Struct {
   @Array(3)
   external Array<Float> gravity;
+
+  @Uint32()
+  external int subSteps;
 
   @Uint32()
   external int velocitySteps;
@@ -385,7 +391,7 @@ final class OrblitPhysicsSettings extends Struct {
   external double slop;
 
   @Float()
-  external double stiffness;
+  external double contactHertz;
 
   @Float()
   external double bounceThreshold;

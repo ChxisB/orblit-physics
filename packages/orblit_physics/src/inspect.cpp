@@ -52,6 +52,8 @@ Snapshot World::snapshot() const {
   copy.characters = characters_;
   copy.events = events_;
   copy.pairs = pairs_;
+  copy.islands = islands_;
+  copy.lastIsland = lastIsland_;
   return copy;
 }
 
@@ -72,6 +74,8 @@ void World::restore(const Snapshot &from) {
   characters_ = from.characters;
   events_ = from.events;
   pairs_ = from.pairs;
+  islands_ = from.islands;
+  lastIsland_ = from.lastIsland;
 }
 
 uint32_t World::contacts(OrblitPhysicsContact *out, uint32_t capacity) const {

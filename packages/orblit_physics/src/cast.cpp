@@ -55,43 +55,6 @@ Vec3 nearestInCore(const Placed &of, const Vec3 &to) {
   return of.at;
 }
 
-/// A direction from `a` towards the thing `nearestOfB` describes worth
-/// measuring the gap along, or `otherwise` when the cores are too close
-/// together to give one. `nearestOfB` gives the nearest point of that thing's
-/// core to a point.
-///
-/// Found by stepping between the two cores: nearest point on one to the
-/// other, then back again. Each step can only shorten what is between them,
-/// so it settles rather than wanders. Six is well past where it stops moving
-/// for shapes of the size a game uses, and a seventh would not make the
-/// answer below any more correct — only the bound slightly tighter.
-template <typename Near>
-Vec3 between(const Placed &a, const Near &nearestOfB, const Vec3 &otherwise) {
-  // Started from a's centre, because the loop asks b first and so never reads
-  // an onB it has not written.
-  Vec3 onA = a.at;
-  Vec3 onB;
-  for (int i = 0; i < 6; ++i) {
-    onB = nearestOfB(onA);
-    onA = nearestInCore(a, onB);
-  }
-
-  // Closer than touching, the two points are the same point give or take the
-  // last bits of a float, and the line between them points anywhere. That is
-  // every ray at the moment it lands, since a ray is all core: a direction
-  // read off it there would tilt the normal of a flat face by however the
-  // rounding fell. The caller's last good direction is the better answer.
-  const Vec3 apart = onB - onA;
-  if (lengthSquared(apart) > kTouching * kTouching) return normalised(apart);
-  return otherwise;
-}
-
-/// Centre to centre: the direction to ask along when nothing better is known
-/// yet. Rarely right, never unsafe, and only ever the first guess.
-Vec3 centreToCentre(const Placed &a, const Placed &b) {
-  return normalised(b.at - a.at);
-}
-
 /// How far apart a shape and the thing `furthestOfB` describes are along
 /// `v`, at least. `furthestOfB` gives that thing's furthest point along a
 /// direction.
@@ -102,6 +65,61 @@ Vec3 centreToCentre(const Placed &a, const Placed &b) {
 template <typename Far>
 float gapAlong(const Placed &a, const Far &furthestOfB, const Vec3 &v) {
   return dot(v, furthestOfB(-v)) - dot(v, support(a, v));
+}
+
+/// A direction from `a` towards the thing `nearestOfB` describes worth
+/// measuring the gap along, or `otherwise` when the cores are too close
+/// together to give one. `nearestOfB` gives the nearest point of that thing's
+/// core to a point, and `furthestOfB` its furthest point along a direction.
+///
+/// Found by stepping between the two cores: nearest point on one to the
+/// other, then back again. Each step can only shorten what is between them,
+/// so it settles rather than wanders. Six is well past where it stops moving
+/// for shapes of the size a game uses, and a seventh would not make the
+/// answer below any more correct, only the bound slightly tighter.
+///
+/// The loop ends on a pair of points, and the line between them is the normal
+/// of whichever shape was projected onto last. Sliding along a wide slab the
+/// pair has not settled, and the normal of the moving shape is tilted by its
+/// own turn. Measured along that against the slab's far corner the gap goes
+/// negative and reports a touch where there is none. The slab's own normal is
+/// the other candidate, so both are tried and the one with more gap wins.
+template <typename Near, typename Far>
+Vec3 between(const Placed &a, const Near &nearestOfB, const Far &furthestOfB,
+             const Vec3 &otherwise) {
+  // Started from a's centre, because the loop asks b first and so never reads
+  // an onB it has not written.
+  Vec3 onA = a.at;
+  Vec3 onB;
+  for (int i = 0; i < 6; ++i) {
+    onB = nearestOfB(onA);
+    if (i < 5) onA = nearestInCore(a, onB);
+  }
+  const Vec3 fromB = onB - onA;
+  const Vec3 fromA = onB - nearestInCore(a, onB);
+
+  // Closer than touching, the two points are the same point give or take the
+  // last bits of a float, and the line between them points anywhere. That is
+  // every ray at the moment it lands, since a ray is all core: a direction
+  // read off it there would tilt the normal of a flat face by however the
+  // rounding fell. The caller's last good direction is the better answer.
+  const float most = kTouching * kTouching;
+  const bool usableA = lengthSquared(fromA) > most;
+  const bool usableB = lengthSquared(fromB) > most;
+  if (!usableA && !usableB) return otherwise;
+  if (!usableB) return normalised(fromA);
+  if (!usableA) return normalised(fromB);
+
+  const Vec3 viaA = normalised(fromA);
+  const Vec3 viaB = normalised(fromB);
+  const bool betterB = gapAlong(a, furthestOfB, viaB) > gapAlong(a, furthestOfB, viaA);
+  return betterB ? viaB : viaA;
+}
+
+/// Centre to centre: the direction to ask along when nothing better is known
+/// yet. Rarely right, never unsafe, and only ever the first guess.
+Vec3 centreToCentre(const Placed &a, const Placed &b) {
+  return normalised(b.at - a.at);
 }
 
 bool sweepPlane(const Placed &moving, const Vec3 &direction, float distance,
@@ -144,7 +162,7 @@ bool advance(const Placed &moving, const Vec3 &direction, float distance, Vec3 v
   float when = 0.0f;
   for (uint32_t step = 0; step < kMostSteps; ++step) {
     const Placed now = movedTo(moving, moving.at + direction * when);
-    v = between(now, nearestOfB, v);
+    v = between(now, nearestOfB, furthestOfB, v);
     if (lengthSquared(v) < kTiny) break; // Concentric, and therefore inside.
 
     // How fast the gap is closing along the direction it was measured in.
@@ -177,7 +195,7 @@ bool advance(const Placed &moving, const Vec3 &direction, float distance, Vec3 v
   // reporting a touch there is the conservative answer rather than a wrong
   // one: it stops the caller slightly early, never slightly late.
   const Placed now = movedTo(moving, moving.at + direction * when);
-  v = between(now, nearestOfB, v);
+  v = between(now, nearestOfB, furthestOfB, v);
   out.started = false;
   out.distance = when;
   out.normal = lengthSquared(v) < kTiny ? -normalised(direction) : -v;
@@ -424,9 +442,13 @@ uint32_t nearest(const Bodies &bodies, const Journey &journey, Impact &out) {
   if (journey.moving.shape.kind == ShapeKind::plane) return Bodies::kNone;
   if (journey.moving.shape.kind == ShapeKind::heightField) return Bodies::kNone;
 
+  // Ties go to the lower row, so the answer does not depend on which order
+  // the tree and the list of moving bodies happened to be read in.
   uint32_t hit = Bodies::kNone;
   forEachMeeting(bodies, journey, [&](uint32_t row, const Impact &impact) {
-    if (hit == Bodies::kNone || impact.distance < out.distance) {
+    const bool tied = hit != Bodies::kNone && impact.distance == out.distance;
+    if (hit == Bodies::kNone || impact.distance < out.distance ||
+        (tied && row < hit)) {
       out = impact;
       hit = row;
     }

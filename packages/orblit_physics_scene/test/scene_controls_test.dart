@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:orblit_physics/orblit_physics.dart';
 import 'package:orblit_physics_scene/orblit_physics_scene.dart';
 import 'package:orblit_scene/orblit_scene.dart';
 import 'package:test/test.dart';
@@ -174,6 +175,55 @@ void main() {
       run(scene, 0.5);
 
       expect(middleOf(scene, 'crate').x, closeTo(0, 1e-4));
+    });
+  });
+
+  group('a small body thrown at a thin wall', () {
+    /// Twelve throws at 2.9 m/s, each from a different part of a step away, at
+    /// a wall 1 cm thick with a ball 2 cm across. Returns how many got through.
+    /// The last scene is left in [scene] for the tear down.
+    int crossings({required bool continuous}) {
+      var crossed = 0;
+      for (var i = 0; i < 12; i++) {
+        if (i > 0) scene.dispose();
+        scene = ScenePhysics(
+          sceneOf([
+            entityOf(
+              'wall',
+              at: Vector3.zero(),
+              body: BodyComponent(
+                motion: BodyMotion.fixed,
+                size: Vector3(0.01, 4, 4),
+              ),
+            ),
+            entityOf(
+              'ball',
+              at: Vector3(0.3 + 0.004 * i, 0, 0),
+              body: BodyComponent(
+                shape: BodyShape.sphere,
+                radius: 0.01,
+                continuous: continuous,
+              ),
+            ),
+          ]),
+          settings: const PhysicsSettings(gravity: [0, 0, 0]),
+        );
+        scene.physics.drive(
+          scene.bodyOf('ball')!,
+          velocity: const [-2.9, 0, 0],
+        );
+        run(scene, 40 / 60);
+        if (middleOf(scene, 'ball').x < -0.02) crossed++;
+      }
+      return crossed;
+    }
+
+    test('goes through from some part of a step', () {
+      expect(crossings(continuous: false), greaterThan(0));
+    });
+
+    test('is stopped by it from every part of a step when continuous', () {
+      expect(crossings(continuous: true), 0);
     });
   });
 

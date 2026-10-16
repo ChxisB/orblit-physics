@@ -132,12 +132,23 @@ bool meets(const Bodies &bodies, uint32_t row, const Journey &journey,
 
 /// Calls `visit(row, impact)` for each body the journey meets, in no order,
 /// until it returns false. The way to stop early is to return false.
+///
+/// Fixed bodies are found through the tree by the box the journey could reach.
+/// Everything else, and the planes, is asked in turn.
 template <typename Visit>
 void forEachMeeting(const Bodies &bodies, const Journey &journey, Visit &&visit) {
-  const uint32_t count = bodies.count();
-  for (uint32_t row = 0; row < count; ++row) {
+  bool more = true;
+  const auto ask = [&](uint32_t row) {
     Impact impact;
-    if (meets(bodies, row, journey, impact) && !visit(row, impact)) return;
+    if (meets(bodies, row, journey, impact) && !visit(row, impact)) more = false;
+  };
+
+  bodies.visitStill(journey.reach, [&](uint32_t row) {
+    if (more) ask(row);
+  });
+  for (const uint32_t row : bodies.scanned()) {
+    if (!more) return;
+    ask(row);
   }
 }
 
