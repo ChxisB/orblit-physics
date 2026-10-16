@@ -20,7 +20,6 @@ DriveSpec _drive({double lock = 0.0, double finalDrive = 4.5}) => DriveSpec(
 
 /// A rear-drive car. Its front is along negative z.
 VehicleSpec _car({DriveSpec? drive, bool driven = true}) => VehicleSpec(
-  chassis: const Shape.box(0.9, 0.3, 2.0),
   mass: 1200,
   drive: drive ?? _drive(),
   wheels: [
@@ -48,6 +47,7 @@ final class _Road {
       physics: physics,
       id: 1,
       spec: spec,
+      chassis: const Shape.box(0.9, 0.3, 2.0),
       at: [0, height, 0],
       surface: surface ?? (_) => 1.0,
     );
@@ -146,6 +146,28 @@ void main() {
         expect(gain, inInclusiveRange(0, 3), reason: 'step $i');
       }
       expect(spins.last, greaterThan(20), reason: 'the wheels do spin');
+    });
+
+    test('adds each wheel\'s spin to its roll and wraps at a full turn', () {
+      final road = _Road(_car());
+      addTearDown(road.physics.dispose);
+      road.run(2);
+      road.car.setInput(VehicleInput(throttle: 0.6));
+
+      var last = road.car.wheels[1].roll;
+      var wrapped = false;
+      road.run(
+        6,
+        each: () {
+          final wheel = road.car.wheels[1];
+          expect(wheel.roll, inInclusiveRange(0, 2 * math.pi));
+          final turned = (wheel.roll - last) % (2 * math.pi);
+          expect(turned, closeTo((wheel.spin * _dt) % (2 * math.pi), 1e-9));
+          wrapped = wrapped || wheel.roll < last;
+          last = wheel.roll;
+        },
+      );
+      expect(wrapped, isTrue, reason: 'it turned through more than one turn');
     });
 
     test('does not creep with the pedal up', () {
@@ -267,7 +289,6 @@ void main() {
         expect(() => _car(driven: false), throwsArgumentError);
         expect(
           () => VehicleSpec(
-            chassis: const Shape.box(1, 1, 1),
             mass: 100,
             wheels: [
               WheelSpec(mount: Vector3.zero(), radius: 0.3, drives: true),

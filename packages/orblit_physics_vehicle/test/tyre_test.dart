@@ -22,7 +22,6 @@ VehicleSpec _car({
   bool handbrakeRear = false,
   double brakeTorque = 3000,
 }) => VehicleSpec(
-  chassis: const Shape.box(0.9, 0.3, 2.0),
   mass: 1200,
   centre: [0, 0, centreZ],
   wheels: [
@@ -54,6 +53,7 @@ final class _Road {
       physics: physics,
       id: _id,
       spec: spec,
+      chassis: const Shape.box(0.9, 0.3, 2.0),
       at: [at.x, at.y, at.z],
       rotation: [math.sin(half), 0, 0, math.cos(half)],
       surface: surface ?? (_) => 1.0,
@@ -320,20 +320,13 @@ void main() {
     });
 
     test('refuses a centre of mass that is outside the wheels', () {
-      const box = Shape.box(1, 1, 1);
       final wheels = _car().wheels;
       expect(
-        () => VehicleSpec(
-          chassis: box,
-          mass: 100,
-          wheels: wheels,
-          centre: const [0, 0, 3],
-        ),
+        () => VehicleSpec(mass: 100, wheels: wheels, centre: const [0, 0, 3]),
         throwsArgumentError,
       );
       expect(
-        () =>
-            VehicleSpec(chassis: box, mass: 100, wheels: [wheel], maxSteer: 2),
+        () => VehicleSpec(mass: 100, wheels: [wheel], maxSteer: 2),
         throwsArgumentError,
       );
     });

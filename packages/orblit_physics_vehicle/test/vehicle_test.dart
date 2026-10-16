@@ -16,7 +16,6 @@ VehicleSpec _spec({
   double damping = 0.5,
   double antiRoll = 0.0,
 }) => VehicleSpec(
-  chassis: const Shape.box(0.9, 0.3, 2.0),
   mass: 1200,
   antiRoll: antiRoll,
   wheels: [
@@ -48,7 +47,13 @@ final class _World {
       motion: PhysicsMotion.fixed,
       layers: floor,
     );
-    car = Vehicle(physics: physics, id: _carId, spec: spec, at: [0, height, 0]);
+    car = Vehicle(
+      physics: physics,
+      id: _carId,
+      spec: spec,
+      chassis: const Shape.box(0.9, 0.3, 2.0),
+      at: [0, height, 0],
+    );
   }
 
   final physics = Physics();
@@ -161,7 +166,6 @@ void main() {
 
     test('do not see a body their layers leave out', () {
       final spec = VehicleSpec(
-        chassis: const Shape.box(0.9, 0.3, 2.0),
         mass: 1200,
         ground: const Layers(is_: 1, cares: 2),
         wheels: [WheelSpec(mount: Vector3(0, 0, 0), radius: _radius)],
@@ -224,26 +228,26 @@ void main() {
       expect(() => SuspensionSpec(damping: 3), throwsArgumentError);
     });
 
+    test('has a sag that follows the spring and stops at the travel', () {
+      expect(
+        SuspensionSpec().sag(),
+        closeTo(9.81 / math.pow(3 * math.pi, 2), 1e-9),
+      );
+      expect(SuspensionSpec(frequency: 0.5).sag(), 0.3, reason: 'travel caps');
+      expect(SuspensionSpec().sag(1.62), lessThan(SuspensionSpec().sag()));
+    });
+
     test(
       'refuses a car with no wheels, no weight or a lone wheel on a bar',
       () {
-        const box = Shape.box(1, 1, 1);
         final wheel = WheelSpec(mount: Vector3.zero(), radius: 0.3);
+        expect(() => VehicleSpec(mass: 100, wheels: []), throwsArgumentError);
         expect(
-          () => VehicleSpec(chassis: box, mass: 100, wheels: []),
+          () => VehicleSpec(mass: 0, wheels: [wheel]),
           throwsArgumentError,
         );
         expect(
-          () => VehicleSpec(chassis: box, mass: 0, wheels: [wheel]),
-          throwsArgumentError,
-        );
-        expect(
-          () => VehicleSpec(
-            chassis: box,
-            mass: 100,
-            wheels: [wheel],
-            antiRoll: 1,
-          ),
+          () => VehicleSpec(mass: 100, wheels: [wheel], antiRoll: 1),
           throwsArgumentError,
         );
       },

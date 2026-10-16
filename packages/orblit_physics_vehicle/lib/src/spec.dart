@@ -43,6 +43,15 @@ final class SuspensionSpec {
 
   /// Of critical damping. Zero rings, one settles in a single swing.
   final double damping;
+
+  /// Metres the spring is squeezed once it holds the weight it was tuned for,
+  /// under `gravity` metres a second squared. The stiffness follows the weight,
+  /// so the squeeze does not depend on how heavy the wheel's share is. Never
+  /// more than [travel].
+  double sag([double gravity = 9.81]) {
+    final omega = 2 * math.pi * frequency;
+    return math.min(travel, gravity / (omega * omega));
+  }
 }
 
 /// What a tyre holds the ground with.
@@ -159,14 +168,12 @@ final class WheelSpec {
 /// exactly two.
 final class VehicleSpec {
   VehicleSpec({
-    required this.chassis,
     required this.mass,
     required List<WheelSpec> wheels,
     this.centre = const [0.0, 0.0, 0.0],
     this.antiRoll = 0.0,
     this.maxSteer = 0.5,
     this.drive,
-    this.layers = Layers.everything,
     this.ground = Layers.everything,
   }) : wheels = List.unmodifiable(wheels),
        axles = _axlesOf(wheels, antiRoll),
@@ -196,10 +203,6 @@ final class VehicleSpec {
     }
   }
 
-  /// What the car collides as. It still hits the floor when the springs bottom
-  /// out.
-  final Shape chassis;
-
   /// Kilograms.
   final double mass;
 
@@ -218,9 +221,6 @@ final class VehicleSpec {
   /// The engine and what joins it to the wheels that drive. Null is a car that
   /// is pushed.
   final DriveSpec? drive;
-
-  /// The chassis' layers.
-  final Layers layers;
 
   /// The layers a wheel sees as ground, so a car does not stand on a
   /// character.

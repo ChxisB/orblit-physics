@@ -1,3 +1,13 @@
+## 0.4.0
+
+- `Vehicle.attach` makes a car for a chassis body that is already in the
+  world. `chassis` and `layers` move from `VehicleSpec` to the `Vehicle`
+  constructor, which makes the body, so a spec no longer says what a body is.
+- `WheelState.roll` is how far the wheel has turned, from nought to a full
+  turn, for a model of the tyre to follow.
+- `SuspensionSpec.sag` is how far the spring is squeezed once it holds its
+  weight, so a wheel placed at rest can be turned into a mount.
+
 ## 0.3.0
 
 - `EngineSpec` is a torque curve with an idle, an inertia and a drag. `DriveSpec`

@@ -17,6 +17,7 @@ final class WheelState {
     this.force = 0.0,
     this.spin = 0.0,
     this.steer = 0.0,
+    this.roll = 0.0,
   });
 
   /// It found ground under it. A wheel that did not hangs at full droop and
@@ -36,6 +37,10 @@ final class WheelState {
 
   /// Radians it is turned from straight ahead. Left is positive.
   final double steer;
+
+  /// Radians it has turned through, from nought up to a full turn. It grows as
+  /// the car rolls forward.
+  final double roll;
 }
 
 /// The grip of the ground under a body, as a number to scale a tyre's by. One
@@ -51,30 +56,50 @@ double _dry(int body) => 1.0;
 /// spring's force and each tyre's grip as an impulse. The world is never told
 /// about the wheels.
 final class Vehicle {
-  Vehicle({
+  /// A car for a chassis body that is already in [physics] as [id]. The body
+  /// keeps its shape, its layers and its controls, and wants the car's
+  /// [VehicleSpec.mass] and [VehicleSpec.centre].
+  Vehicle.attach({
     required this.physics,
     required this.id,
     required this.spec,
-    List<double> at = const [0.0, 0.0, 0.0],
-    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
     this.surface = _dry,
   }) : _wheels = List.filled(spec.wheels.length, const WheelState()),
+       _rolled = List.filled(spec.wheels.length, 0.0),
        _tyres = [
          for (final wheel in spec.wheels)
            Tyre(spec: wheel.tyre, radius: wheel.radius, inertia: wheel.inertia),
        ],
        _driveline = spec.drive == null
            ? null
-           : Driveline(spec: spec.drive!, wheels: spec.wheels) {
+           : Driveline(spec: spec.drive!, wheels: spec.wheels);
+
+  /// A car with a new chassis body, a [chassis] shape at `at`, in the world.
+  factory Vehicle({
+    required Physics physics,
+    required int id,
+    required Shape chassis,
+    required VehicleSpec spec,
+    List<double> at = const [0.0, 0.0, 0.0],
+    List<double> rotation = const [0.0, 0.0, 0.0, 1.0],
+    Layers layers = Layers.everything,
+    SurfaceGrip surface = _dry,
+  }) {
     physics.add(
       id,
-      shape: spec.chassis,
+      shape: chassis,
       at: at,
       rotation: rotation,
       mass: spec.mass,
-      layers: spec.layers,
+      layers: layers,
     );
     physics.setControls(id, PhysicsControls(centre: spec.centre));
+    return Vehicle.attach(
+      physics: physics,
+      id: id,
+      spec: spec,
+      surface: surface,
+    );
   }
 
   /// The longest step a spring of [SuspensionSpec.maxFrequency] is stable at.
@@ -88,6 +113,7 @@ final class Vehicle {
   final SurfaceGrip surface;
 
   final List<Tyre> _tyres;
+  final List<double> _rolled;
   final Driveline? _driveline;
   List<WheelState> _wheels;
   VehicleInput _input = VehicleInput();
@@ -187,6 +213,7 @@ final class Vehicle {
       drive: _driveline?.torque(i) ?? 0.0,
       brake: _brake(i),
     );
+    _rolled[i] = (_rolled[i] + tyre.spin * dt) % (2 * math.pi);
     if (probe != null) {
       final push = probe.normal * load + tyre.force;
       if (push.length2 > 0) {
@@ -199,6 +226,7 @@ final class Vehicle {
       force: load,
       spin: tyre.spin,
       steer: steer,
+      roll: _rolled[i],
     );
   }
 
