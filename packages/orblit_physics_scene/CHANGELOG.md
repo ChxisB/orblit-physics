@@ -1,3 +1,17 @@
+## 0.13.0
+
+- Make cars from vehicle components. A free body with a `VehicleComponent`
+  and `WheelComponent` children is a `Vehicle`, updated once a step before
+  the world steps. `vehicleOf` reads it, and `pilot` says what the driver
+  asks for, as a `VehicleInput`.
+- Write the wheels back as transforms. Each wheel entity sits under its
+  spring and is turned by the steering and the roll, so a model drawn on it
+  follows the car. A wheel is placed where it sits at rest, and the spring's
+  sag puts its mount above that.
+- A car that the vehicle refuses is kept as data and the body is a body.
+  A scaled chassis is not a car.
+- Needs `orblit_physics_vehicle` 0.4.0 and `orblit_scene` 0.19.0.
+
 ## 0.12.0
 
 - Read the new joint fields of a joint component: `springs`, `softHertz`,

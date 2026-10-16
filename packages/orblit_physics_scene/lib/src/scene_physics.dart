@@ -2,9 +2,11 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:orblit_physics/orblit_physics.dart';
+import 'package:orblit_physics_vehicle/orblit_physics_vehicle.dart';
 import 'package:orblit_scene/orblit_scene.dart';
 import 'package:vector_math/vector_math_64.dart';
 
+import 'car.dart';
 import 'character_walk.dart';
 import 'compound_parts.dart';
 import 'pose.dart';
@@ -156,6 +158,7 @@ class ScenePhysics {
     this.maxSteps = 8,
     this.smooth = false,
   }) : physics = Physics(settings: settings),
+       _gravity = (settings.gravity?[1] ?? -9.81).abs(),
        _document = document {
     _rebuild([for (final entity in document.entities) entity.id]);
   }
@@ -186,6 +189,9 @@ class ScenePhysics {
   /// Fixed for the life of the scene. A snapshot restores only into a scene
   /// that smooths as the one it came from did.
   final bool smooth;
+
+  /// Metres a second squared, for the sag a wheel's spring has at rest.
+  final double _gravity;
 
   SceneDocument _document;
   final Map<String, int> _bodyOf = {};
@@ -245,6 +251,12 @@ class ScenePhysics {
   /// What each character is asked to do, by entity. Not part of a snapshot:
   /// a walk is the game's, with a playhead the world cannot rewind.
   final Map<String, CharacterWalk> _walks = {};
+
+  /// The cars, by their chassis entity, and what each is asked to do. Like a
+  /// walk, the driver's input is the game's and not part of a snapshot, and the
+  /// tyres start unbent after a restore.
+  final Map<String, Car> _cars = {};
+  final Map<String, VehicleInput> _pilots = {};
 
   double _owed = 0;
   List<PhysicsEvent> _events = const [];
@@ -376,7 +388,13 @@ class ScenePhysics {
       _broken.add(id);
       _held.remove(id);
     }
-    return taken == 0 && !smooth ? SceneDiff.none : _writeBack();
+    if (taken == 0 && !smooth) return SceneDiff.none;
+
+    final placed = _writeBack();
+    final turned = taken == 0 ? SceneDiff.none : _seat();
+    return turned.isEmpty
+        ? placed
+        : SceneDiff([...placed.operations, ...turned.operations]);
   }
 
   /// Sets what [entity] is asked to do, every step, or stops asking with a
@@ -392,6 +410,31 @@ class ScenePhysics {
       return;
     }
     _walks[entity] = walk;
+  }
+
+  /// The car an entity's vehicle component makes, or null when it has none.
+  ///
+  /// A car needs a vehicle component on a free body, at the size of one, with
+  /// a wheel component on at least one of its children and a spec the vehicle
+  /// refuses nothing in: a document that breaks one of these keeps the data
+  /// and the body is just a body. Read the engine and the wheels from it. The
+  /// scene updates it once a step, so leave that to the scene.
+  Vehicle? vehicleOf(String entity) => _cars[entity]?.vehicle;
+
+  /// Sets what the driver of [entity] asks of its car, every step, or lets go
+  /// of the controls with a null [input]. A gear the car lacks is refused.
+  ///
+  /// The scene has no input of its own: whatever the game reads, a stick or a
+  /// key or a script, it passes on here. Asking replaces what was there. An
+  /// entity that is not a car, or that stops being one, loses it. A car steps
+  /// by [Vehicle.maxStep] at most, so a scene with one cannot [step] longer.
+  void pilot(String entity, VehicleInput? input) {
+    if (input == null) {
+      _pilots.remove(entity);
+    } else {
+      _pilots[entity] = input;
+    }
+    _cars[entity]?.vehicle.setInput(input ?? VehicleInput());
   }
 
   /// Makes [entity] crouch, or stand again, and answers whether it now is as
@@ -573,6 +616,8 @@ class ScenePhysics {
       ..addAll(snapshot._crouching);
     _owed = snapshot._owed;
     _events = List.of(snapshot._events);
+    _cars.clear();
+    _refit([for (final entity in _document.entities) entity.id]);
 
     return SceneDiff.between(before, _document);
   }
@@ -626,6 +671,7 @@ class ScenePhysics {
     }
     _rejoin(ids, gone);
     _reignore(gone);
+    _refit(ids);
     _dropIdleHulls();
     if (added.isEmpty) return;
 
@@ -884,6 +930,47 @@ class ScenePhysics {
       if (number == null) continue;
       final footing = physics.footingOf(number);
       physics.drive(number, velocity: value.ask(step, footing));
+    }
+    for (final car in _cars.values) {
+      car.vehicle.update(step);
+    }
+  }
+
+  /// Makes the cars agree with the document for every chassis entity in [ids],
+  /// and for the car of every wheel entity in [ids] or that was one. A car
+  /// made again has lost its tyres' bend, like a body made again its velocity.
+  void _refit(Iterable<String> ids) {
+    final touched = ids.toSet();
+    final cars = <String>{
+      for (final id in touched)
+        if (_cars.containsKey(id) ||
+            _document[id]?[SceneComponents.vehicle] is VehicleComponent)
+          id,
+      for (final id in touched)
+        if (_document[id] case final entity?
+            when entity[SceneComponents.wheel] is WheelComponent &&
+                entity.parent != null)
+          entity.parent!,
+      for (final MapEntry(:key, :value) in _cars.entries)
+        if (value.wheels.any(touched.contains)) key,
+    };
+    for (final id in cars) {
+      _cars.remove(id);
+      final number = _bodyOf[id];
+      final car = number == null
+          ? null
+          : Car.make(_document, id, physics, number, _gravity);
+      if (car == null) {
+        _pilots.remove(id);
+        continue;
+      }
+      _cars[id] = car;
+      try {
+        if (_pilots[id] case final input?) car.vehicle.setInput(input);
+      } on ArgumentError {
+        // An edit took away a gear the driver was holding.
+        _pilots.remove(id);
+      }
     }
   }
 
@@ -1231,6 +1318,41 @@ class ScenePhysics {
 
     // Built once rather than an operation at a time: replacing one entity
     // copies the document, and a pile of crates settling is hundreds a step.
+    _document = _document.copyWith(
+      entities: [
+        for (final entity in _document.entities)
+          if (placed[entity.id] case final transform?)
+            entity.withComponent(SceneComponents.transform, transform)
+          else
+            entity,
+      ],
+    );
+    return SceneDiff(operations);
+  }
+
+  /// Moves each car's wheel entities to where the last step left the wheels,
+  /// and says what moved. With [smooth] the chassis is shown a step behind and
+  /// the wheels are not, which is a few millimetres of spring.
+  SceneDiff _seat() {
+    final placed = <String, TransformComponent>{};
+    final operations = <SceneOp>[];
+    for (final car in _cars.values) {
+      for (final MapEntry(key: id, value: next)
+          in car.poses(_document).entries) {
+        final was = _document[id]![SceneComponents.transform];
+        placed[id] = next;
+        operations.add(
+          SetComponent(
+            id,
+            SceneComponents.transform,
+            from: was is TransformComponent ? was.toJson() : null,
+            to: next.toJson(),
+          ),
+        );
+      }
+    }
+    if (operations.isEmpty) return SceneDiff.none;
+
     _document = _document.copyWith(
       entities: [
         for (final entity in _document.entities)
