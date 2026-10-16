@@ -411,8 +411,8 @@ damping ratio so the same numbers suit a kart and a truck.
 final car = Vehicle(
   physics: physics,
   id: 1,
+  chassis: const Shape.box(0.9, 0.3, 2.0),
   spec: VehicleSpec(
-    chassis: const Shape.box(0.9, 0.3, 2.0),
     mass: 1200,
     antiRoll: 8000,
     wheels: [
@@ -461,8 +461,24 @@ on ice is smooth and does not flip from step to step.
 
 The wheels have no mass. The chassis still collides, so a car that bottoms
 out rests on its floor. A parked car never sleeps, because its springs push
-it every step. A scene component, wheel entities that follow the springs and
-an input action to drive from are not there yet.
+it every step.
+
+In a scene a car is a `vehicle` component on a free body, with `wheel`
+components on its direct children. Place each wheel entity where the wheel
+sits at rest. `ScenePhysics` finds the spring from it, updates the car before
+every step and writes the springs and the roll and steer of each wheel back to
+its entity, so a model hung on the entity follows. The body must be at a scale
+of one. A document that breaks that keeps its data and the body is just a body.
+
+```dart
+scene.pilot('car', VehicleInput(throttle: 1, steer: -0.3));
+final gear = scene.vehicleOf('car')!.gear;
+```
+
+The scene has no input actions of its own. `pilot` is the one place a game
+hands over what a driver asks for, every step, and `pilot('car', null)` lets go
+of the controls. A snapshot does not hold a car's tyres, so a restored car
+starts with straight bristles and the driver the game gave it.
 
 ## What it does not do
 
