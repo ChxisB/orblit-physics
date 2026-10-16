@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:vector_math/vector_math_64.dart';
 
 import 'spec.dart';
+import 'surface.dart';
 
 /// Particles joined by links that hold a distance.
 ///
@@ -15,14 +16,22 @@ import 'spec.dart';
 /// every link back to its length. The links are solved as position
 /// constraints, so they stay stable at a stiffness a spring would blow up at.
 ///
-/// A particle can be pinned, which holds it where the caller puts it. Nothing
-/// here touches a physics world: a body that asks for collisions is given one.
+/// A particle can be pinned, which holds it where the caller puts it.
+///
+/// Given a [SoftSurface], the particles stay off what it describes and grip
+/// it by [SoftSpec.friction]. Each step looks once, ahead of every particle,
+/// for the surface it will meet, and holds it to that plane in the sub-steps.
+/// A particle is a point with a skin, so a surface thinner than the gap
+/// between two particles lets one through, and the particles do not meet one
+/// another. A body asleep does not look, so wake it when the surface moves.
 final class SoftBody {
-  SoftBody._(this.spec, this._x, double mass, this._links)
+  SoftBody._(this.spec, this._x, double mass, this._links, this.surface)
     : _prev = Float64List.fromList(_x),
       _v = Float64List(_x.length),
       _inverseMass = 1 / mass,
-      _w = Float64List(_x.length ~/ 3)..fillRange(0, _x.length ~/ 3, 1 / mass);
+      _w = Float64List(_x.length ~/ 3)..fillRange(0, _x.length ~/ 3, 1 / mass),
+      _plane = Float64List(_x.length ~/ 3 * 4),
+      _touch = Uint8List(_x.length ~/ 3);
 
   /// A sheet of [columns] by [rows] particles. [across] is the offset from one
   /// particle to the next along a row and [down] to the next row, so their
@@ -36,6 +45,7 @@ final class SoftBody {
     required Vector3 down,
     double particleMass = 0.01,
     SoftSpec? spec,
+    SoftSurface? surface,
   }) {
     if (columns < 2 || rows < 2) {
       throw ArgumentError('A cloth needs 2 columns and 2 rows at least');
@@ -54,6 +64,7 @@ final class SoftBody {
       x,
       particleMass,
       _clothLinks(columns, rows, x, soft),
+      surface,
     );
   }
 
@@ -63,6 +74,7 @@ final class SoftBody {
     required List<Vector3> points,
     double particleMass = 0.01,
     SoftSpec? spec,
+    SoftSurface? surface,
   }) {
     if (points.length < 2) {
       throw ArgumentError('A rope needs 2 particles at least');
@@ -80,10 +92,14 @@ final class SoftBody {
     for (var i = 0; i + 2 < points.length; i++) {
       links.bend(i, i + 2, soft.bendCompliance);
     }
-    return SoftBody._(soft, x, particleMass, links.build());
+    return SoftBody._(soft, x, particleMass, links.build(), surface);
   }
 
   final SoftSpec spec;
+
+  /// What the particles stay off, or null for a body that falls through
+  /// everything.
+  final SoftSurface? surface;
 
   final Float64List _x;
   final Float64List _prev;
@@ -91,6 +107,11 @@ final class SoftBody {
   final Float64List _w;
   final double _inverseMass;
   final _Links _links;
+
+  /// For each particle that will meet a surface this step, the plane it must
+  /// stay in front of: a normal and the offset along it.
+  final Float64List _plane;
+  final Uint8List _touch;
 
   /// Seconds the largest move has been under [sleepSpeed].
   double _still = 0;
@@ -176,6 +197,7 @@ final class SoftBody {
     final span = math.min(dt, SoftSpec.maxStep);
     final pieces = (span / spec.substepLength).ceil();
     final h = span / pieces;
+    _look(span);
     for (var s = 0; s < pieces; s++) {
       _integrate(h);
       _solve(h);
@@ -206,7 +228,86 @@ final class SoftBody {
       for (var l = 0; l < links.length; l++) {
         _project(l, inverseSquare);
       }
+      _press();
     }
+  }
+
+  /// Finds the surface each free particle would meet this step if nothing
+  /// turned it. The ball is a tenth wider than the skin, so a particle held
+  /// exactly one skin off a surface still meets it, rather than grazing it and
+  /// being let go every other step.
+  ///
+  /// A ball that overlaps a curved surface answers a point inside it, so a
+  /// particle is held a tenth short of a full skin from one.
+  void _look(double span) {
+    final surface = this.surface;
+    if (surface == null) return;
+    final skin = spec.thickness;
+    final fall = spec.gravity * (0.5 * span * span);
+    for (var i = 0; i < count; i++) {
+      _touch[i] = 0;
+      if (_w[i] == 0) continue;
+      final move = Vector3.array(_v, i * 3) * span + fall;
+      final length = move.length;
+      // A particle with nowhere to go still looks down, for a surface it is in.
+      final dir = length > 1e-9 ? move / length : Vector3(0, -1, 0);
+      final at = Vector3.array(_x, i * 3);
+      final contact = surface.sweep(at, dir, length, skin * 1.1);
+      if (contact != null) _hold(i, contact);
+    }
+  }
+
+  void _hold(int i, SoftContact contact) {
+    contact.normal.copyIntoArray(_plane, i * 4);
+    _plane[i * 4 + 3] = contact.normal.dot(contact.at) + spec.thickness;
+    _touch[i] = 1;
+  }
+
+  /// Moves every particle that has gone behind its plane back in front of it,
+  /// and takes the slide it made on the way in. What a particle sank in this
+  /// sub-step is undone whole, so a fast one is caught. A depth it began the
+  /// sub-step with is undone by no more than one skin, and not kept as speed,
+  /// so a surface that closes on the body moves it out over several sub-steps
+  /// rather than throwing it.
+  void _press() {
+    if (surface == null) return;
+    for (var i = 0; i < count; i++) {
+      if (_touch[i] != 0) _push(i);
+    }
+  }
+
+  void _push(int i) {
+    final k = i * 3;
+    final q = i * 4;
+    final (nx, ny, nz) = (_plane[q], _plane[q + 1], _plane[q + 2]);
+    final depth = _plane[q + 3] - nx * _x[k] - ny * _x[k + 1] - nz * _x[k + 2];
+    if (depth <= 0) return;
+    final sank = math.max(
+      0.0,
+      -((_x[k] - _prev[k]) * nx +
+          (_x[k + 1] - _prev[k + 1]) * ny +
+          (_x[k + 2] - _prev[k + 2]) * nz),
+    );
+    final carried = math.min(math.max(0.0, depth - sank), spec.thickness);
+    final push = math.min(depth, sank) + carried;
+    _x[k] += nx * push;
+    _x[k + 1] += ny * push;
+    _x[k + 2] += nz * push;
+    _prev[k] += nx * carried;
+    _prev[k + 1] += ny * carried;
+    _prev[k + 2] += nz * carried;
+    // The slide over the surface in this sub-step, less what the grip takes.
+    final dx = _x[k] - _prev[k];
+    final dy = _x[k + 1] - _prev[k + 1];
+    final dz = _x[k + 2] - _prev[k + 2];
+    final along = dx * nx + dy * ny + dz * nz;
+    final (sx, sy, sz) = (dx - nx * along, dy - ny * along, dz - nz * along);
+    final slide = math.sqrt(sx * sx + sy * sy + sz * sz);
+    if (slide == 0) return;
+    final grip = math.min(1.0, spec.friction * push / slide);
+    _x[k] -= sx * grip;
+    _x[k + 1] -= sy * grip;
+    _x[k + 2] -= sz * grip;
   }
 
   /// Pulls the two ends of link [l] towards its length by an amount that

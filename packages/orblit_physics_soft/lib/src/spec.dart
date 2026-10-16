@@ -19,6 +19,8 @@ final class SoftSpec {
     this.bendCompliance = 1e-3,
     this.substepLength = 1 / 480,
     this.iterations = 1,
+    this.thickness = 0.01,
+    this.friction = 0.5,
   }) : gravity = gravity?.clone() ?? Vector3(0, -9.81, 0) {
     if (!(damping >= 0)) {
       throw ArgumentError.value(damping, 'damping', 'must not be negative');
@@ -47,6 +49,12 @@ final class SoftSpec {
     if (iterations < 1) {
       throw ArgumentError.value(iterations, 'iterations', 'must be 1 or more');
     }
+    if (!(thickness > 0 && thickness.isFinite)) {
+      throw ArgumentError.value(thickness, 'thickness', 'must be above zero');
+    }
+    if (!(friction >= 0)) {
+      throw ArgumentError.value(friction, 'friction', 'must not be negative');
+    }
   }
 
   /// The longest sub-step. Past it a body hangs in rags, whatever it is made of.
@@ -73,4 +81,14 @@ final class SoftSpec {
 
   /// Passes over the links in each sub-step.
   final int iterations;
+
+  /// How far, in metres, a particle keeps from a surface. It is the skin of
+  /// the cloth, so a surface thinner than the gap between two particles still
+  /// lets a particle through.
+  final double thickness;
+
+  /// How hard a particle grips what it rests on. Zero slides like ice. A
+  /// particle slips when the push along the surface is more than this times the
+  /// push out of it.
+  final double friction;
 }
