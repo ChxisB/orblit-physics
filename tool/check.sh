@@ -8,6 +8,7 @@ PACKAGES=(
   packages/orblit_physics_scene
   packages/orblit_physics_terrain
   packages/orblit_physics_rig
+  packages/orblit_physics_vehicle
 )
 failures=0
 
