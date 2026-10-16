@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:orblit_physics/orblit_physics.dart';
 import 'package:vector_math/vector_math_64.dart';
 
+import 'drive_spec.dart';
+
 /// How a wheel is held to the chassis.
 ///
 /// The spring is written as a frequency so that a kart and a truck use the
@@ -92,6 +94,7 @@ final class WheelSpec {
     required Vector3 mount,
     required this.radius,
     this.steers = false,
+    this.drives = false,
     this.brakeTorque = 0.0,
     this.handbrake = false,
     this.inertia = 1.0,
@@ -131,6 +134,9 @@ final class WheelSpec {
   /// It turns with the steering.
   final bool steers;
 
+  /// The engine turns it, through the differential of its axle.
+  final bool drives;
+
   /// Newton metres the brake gives at full pressure. Zero is a wheel with no
   /// brake.
   final double brakeTorque;
@@ -159,6 +165,7 @@ final class VehicleSpec {
     this.centre = const [0.0, 0.0, 0.0],
     this.antiRoll = 0.0,
     this.maxSteer = 0.5,
+    this.drive,
     this.layers = Layers.everything,
     this.ground = Layers.everything,
   }) : wheels = List.unmodifiable(wheels),
@@ -169,6 +176,16 @@ final class VehicleSpec {
     }
     if (wheels.isEmpty) {
       throw ArgumentError.value(wheels, 'wheels', 'needs at least one');
+    }
+    if (drive == null && wheels.any((w) => w.drives)) {
+      throw ArgumentError.value(
+        wheels,
+        'wheels',
+        'a driven wheel needs a drive',
+      );
+    }
+    if (drive != null && !wheels.any((w) => w.drives)) {
+      throw ArgumentError.value(drive, 'drive', 'needs a wheel that drives');
     }
     if (!(maxSteer >= 0 && maxSteer < math.pi / 2)) {
       throw ArgumentError.value(
@@ -197,6 +214,10 @@ final class VehicleSpec {
 
   /// Radians the middle of the steering axle turns at full lock.
   final double maxSteer;
+
+  /// The engine and what joins it to the wheels that drive. Null is a car that
+  /// is pushed.
+  final DriveSpec? drive;
 
   /// The chassis' layers.
   final Layers layers;

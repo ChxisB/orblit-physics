@@ -1,3 +1,20 @@
+## 0.3.0
+
+- `EngineSpec` is a torque curve with an idle, an inertia and a drag. `DriveSpec`
+  adds the gears, the final drive, a centrifugal clutch, a differential and an
+  automatic box. `VehicleSpec.drive` and `WheelSpec.drives` wire them to the
+  wheels. A drive with no driven wheel, or a driven wheel with no drive, is
+  refused.
+- `VehicleInput` takes `throttle` from 0 to 1 and `gear`. Null picks forward
+  gears by itself. Minus one is reverse, and a gear the car lacks is refused.
+- `Vehicle.rpm` and `Vehicle.gear`.
+- The clutch is solved against how each tyre will answer a torque
+  (`Tyre.spinAfter`), by bisection. A wheel on the road, a wheel in the air and
+  a wheel on ice all settle without a step to step flip.
+- The box shifts on the speed the wheels give the engine, not the engine's
+  own, and rev matches through a shift. The clutch is open just above idle, so
+  a car with the pedal up stays put.
+
 ## 0.2.0
 
 - `TyreSpec` and `Tyre`. A tyre holds its patch to the ground with bristles

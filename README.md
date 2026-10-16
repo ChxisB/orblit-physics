@@ -441,9 +441,28 @@ wheel to its grip, so ice and tarmac can share a world.
 car.setInput(VehicleInput(steer: 0.5, brake: 0.2));
 ```
 
+A car with a `drive` has an engine. `EngineSpec` is a torque curve. `DriveSpec`
+adds the gears, the final drive and a centrifugal clutch that holds nothing at
+idle and grips harder as the engine speeds up, so a car pulls away without
+stalling and does not creep. Wheels that `drives` share the torque, evenly
+between axles, then between the two wheels of an axle through a differential.
+`lock` is the torque that differential may move to the slower wheel: zero is
+open and infinity is locked. The box shifts by itself, or holds the
+`VehicleInput(gear:)` the driver picks, with reverse as minus one.
+
+```dart
+car.setInput(VehicleInput(throttle: 1));
+print('${car.gear} ${car.rpm}');
+```
+
+The clutch is solved against what each tyre will do with a torque. A wheel on
+the road feels the whole car behind it. A wheel in the air spins up. Wheelspin
+on ice is smooth and does not flip from step to step.
+
 The wheels have no mass. The chassis still collides, so a car that bottoms
 out rests on its floor. A parked car never sleeps, because its springs push
-it every step. Steering, tyres and an engine are not there yet.
+it every step. A scene component, wheel entities that follow the springs and
+an input action to drive from are not there yet.
 
 ## What it does not do
 

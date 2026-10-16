@@ -69,16 +69,38 @@ final class Tyre {
   Vector3? _expected;
   double _carry = 0.0;
 
-  /// Moves the tyre on by `dt` seconds. `brake` is the brake's torque in
-  /// newton metres. A wheel off the ground or with no load only brakes.
-  void step(Patch? patch, {required double dt, required double brake}) {
+  /// Moves the tyre on by `dt` seconds. `drive` and `brake` are torques in
+  /// newton metres: the first turns the wheel forward and the second holds it.
+  /// A wheel off the ground or with no load only turns freely and brakes.
+  void step(
+    Patch? patch, {
+    required double dt,
+    required double drive,
+    required double brake,
+  }) {
+    final next = _solve(patch, dt, drive, brake);
+    _spin = next.spin;
+    _force = next.force;
+    _bent = next.bent;
+    _expected = next.expected;
+    _carry = next.carry;
+  }
+
+  /// The spin the wheel would end a step at, for a `drive` torque, without
+  /// taking the step. The driveline asks it to find how the ground answers the
+  /// torque it is about to send.
+  double spinAfter(
+    Patch? patch, {
+    required double dt,
+    required double drive,
+    required double brake,
+  }) => _solve(patch, dt, drive, brake).spin;
+
+  _Step _solve(Patch? patch, double dt, double drive, double brake) {
+    final start = _spin + drive * dt / inertia;
     final ground = patch == null ? null : _Ground.of(patch);
     if (patch == null || ground == null || !(patch.load > 0)) {
-      _bent = Vector3.zero();
-      _expected = null;
-      _force = Vector3.zero();
-      _spin = _braked(_spin, brake * dt);
-      return;
+      return _Step.free(_braked(start, brake * dt));
     }
 
     // The bristles solved the step as if the tyre were the only force on the
@@ -86,17 +108,23 @@ final class Tyre {
     // patch further, and the bend has to follow or a tyre holds a car that is
     // still sliding at the speed those forces give it in one step.
     final expected = _expected;
-    if (expected != null) _bent += (patch.velocity - expected) * _carry;
+    final from = _Wheel(
+      start,
+      expected == null ? _bent : _bent + (patch.velocity - expected) * _carry,
+    );
 
-    final free = _grip(patch, ground, dt, turning: true);
-    final turned = _spin - free.along * radius * dt / inertia;
+    final free = _grip(patch, ground, dt, from, turning: true);
+    final turned = start - free.along * radius * dt / inertia;
     final locked = brake * dt >= inertia * turned.abs();
-    final held = locked ? _grip(patch, ground, dt, turning: false) : free;
-    _spin = locked ? 0.0 : _braked(turned, brake * dt);
-    _force = ground.heading * held.along + ground.side * held.across;
-    _bent = ground.heading * held.bentAlong + ground.side * held.bentAcross;
-    _expected = patch.velocity + _force * (dt / patch.mass);
-    _carry = dt * held.keep;
+    final held = locked ? _grip(patch, ground, dt, from, turning: false) : free;
+    final force = ground.heading * held.along + ground.side * held.across;
+    return _Step(
+      spin: locked ? 0.0 : _braked(turned, brake * dt),
+      force: force,
+      bent: ground.heading * held.bentAlong + ground.side * held.bentAcross,
+      expected: patch.velocity + force * (dt / patch.mass),
+      carry: dt * held.keep,
+    );
   }
 
   double _braked(double spin, double impulse) {
@@ -105,8 +133,14 @@ final class Tyre {
   }
 
   /// What the patch gives for a step with the wheel free to turn, or held.
-  _Grip _grip(Patch patch, _Ground ground, double dt, {required bool turning}) {
-    final spin = turning ? _spin : 0.0;
+  _Grip _grip(
+    Patch patch,
+    _Ground ground,
+    double dt,
+    _Wheel from, {
+    required bool turning,
+  }) {
+    final spin = turning ? from.spin : 0.0;
     final rolling = spin.abs() * radius;
     final slip = Vector2(ground.along - spin * radius, ground.across);
     // A wheel that turns also takes the force into its spin, which makes the
@@ -122,7 +156,10 @@ final class Tyre {
       dt: dt,
     );
 
-    final bent = Vector2(_bent.dot(ground.heading), _bent.dot(ground.side));
+    final bent = Vector2(
+      from.bent.dot(ground.heading),
+      from.bent.dot(ground.side),
+    );
     final force = Vector2(
       bristles.force(bent.x, slip.x, mass.x),
       bristles.force(bent.y, slip.y, mass.y),
@@ -140,6 +177,39 @@ final class Tyre {
       keep: bristles.keep,
     );
   }
+}
+
+/// A wheel at the start of a step: how fast it turns and how bent its bristles
+/// are, in the world.
+final class _Wheel {
+  const _Wheel(this.spin, this.bent);
+
+  final double spin;
+  final Vector3 bent;
+}
+
+/// What a step leaves the tyre with.
+final class _Step {
+  const _Step({
+    required this.spin,
+    required this.force,
+    required this.bent,
+    required this.expected,
+    required this.carry,
+  });
+
+  /// A wheel with no ground turning at `spin`.
+  _Step.free(this.spin)
+    : force = Vector3.zero(),
+      bent = Vector3.zero(),
+      expected = null,
+      carry = 0.0;
+
+  final double spin;
+  final Vector3 force;
+  final Vector3 bent;
+  final Vector3? expected;
+  final double carry;
 }
 
 /// A force along the wheel and across it, and the bristles it leaves.

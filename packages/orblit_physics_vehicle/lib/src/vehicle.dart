@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:orblit_physics/orblit_physics.dart';
 import 'package:vector_math/vector_math_64.dart';
 
+import 'driveline.dart';
 import 'input.dart';
 import 'spec.dart';
 import 'steering.dart';
@@ -61,7 +62,10 @@ final class Vehicle {
        _tyres = [
          for (final wheel in spec.wheels)
            Tyre(spec: wheel.tyre, radius: wheel.radius, inertia: wheel.inertia),
-       ] {
+       ],
+       _driveline = spec.drive == null
+           ? null
+           : Driveline(spec: spec.drive!, wheels: spec.wheels) {
     physics.add(
       id,
       shape: spec.chassis,
@@ -84,6 +88,7 @@ final class Vehicle {
   final SurfaceGrip surface;
 
   final List<Tyre> _tyres;
+  final Driveline? _driveline;
   List<WheelState> _wheels;
   VehicleInput _input = VehicleInput();
 
@@ -96,8 +101,23 @@ final class Vehicle {
   /// What the driver is asking for.
   VehicleInput get input => _input;
 
-  /// Changes what the driver asks for, from the next update.
-  void setInput(VehicleInput input) => _input = input;
+  /// Revolutions a minute the engine turns at. Zero for a car with no engine.
+  double get rpm => _driveline?.rpm ?? 0.0;
+
+  /// The gear the box is in: reverse is minus one and neutral is zero. Zero for
+  /// a car with no engine.
+  int get gear => _driveline?.gear ?? 0;
+
+  /// Changes what the driver asks for, from the next update. A gear the car
+  /// does not have is refused.
+  void setInput(VehicleInput input) {
+    final gear = input.gear;
+    final top = spec.drive?.ratios.length ?? 0;
+    if (gear != null && gear > top) {
+      throw ArgumentError.value(gear, 'gear', 'the car has $top');
+    }
+    _input = input;
+  }
 
   /// Pushes the chassis with every wheel's force for a step of `dt` seconds.
   void update(double dt) {
@@ -116,9 +136,36 @@ final class Vehicle {
       for (var i = 0; i < _wheels.length; i++) _probe(i, chassis, dt),
     ];
     final loads = _forces(probes, dt);
+    final patches = [
+      for (var i = 0; i < probes.length; i++)
+        probes[i] == null
+            ? null
+            : _patch(
+                i,
+                probes[i]!,
+                chassis,
+                dt,
+                steer: steer[i],
+                load: loads[i],
+              ),
+    ];
+    _driveline?.step(
+      [for (final tyre in _tyres) tyre.spin],
+      [
+        for (var i = 0; i < patches.length; i++)
+          (torque) => _tyres[i].spinAfter(
+            patches[i],
+            dt: dt,
+            drive: torque,
+            brake: _brake(i),
+          ),
+      ],
+      _input,
+      dt,
+    );
     _wheels = [
       for (var i = 0; i < probes.length; i++)
-        _roll(i, probes[i], chassis, dt, steer: steer[i], load: loads[i]),
+        _roll(i, probes[i], patches[i], dt, steer: steer[i], load: loads[i]),
     ];
     _before = chassis;
   }
@@ -128,16 +175,18 @@ final class Vehicle {
   WheelState _roll(
     int i,
     _Probe? probe,
-    _Chassis chassis,
+    Patch? patch,
     double dt, {
     required double steer,
     required double load,
   }) {
     final tyre = _tyres[i];
-    final patch = probe == null
-        ? null
-        : _patch(i, probe, chassis, dt, steer: steer, load: load);
-    tyre.step(patch, dt: dt, brake: _brake(i));
+    tyre.step(
+      patch,
+      dt: dt,
+      drive: _driveline?.torque(i) ?? 0.0,
+      brake: _brake(i),
+    );
     if (probe != null) {
       final push = probe.normal * load + tyre.force;
       if (push.length2 > 0) {
