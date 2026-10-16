@@ -401,6 +401,38 @@ there and makes every body animated again. The model is the game's to move.
 Like the scene bridge, it depends on `orblit_rig` over git, and
 `./tool/link_local.sh` points it at a checkout instead.
 
+## On wheels
+
+`orblit_physics_vehicle` makes a car: a chassis body whose wheels are casts.
+Each wheel hangs from a spring and a damper, written as a frequency and a
+damping ratio so the same numbers suit a kart and a truck.
+
+```dart
+final car = Vehicle(
+  physics: physics,
+  id: 1,
+  spec: VehicleSpec(
+    chassis: const Shape.box(0.9, 0.3, 2.0),
+    mass: 1200,
+    antiRoll: 8000,
+    wheels: [
+      for (final x in const [-0.8, 0.8])
+        for (final z in const [-1.2, 1.2])
+          WheelSpec(mount: Vector3(x, 0, z), radius: 0.35),
+    ],
+  ),
+  at: [0, 0.6, 0],
+);
+
+// Every step, before the step itself.
+car.update(dt);
+physics.step(dt);
+```
+
+The wheels have no mass. The chassis still collides, so a car that bottoms
+out rests on its floor. A parked car never sleeps, because its springs push
+it every step. Steering, tyres and an engine are not there yet.
+
 ## What it does not do
 
 **Cross-platform determinism.** Two machines running the same inputs will not
