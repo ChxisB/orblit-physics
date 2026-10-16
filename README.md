@@ -40,8 +40,9 @@ engine. It is a physics library that Orblit happens to use.
 
 ## In a scene
 
-`orblit_physics_scene` is one of the two packages here that know about Orblit;
-the other lays its terrain, [below](#on-terrain). This one simulates the
+`orblit_physics_scene` is one of three packages here that know about Orblit;
+the others lay its terrain, [below](#on-terrain), and give a rig a body for each
+limb, [below that](#on-a-rig). This one simulates the
 entities in a scene document that have a body component, and answers each step
 with the same kind of diff an edit makes, so whatever already draws a document
 draws the simulation.
@@ -354,6 +355,50 @@ way of entity handles and of the small negative numbers a game gives its own
 bodies; `regionOf` turns one back into the region it is.
 
 Like the scene bridge, it depends on the engine over git, and
+`./tool/link_local.sh` points it at a checkout instead.
+
+## On a rig
+
+`orblit_physics_rig` gives a skeleton from `orblit_rig` a body for each limb
+and a joint to its parent. A `RagdollSpec` says which bones get a body, how
+fat it is, and whether its joint is a hinge or a ball.
+
+```dart
+final ragdoll = Ragdoll.build(
+  physics: physics,
+  pose: pose,
+  spec: spec,
+  modelToWorld: model,
+  ignore: characterLayer,
+);
+stack.add(RagdollPose(ragdoll));
+
+// Every frame, after the stack has run.
+physics.step(dt);
+```
+
+Each body is `animated`, `powered` or `limp`. An animated body is given the
+velocity that reaches the pose in one step, so it pushes what it meets and is
+not pushed back. A powered body is held to the pose's angles by the joint's
+springs and gives under a blow. A limp body has only the joint's limits.
+
+`hit` makes the struck bone limp at once and its neighbours one joint at a time,
+`spread` seconds apart. `setFrom` makes a limb go from a bone down. An animated
+body below a free one holds that one's far end where the pose has it, as a
+hand holds a rail, so a limb that should fall has to go limp from its top.
+
+`RagdollPose` writes the bones of free bodies back into the pose and leaves the
+rest to the animation. Only the root is moved. Every other bone is turned and
+stays on its parent, so bones keep the length the rig gave them however far a
+joint has been pulled. `recover` mixes from the last drawn fall to the animated
+pose over a time, so a get-up does not jump.
+
+`RagdollCharacter` hands a character between its capsule and its bodies. The
+capsule and the ragdoll sit in layers that ignore each other. `knock` takes the
+capsule out, and `standUp` finds the ground under the root, puts the capsule
+there and makes every body animated again. The model is the game's to move.
+
+Like the scene bridge, it depends on `orblit_rig` over git, and
 `./tool/link_local.sh` points it at a checkout instead.
 
 ## What it does not do

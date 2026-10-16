@@ -917,6 +917,20 @@ bool World::joint(OrblitPhysicsId id, OrblitPhysicsJointState &out) const {
   return joints_.state(bodies_, id, out);
 }
 
+bool World::aim(OrblitPhysicsId id, const float *rest, float goal) {
+  if (joints_.find(id) == nullptr) return false;
+  // A NaN is "leave it", so only an infinity is a place that cannot be held.
+  const auto unholdable = [](float v) { return std::isinf(v); };
+  if (unholdable(goal)) return false;
+  for (int i = 0; rest != nullptr && i < 6; ++i) {
+    if (unholdable(rest[i])) return false;
+  }
+
+  const Joint *moved = joints_.aim(id, rest, goal);
+  if (moved != nullptr) wakeEnds(moved->a, moved->b);
+  return true;
+}
+
 void World::breakJoints(float delta) {
   if (joints_.empty()) return;
   broken_.clear();

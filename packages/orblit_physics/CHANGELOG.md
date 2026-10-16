@@ -1,3 +1,12 @@
+## 0.15.0
+
+- Add `aim`, which moves where a joint's springs and goal hold after it is
+  made. A joint can now follow a pose or reach for something that moves,
+  without being made again each frame. A null place leaves its way where it
+  was, and a body wakes only when a place really moved, so a joint aimed at
+  the place it holds lets what hangs from it sleep.
+- Add `orblit_physics_aim` to the header.
+
 ## 0.14.0
 
 - Add `springs` to every joint kind. A way with a spring gives and comes back

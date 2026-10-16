@@ -210,6 +210,11 @@ class World {
   /// How joint `id` stands. False if there is no such joint.
   bool joint(OrblitPhysicsId id, OrblitPhysicsJointState &out) const;
 
+  /// Moves the places joint `id`'s springs and goal hold, waking its bodies
+  /// if any moved. `rest` is six floats or null. False, and nothing changed,
+  /// for no such joint or an infinite value.
+  bool aim(OrblitPhysicsId id, const float *rest, float goal);
+
  private:
   void apply(const OrblitPhysicsCommand &command);
 

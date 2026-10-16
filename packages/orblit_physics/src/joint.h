@@ -231,6 +231,11 @@ class Joints {
 
   const Joint *find(OrblitPhysicsId id) const;
 
+  /// Moves the places joint `id`'s springs and goal hold, a NaN leaving one
+  /// where it was. Returns the joint if any place moved, so its bodies can be
+  /// woken, and null if none did or there is no such joint.
+  const Joint *aim(OrblitPhysicsId id, const float *rest, float goal);
+
   /// Removes every joint on `body`, adding the other body of each to
   /// `partners`.
   void drop(OrblitPhysicsId body, std::vector<OrblitPhysicsId> &partners);

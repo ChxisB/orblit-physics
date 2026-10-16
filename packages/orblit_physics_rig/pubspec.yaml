@@ -1,0 +1,26 @@
+name: orblit_physics_rig
+description: >-
+  A ragdoll for an Orblit rig. Bodies and joints from a skeleton's bones, limbs
+  that follow an animated pose, go limp from the bone that was hit, and stand
+  up again.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  orblit_physics:
+    path: ../orblit_physics
+  # The rig lives in the engine. tool/link_local.sh points this at a sibling
+  # checkout instead, which is how CI builds it.
+  orblit_rig:
+    git:
+      url: https://github.com/ChxisB/orblit.git
+      path: packages/orblit_rig
+      ref: main
+  vector_math: ^2.1.4
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

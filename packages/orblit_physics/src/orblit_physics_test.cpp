@@ -2351,6 +2351,98 @@ void sixAxes() {
   orblit_physics_destroy(physics);
 }
 
+void aiming() {
+  // The arm of the goal test, with the world as `a` so a positive angle is
+  // the arm's own turn and a positive turn takes its far end down.
+  const auto armOn = [](OrblitPhysics *world, float goal) {
+    OrblitPhysicsCommand link = boxAt(2, 0.25f, 0.0f, 3.0f, 0.5f);
+    link.mass = 2.0f;
+    submit(world, link);
+    OrblitPhysicsJoint hinge = jointOf(1, ORBLIT_PHYSICS_JOINT_HINGE, 0, 2, 0.0f, 3.0f, 0.0f);
+    hinge.rotation[3] = 1.0f;
+    hinge.strength = 50.0f;
+    hinge.goalHertz = 4.0f;
+    hinge.goalRatio = 1.0f;
+    hinge.goal = goal;
+    join(world, hinge);
+  };
+
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  armOn(physics, -0.5f);
+  run(physics, 2.0f);
+  check(near(stateOf(physics, 1).angles[0], -0.5f, 0.06f), "an arm holds the goal it was made with");
+  check(orblit_physics_aim(physics, 1, nullptr, 0.5f), "a goal can be moved");
+  run(physics, 2.0f);
+  check(near(stateOf(physics, 1).angles[0], 0.5f, 0.06f), "and the arm goes to the new one");
+  check(orblit_physics_aim(physics, 1, nullptr, std::nanf("")), "a NaN goal is allowed");
+  run(physics, 1.0f);
+  check(near(stateOf(physics, 1).angles[0], 0.5f, 0.06f), "and leaves the goal where it was");
+  orblit_physics_destroy(physics);
+
+  // A ball on a point joint whose way up and down is a spring. The ball is
+  // `a`, so the way is the world's point as the ball sees it, and a rest of a
+  // half metre holds the ball a half metre below where it sagged to.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  OrblitPhysicsJoint pivot = jointOf(1, ORBLIT_PHYSICS_JOINT_POINT, 2, 0, 0.0f, 3.0f, 0.0f);
+  pivot.springHertz[1] = 4.0f;
+  pivot.springRatio[1] = 1.0f;
+  join(physics, pivot);
+  run(physics, 2.0f);
+  const float sagged = heightOf(physics, 2);
+
+  float rest[6] = {std::nanf(""), 0.5f, std::nanf(""), std::nanf(""), std::nanf(""), std::nanf("")};
+  check(orblit_physics_aim(physics, 1, rest, std::nanf("")), "a spring's rest can be moved");
+  run(physics, 2.0f);
+  check(near(heightOf(physics, 2), sagged - 0.5f, 0.02f), "and the ball follows it");
+
+  // The way with no spring is locked, so a rest given for it is no more than
+  // the lock it had.
+  float locked[6] = {1.0f, std::nanf(""), 1.0f, std::nanf(""), std::nanf(""), std::nanf("")};
+  orblit_physics_aim(physics, 1, locked, std::nanf(""));
+  run(physics, 1.0f);
+  check(std::fabs(coordinateOf(physics, 2, 0)) < 0.01f && std::fabs(coordinateOf(physics, 2, 2)) < 0.01f,
+        "a rest on a way with no spring is ignored");
+
+  float unmoved[6] = {std::nanf(""), std::nanf(""), std::nanf(""), std::nanf(""), std::nanf(""), std::nanf("")};
+  orblit_physics_aim(physics, 1, unmoved, std::nanf(""));
+  check(near(heightOf(physics, 2), sagged - 0.5f, 0.02f), "a NaN rest leaves its way where it was");
+  orblit_physics_destroy(physics);
+
+  // A joint that is aimed at the place it already holds lets its body sleep,
+  // and one aimed somewhere else wakes it.
+  physics = orblit_physics_create(nullptr);
+  OrblitPhysicsCommand weight = sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f);
+  weight.damping[0] = 2.0f;
+  weight.damping[1] = 2.0f;
+  submit(physics, weight);
+  pivot.springHertz[1] = 4.0f;
+  join(physics, pivot);
+  for (int i = 0; i < 1200 && !orblit_physics_asleep(physics, 2); ++i) step(physics);
+  const bool slept = orblit_physics_asleep(physics, 2);
+  float same[6] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+  orblit_physics_aim(physics, 1, same, std::nanf(""));
+  check(slept && orblit_physics_asleep(physics, 2), "aiming at the place it holds does not wake it");
+  float away[6] = {std::nanf(""), 0.3f, std::nanf(""), std::nanf(""), std::nanf(""), std::nanf("")};
+  orblit_physics_aim(physics, 1, away, std::nanf(""));
+  check(!orblit_physics_asleep(physics, 2), "aiming somewhere else does");
+  orblit_physics_destroy(physics);
+
+  // What is refused, and refused whole.
+  physics = orblit_physics_create(nullptr);
+  submit(physics, sphereAt(2, 0.1f, 0.0f, 3.0f, 0.0f));
+  join(physics, pivot);
+  float endless[6] = {0.0f, 0.2f, 0.0f, 0.0f, 0.0f, INFINITY};
+  check(!orblit_physics_aim(physics, 1, endless, std::nanf("")), "an infinite place is refused");
+  check(!orblit_physics_aim(physics, 1, nullptr, INFINITY), "and so is an infinite goal");
+  check(!orblit_physics_aim(physics, 9, same, std::nanf("")), "and a joint that is not there");
+  check(!orblit_physics_aim(nullptr, 1, same, std::nanf("")), "and no world");
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), 3.0f - 9.81f / (2.0f * 3.14159265f * 4.0f * 2.0f * 3.14159265f * 4.0f), 0.01f),
+        "a refused aim moves nothing, not even the places before the bad one");
+  orblit_physics_destroy(physics);
+}
+
 void colliding() {
   // Two overlapping boxes joined where they overlap, as a limb's two halves
   // are at the elbow.
@@ -5968,6 +6060,7 @@ int main() {
   welding();
   carrying();
   giving();
+  aiming();
   coupling();
   trailing();
   swinging();

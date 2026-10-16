@@ -806,6 +806,16 @@ external bool physicsJoint(
 );
 
 @Native<
+  Bool Function(Pointer<OrblitPhysicsStruct>, Uint64, Pointer<Float>, Float)
+>(symbol: 'orblit_physics_aim', assetId: kOrblitPhysicsAsset)
+external bool physicsAim(
+  Pointer<OrblitPhysicsStruct> physics,
+  int joint,
+  Pointer<Float> rest,
+  double goal,
+);
+
+@Native<
   Pointer<OrblitPhysicsSnapshotStruct> Function(Pointer<OrblitPhysicsStruct>)
 >(symbol: 'orblit_physics_snapshot', assetId: kOrblitPhysicsAsset)
 external Pointer<OrblitPhysicsSnapshotStruct> physicsSnapshot(

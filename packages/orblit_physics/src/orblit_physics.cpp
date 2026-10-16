@@ -238,6 +238,12 @@ bool orblit_physics_joint(const OrblitPhysics *physics, OrblitPhysicsId joint,
   return physics->world.joint(joint, *out);
 }
 
+bool orblit_physics_aim(OrblitPhysics *physics, OrblitPhysicsId joint,
+                        const float *rest, float goal) {
+  if (physics == nullptr) return false;
+  return physics->world.aim(joint, rest, goal);
+}
+
 OrblitPhysicsSnapshot *orblit_physics_snapshot(const OrblitPhysics *physics) {
   if (physics == nullptr) return nullptr;
   // A copy of a large world is the one allocation here that can fail. Like

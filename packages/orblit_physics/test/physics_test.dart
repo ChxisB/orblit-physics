@@ -1076,6 +1076,64 @@ void main() {
       expect(world.transformOf(2)![1], greaterThan(3.0));
     });
 
+    test('aim moves a goal and a spring without making the joint again', () {
+      final world = Physics();
+      addTearDown(world.dispose);
+      world.add(
+        2,
+        shape: const Shape.box(0.25, 0.25, 0.25),
+        mass: 2.0,
+        at: const [0.0, 3.0, 0.5],
+      );
+      world.join(
+        1,
+        const Joint.hinge(strength: 50.0, goal: JointGoal(-0.5, hertz: 4.0)),
+        a: 0,
+        b: 2,
+        at: const [0.0, 3.0, 0.0],
+      );
+      void run(double seconds) {
+        for (var i = 0; i < (seconds * 60).round(); i++) {
+          world.step(1 / 60);
+        }
+      }
+
+      run(2);
+      expect(world.jointStateOf(1)!.angles[0], closeTo(-0.5, 0.06));
+
+      expect(world.aim(1, goal: 0.5), isTrue);
+      run(2);
+      expect(world.jointStateOf(1)!.angles[0], closeTo(0.5, 0.06));
+
+      expect(
+        world.aim(1, rest: const [null, 1, null, null, null, null]),
+        isTrue,
+      );
+      run(1);
+      expect(world.jointStateOf(1)!.angles[0], closeTo(0.5, 0.06));
+    });
+
+    test('aim refuses a joint that is not there and a place at infinity', () {
+      final world = Physics();
+      addTearDown(world.dispose);
+      world.add(2, shape: const Shape.sphere(0.1), at: const [0.0, 3.0, 0.0]);
+      world.join(
+        1,
+        const Joint.point(
+          springs: JointSprings(aboutX: JointSpring(hertz: 2.0)),
+        ),
+        a: 2,
+        at: const [0.0, 3.0, 0.0],
+      );
+      expect(world.aim(9, goal: 0.0), isFalse);
+      expect(world.aim(1, goal: double.infinity), isFalse);
+      expect(
+        world.aim(1, rest: const [0, 0, 0, double.infinity, 0, 0]),
+        isFalse,
+      );
+      expect(() => world.aim(1, rest: const [0, 0]), throwsArgumentError);
+    });
+
     test('a spring on a distance joint rests at the length it was made', () {
       final world = Physics();
       addTearDown(world.dispose);
