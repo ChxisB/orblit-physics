@@ -480,6 +480,40 @@ hands over what a driver asks for, every step, and `pilot('car', null)` lets go
 of the controls. A snapshot does not hold a car's tyres, so a restored car
 starts with straight bristles and the driver the game gave it.
 
+## On cloth
+
+`orblit_physics_soft` makes cloth and rope: particles joined by links that
+hold a distance, solved as position constraints in sub-steps of 1/480 of a
+second. It is stepped beside a world and asks the world what it touches.
+
+```dart
+final flag = SoftBody.cloth(
+  columns: 20,
+  rows: 12,
+  origin: Vector3(0, 3.4, 0),
+  across: Vector3(0.08, 0, 0),
+  down: Vector3(0, -0.08, 0),
+  surface: PhysicsSurface(physics),
+  air: PhysicsWind(physics, {gustZone: Vector3(0, 0, 8)}),
+);
+for (var row = 0; row < 12; row++) {
+  flag.pin(row * 20);
+}
+
+physics.step(dt);
+flag.step(dt);
+```
+
+`PhysicsSurface` keeps the particles off the bodies of a world by casting a
+sphere, and a floor must be a box because a world cannot cast a plane.
+`attach` holds a particle to a point that moves, such as `bodyPoint` on a
+body, and lets it go when the pull passes a `limit`. `PhysicsWind` blows the
+cloth from the trigger bodies of a world.
+
+The solver draws nothing. `OrblitParticleSheet` in `orblit_stage` draws a
+cloth of up to 256 particles as a skinned sheet with a joint for each
+particle. The gallery has a flag.
+
 ## What it does not do
 
 **Cross-platform determinism.** Two machines running the same inputs will not
@@ -499,6 +533,10 @@ the answer past that.
 
 **The web.** The solver is C++ behind a build hook, so it goes where a native
 toolchain goes. Whether it follows Orblit to the web later is open.
+
+**Cloth meeting cloth.** A soft body meets the world and not itself, so a cloth
+folded over passes through. It holds no volume either. A pillow or a balloon
+would need a constraint that is not there.
 
 ## Licence
 
