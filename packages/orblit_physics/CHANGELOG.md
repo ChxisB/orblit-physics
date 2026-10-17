@@ -1,3 +1,12 @@
+## 0.15.1
+
+- Friction now acts at each body's own surface point. A contact with a gap
+  or an overlap used to give both bodies the midpoint between their surfaces
+  as the end of their lever, so a sphere hitting the ground a little before it
+  arrived came away spinning up to a few percent too much. A sphere against a
+  box reported the box's surface as the middle of the contact; it is now the
+  middle.
+
 ## 0.15.0
 
 - Add `aim`, which moves where a joint's springs and goal hold after it is

@@ -299,8 +299,9 @@ bool sphereBox(const Shape &a, const Vec3 &pa, const Shape &b, const Vec3 &pb,
 
   if (squared > kTiny) {
     const float dist = std::sqrt(squared);
-    one(out, rotate(qb, d * (1.0f / dist)), pb + rotate(qb, closest),
-        radius - dist);
+    const Vec3 n = rotate(qb, d * (1.0f / dist));
+    const float depth = radius - dist;
+    one(out, n, pb + rotate(qb, closest) - n * (depth * 0.5f), depth);
     return true;
   }
 
@@ -322,7 +323,9 @@ bool sphereBox(const Shape &a, const Vec3 &pa, const Shape &b, const Vec3 &pb,
   outward[axis] = sign;
   Vec3 surface = local;
   surface[axis] = sign * b.size[axis];
-  one(out, rotate(qb, outward), pb + rotate(qb, surface), radius + least);
+  const Vec3 n = rotate(qb, outward);
+  const float depth = radius + least;
+  one(out, n, pb + rotate(qb, surface) - n * (depth * 0.5f), depth);
   return true;
 }
 
