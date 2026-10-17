@@ -5959,6 +5959,46 @@ void continuing() {
   }
 }
 
+// A crowd of sleeping boxes, each hit by its own continuous box in one step,
+// and the first of them hit again from the other side in that same step. More
+// bodies wake than any fixed-size table of fast bodies built at the start of
+// a step would hold, and a body woken by the step has no entry in one.
+void wakingACrowd() {
+  const int lanes = 65;
+  OrblitPhysics *physics = spaceWorld();
+  for (int lane = 0; lane < lanes; ++lane) {
+    const float z = 4.0f * static_cast<float>(lane);
+    submit(physics, boxAt(static_cast<OrblitPhysicsId>(1 + lane), 0.5f, 0.0f, 0.0f, z));
+  }
+  run(physics, 2.0f);
+  check(awakeAmong(physics, 1, lanes) == 0, "a crowd of boxes left alone falls asleep");
+
+  // Each fast box is 3 m off, a tenth of a second from the box it is for.
+  for (int lane = 0; lane <= lanes; ++lane) {
+    const bool extra = lane == lanes;
+    const float z = 4.0f * static_cast<float>(extra ? 0 : lane);
+    const OrblitPhysicsId id = static_cast<OrblitPhysicsId>(101 + lane);
+    submit(physics, boxAt(id, 0.25f, extra ? -3.0f : 3.0f, 0.0f, z));
+    OrblitPhysicsControls controls = controlsOf(id);
+    controls.continuous = true;
+    control(physics, controls);
+    drive(physics, id, extra ? 20.0f : -20.0f, 0.0f, 0.0f, 0.0f);
+  }
+
+  int mostAwake = 0;
+  bool finite = true;
+  for (int i = 0; i < 40; ++i) {
+    step(physics);
+    mostAwake = std::max(mostAwake, awakeAmong(physics, 1, lanes));
+  }
+  for (OrblitPhysicsId id = 1; id <= static_cast<OrblitPhysicsId>(lanes); ++id) {
+    finite = finite && std::isfinite(xOf(physics, id));
+  }
+  check(mostAwake == lanes, "all of a crowd of 65 boxes is woken by fast boxes at once");
+  check(finite, "and none of them is thrown out of the world");
+  orblit_physics_destroy(physics);
+}
+
 // A body spawned or teleported into the ground is pushed out. Fast enough, the
 // push is a shove that throws it. Overshooting, it hops. Read as still, it is
 // put to sleep half way up.
@@ -6132,6 +6172,7 @@ int main() {
   speculatingOnTerrain();
   rebounding();
   continuing();
+  wakingACrowd();
   climbingOut();
   standingTall();
   steppingSlowly();
