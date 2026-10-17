@@ -137,15 +137,21 @@ void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
 
       Row row;
       row.pair = index;
-      row.leverA = contact.at - bodies.centre(pair.a);
-      row.leverB = contact.at - bodies.centre(pair.b);
-      // From the origin, not the centre: that is what `at` and the rotation
-      // carry the point along with.
-      row.localA = unrotate(bodies.rotation(pair.a), contact.at - bodies.at(pair.a));
-      row.localB = unrotate(bodies.rotation(pair.b), contact.at - bodies.at(pair.b));
+      // `at` is midway between the surfaces, which are `depth` apart along the
+      // normal. A lever to it is too long on a body that has a gap to its
+      // neighbour and too short on one that overlaps, and friction turns the
+      // body by the difference. Each body's arm runs to its own surface.
+      const Vec3 half = contact.normal * (contact.depth * 0.5f);
+      const Vec3 onA = contact.at - half;
+      const Vec3 onB = contact.at + half;
+      row.leverA = onA - bodies.centre(pair.a);
+      row.leverB = onB - bodies.centre(pair.b);
+      // From the origin, not the centre: that is what the point and the
+      // rotation carry it along with.
+      row.localA = unrotate(bodies.rotation(pair.a), onA - bodies.at(pair.a));
+      row.localB = unrotate(bodies.rotation(pair.b), onB - bodies.at(pair.b));
       row.normal = contact.normal;
       perpendiculars(row.normal, row.tangent[0], row.tangent[1]);
-      row.depth = contact.depth;
       row.normalImpulse = contact.normalImpulse * share;
       row.frictionImpulse[0] = contact.frictionImpulse[0] * share;
       row.frictionImpulse[1] = contact.frictionImpulse[1] * share;
@@ -197,12 +203,13 @@ void Solver::aim(const Bodies &bodies, float h, const SolverSettings &settings,
   for (Row &row : rows_) {
     const Pair &pair = pairs_[row.pair];
 
-    // Where the two contact points have moved to since the narrowphase ran.
-    // Following them is not the same as running it again, but it is right for
-    // the small moves of a sub-step and it costs two rotations.
+    // Where the two surface points have moved to since the narrowphase ran, and
+    // so how far they overlap along the normal now. Following them is not the
+    // same as running it again, but it is right for the small moves of a
+    // sub-step and it costs two rotations.
     const Vec3 worldA = bodies.at(pair.a) + rotate(bodies.rotation(pair.a), row.localA);
     const Vec3 worldB = bodies.at(pair.b) + rotate(bodies.rotation(pair.b), row.localB);
-    const float depth = row.depth - dot(worldA - worldB, row.normal);
+    const float depth = -dot(worldA - worldB, row.normal);
 
     row.massScale = 1.0f;
     row.impulseScale = 0.0f;
