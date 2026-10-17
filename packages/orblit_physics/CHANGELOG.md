@@ -1,3 +1,12 @@
+## 0.15.2
+
+- Test that a crowd of 65 sleeping boxes, each hit by its own continuous
+  box in one step, all wake together, with the first hit again from the
+  other side. A continuous body reads its flag from its own row as the step
+  integrates, so no table of fast bodies is built at the start of a step
+  for a woken body to run past the end of. The test runs clean under ASan
+  and UBSan.
+
 ## 0.15.0
 
 - Add `aim`, which moves where a joint's springs and goal hold after it is
