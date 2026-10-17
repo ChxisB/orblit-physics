@@ -121,8 +121,9 @@ class Solver {
     uint32_t pair = 0;
     Vec3 leverA;
     Vec3 leverB;
-    /// The same two points in each body's own frame, so a sub-step can find
-    /// where they have moved to without running the narrowphase again.
+    /// The two points, one on each surface, in each body's own frame, so a
+    /// sub-step can find where they have moved to without running the
+    /// narrowphase again.
     Vec3 localA;
     Vec3 localB;
     /// Per point rather than per pair, because a pair touching ground can
@@ -131,9 +132,6 @@ class Solver {
     Vec3 tangent[2];
     float normalMass = 0.0f;
     float tangentMass[2] = {0.0f, 0.0f};
-    /// How far the points overlapped when the step began. Negative for two
-    /// that were apart.
-    float depth = 0.0f;
     /// How fast the two may close along the normal this pass. Negative for a
     /// push. Set from where the bodies are, once per pass.
     float allowed = 0.0f;

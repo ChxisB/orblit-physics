@@ -269,6 +269,59 @@ void bouncing() {
   orblit_physics_destroy(physics);
 }
 
+/// A sphere thrown at the floor with a sideways run and no spin, in a world
+/// with no gravity and nothing to slow it. Returns the spin it comes away with
+/// as a fraction of what the sideways run it gave up should have made: friction
+/// is the only sideways force, so spin times a sphere's inertia, a fifth of two
+/// times its mass and radius squared, is that run times the radius.
+float spinMade(bool boxFloor, float gap) {
+  OrblitPhysicsSettings none;
+  orblit_physics_defaults(&none);
+  none.gravity[1] = 0.0f;
+  none.sleeping = false;
+  OrblitPhysics *physics = orblit_physics_create(&none);
+
+  if (boxFloor) {
+    OrblitPhysicsCommand floor = boxAt(1, 5.0f, 0.0f, -5.0f, 0.0f);
+    floor.motion = ORBLIT_PHYSICS_STATIC;
+    submit(physics, floor);
+  } else {
+    submit(physics, groundPlane(1));
+  }
+
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.5f + gap, 0.0f);
+  ball.damping[0] = 0.0f;
+  ball.damping[1] = 0.0f;
+  submit(physics, ball);
+
+  OrblitPhysicsCommand throwIt{};
+  throwIt.kind = ORBLIT_PHYSICS_VELOCITY;
+  throwIt.id = 2;
+  throwIt.vector[0] = 6.0f;
+  throwIt.vector[1] = -6.0f;
+  submit(physics, throwIt);
+
+  run(physics, 0.5f);
+  float motion[6] = {0};
+  orblit_physics_velocity(physics, 2, motion);
+  orblit_physics_destroy(physics);
+  return 0.4f * 0.5f * std::fabs(motion[5]) / (6.0f - motion[0]);
+}
+
+void gapped() {
+  check(near(spinMade(false, 0.0f), 1.0f, 0.001f),
+        "a sphere thrown at the ground turns by the run it gave up");
+  check(near(spinMade(false, 0.08f), 1.0f, 0.001f),
+        "and by just as much when the ground was a gap away");
+  check(near(spinMade(true, 0.0f), 1.0f, 0.001f),
+        "and a box for ground is the same");
+  check(near(spinMade(true, 0.08f), 1.0f, 0.001f),
+        "with a gap or without");
+  check(near(spinMade(false, -0.1f), 1.0f, 0.001f) &&
+            near(spinMade(true, -0.1f), 1.0f, 0.001f),
+        "and when it had sunk in, whatever the ground is");
+}
+
 void rubbing() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, groundPlane(1));
@@ -5959,6 +6012,46 @@ void continuing() {
   }
 }
 
+// A crowd of sleeping boxes, each hit by its own continuous box in one step,
+// and the first of them hit again from the other side in that same step. More
+// bodies wake than any fixed-size table of fast bodies built at the start of
+// a step would hold, and a body woken by the step has no entry in one.
+void wakingACrowd() {
+  const int lanes = 65;
+  OrblitPhysics *physics = spaceWorld();
+  for (int lane = 0; lane < lanes; ++lane) {
+    const float z = 4.0f * static_cast<float>(lane);
+    submit(physics, boxAt(static_cast<OrblitPhysicsId>(1 + lane), 0.5f, 0.0f, 0.0f, z));
+  }
+  run(physics, 2.0f);
+  check(awakeAmong(physics, 1, lanes) == 0, "a crowd of boxes left alone falls asleep");
+
+  // Each fast box is 3 m off, a tenth of a second from the box it is for.
+  for (int lane = 0; lane <= lanes; ++lane) {
+    const bool extra = lane == lanes;
+    const float z = 4.0f * static_cast<float>(extra ? 0 : lane);
+    const OrblitPhysicsId id = static_cast<OrblitPhysicsId>(101 + lane);
+    submit(physics, boxAt(id, 0.25f, extra ? -3.0f : 3.0f, 0.0f, z));
+    OrblitPhysicsControls controls = controlsOf(id);
+    controls.continuous = true;
+    control(physics, controls);
+    drive(physics, id, extra ? 20.0f : -20.0f, 0.0f, 0.0f, 0.0f);
+  }
+
+  int mostAwake = 0;
+  bool finite = true;
+  for (int i = 0; i < 40; ++i) {
+    step(physics);
+    mostAwake = std::max(mostAwake, awakeAmong(physics, 1, lanes));
+  }
+  for (OrblitPhysicsId id = 1; id <= static_cast<OrblitPhysicsId>(lanes); ++id) {
+    finite = finite && std::isfinite(xOf(physics, id));
+  }
+  check(mostAwake == lanes, "all of a crowd of 65 boxes is woken by fast boxes at once");
+  check(finite, "and none of them is thrown out of the world");
+  orblit_physics_destroy(physics);
+}
+
 // A body spawned or teleported into the ground is pushed out. Fast enough, the
 // push is a shove that throws it. Overshooting, it hops. Read as still, it is
 // put to sleep half way up.
@@ -6030,6 +6123,7 @@ int main() {
   touching();
   bouncing();
   rubbing();
+  gapped();
   stacking();
   layering();
   shoving();
@@ -6132,6 +6226,7 @@ int main() {
   speculatingOnTerrain();
   rebounding();
   continuing();
+  wakingACrowd();
   climbingOut();
   standingTall();
   steppingSlowly();
