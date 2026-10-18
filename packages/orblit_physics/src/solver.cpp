@@ -46,6 +46,33 @@ Softness softnessFor(float h, float hertz) {
   return softnessOf(h, std::fmin(hertz, kMostOfRate / h), kDamping);
 }
 
+/// The sweeps of a manifold's small matrix, over the first `Slots` points. The
+/// length is a template argument so that the compiler can unroll it. A slot
+/// past the manifold's count has no mass, holds nothing and has no coupling,
+/// so it stays at zero and changes nothing, which is why a manifold of two or
+/// three points may run the sweeps of four.
+template <uint32_t Slots>
+void sweepBlock(const float (&coupling)[kMaxContacts][kMaxContacts],
+                const float (&take)[kMaxContacts],
+                const float (&give)[kMaxContacts],
+                float (&residual)[kMaxContacts],
+                float (&impulse)[kMaxContacts]) {
+  for (uint32_t sweep = 0; sweep < kBlockSweeps; ++sweep) {
+    for (uint32_t i = 0; i < Slots; ++i) {
+      // May push and never pull: a contact that would need to hold the
+      // bodies together is a contact that has ended. A soft one takes only
+      // part of the push, and gives back part of what it held.
+      const float next = std::fmax(
+          impulse[i] - take[i] * residual[i] - give[i] * impulse[i], 0.0f);
+      const float change = next - impulse[i];
+      impulse[i] = next;
+      for (uint32_t j = 0; j < Slots; ++j) {
+        residual[j] += coupling[i][j] * change;
+      }
+    }
+  }
+}
+
 } // namespace
 
 void Solver::solve(Bodies &bodies, Joints &joints, float h,
@@ -309,37 +336,31 @@ void Solver::correctNormals(Bodies &bodies, const Pair &pair) {
   // wall flat leaves it turning. The points are few, so they are solved
   // against one another here, in a small matrix, and the bodies are changed
   // once at the end.
-  float residual[kMaxContacts];
-  float held[kMaxContacts];
+  float residual[kMaxContacts] = {};
+  float impulse[kMaxContacts] = {};
+  float held[kMaxContacts] = {};
+  float take[kMaxContacts] = {};
+  float give[kMaxContacts] = {};
   for (uint32_t i = 0; i < pair.count; ++i) {
     const Row &row = rows_[pair.first + i];
     residual[i] =
         speedAlong(bodies, pair, row.axes[0], row.normal) + row.allowed;
-    held[i] = row.normalImpulse;
+    impulse[i] = held[i] = row.normalImpulse;
+    take[i] = row.massScale * row.normalMass;
+    give[i] = row.impulseScale;
   }
 
-  for (uint32_t sweep = 0; sweep < kBlockSweeps; ++sweep) {
-    for (uint32_t i = 0; i < pair.count; ++i) {
-      Row &row = rows_[pair.first + i];
-      // May push and never pull: a contact that would need to hold the
-      // bodies together is a contact that has ended. A soft one takes only
-      // part of the push, and gives back part of what it held.
-      const float next = std::fmax(
-          row.normalImpulse -
-              row.massScale * row.normalMass * residual[i] -
-              row.impulseScale * row.normalImpulse,
-          0.0f);
-      const float change = next - row.normalImpulse;
-      row.normalImpulse = next;
-      for (uint32_t j = 0; j < pair.count; ++j) {
-        residual[j] += pair.coupling[i][j] * change;
-      }
-    }
+  // A sphere meets with one point and should not pay for four.
+  if (pair.count == 1) {
+    sweepBlock<1>(pair.coupling, take, give, residual, impulse);
+  } else {
+    sweepBlock<kMaxContacts>(pair.coupling, take, give, residual, impulse);
   }
 
   for (uint32_t i = 0; i < pair.count; ++i) {
-    const Row &row = rows_[pair.first + i];
-    push(bodies, pair, row.axes[0], row.normalImpulse - held[i]);
+    Row &row = rows_[pair.first + i];
+    row.normalImpulse = impulse[i];
+    push(bodies, pair, row.axes[0], impulse[i] - held[i]);
   }
 }
 
