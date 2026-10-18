@@ -383,6 +383,9 @@ final class OrblitPhysicsRule extends Struct {
 
   @Array(2)
   external Array<Float> moveScale;
+
+  @Array(3)
+  external Array<Float> through;
 }
 
 /// `OrblitPhysicsControls`, field for field.

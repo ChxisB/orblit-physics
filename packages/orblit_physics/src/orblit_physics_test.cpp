@@ -3874,6 +3874,67 @@ void ignoring() {
   check(timesEntered(true) == 0, "and nothing for a ball it ignores");
 }
 
+/// A box at `y` given `up` m/s, with a platform across the sky at height two.
+/// `platform` and `box` are the ids, so both orders of the pair's key are
+/// read. `fast` marks the box continuous.
+OrblitPhysics *boxByPlatform(OrblitPhysicsId platform, OrblitPhysicsId box, float y,
+                             float up, bool oneWay, bool fast = false) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(platform, 1.0f, 0.1f, 1.0f, 0.0f, 2.0f, 0.0f));
+  submit(physics, boxAt(box, 0.25f, 0.0f, y, 0.0f));
+  if (oneWay) {
+    OrblitPhysicsRule pass = ruleFor(platform, box, ORBLIT_PHYSICS_RULE_ONE_WAY);
+    pass.through[1] = 1.0f;
+    check(orblit_physics_rule(physics, &pass), "a pair is made a one-way platform");
+  }
+  if (fast) {
+    OrblitPhysicsControls controls = controlsOf(box);
+    controls.continuous = true;
+    control(physics, controls);
+  }
+  drive(physics, box, 0.0f, up, 0.0f, 0.0f);
+  return physics;
+}
+
+void passingUp() {
+  OrblitPhysics *blocked = boxByPlatform(3, 2, 0.5f, 9.0f, false);
+  run(blocked, 3.0f);
+  check(heightOf(blocked, 2) < 2.0f, "a box thrown at an ordinary slab stays under it");
+  orblit_physics_destroy(blocked);
+
+  const OrblitPhysicsId platforms[2] = {3, 2};
+  for (const OrblitPhysicsId platform : platforms) {
+    const OrblitPhysicsId box = platform == 3 ? 2 : 3;
+    OrblitPhysics *thrown = boxByPlatform(platform, box, 0.5f, 9.0f, true);
+    run(thrown, 4.0f);
+    check(near(heightOf(thrown, box), 2.35f, 0.05f),
+          "a box thrown up through a one-way platform lands on it");
+    check(orblit_physics_asleep(thrown, box), "and goes to sleep there");
+    orblit_physics_destroy(thrown);
+
+    OrblitPhysics *dropped = boxByPlatform(platform, box, 5.0f, 0.0f, true);
+    run(dropped, 3.0f);
+    check(near(heightOf(dropped, box), 2.35f, 0.05f),
+          "a box dropped on one rests on it, whichever id is the larger");
+    orblit_physics_destroy(dropped);
+  }
+
+  // A metre a step is more than the platform and the box are thick together.
+  OrblitPhysics *shot = boxByPlatform(3, 2, 0.5f, 60.0f, true, true);
+  run(shot, 14.0f);
+  check(near(heightOf(shot, 2), 2.35f, 0.05f),
+        "a continuous box fired up through it lands on it too");
+  orblit_physics_destroy(shot);
+
+  OrblitPhysics *bad = boxByPlatform(3, 2, 5.0f, 0.0f, false);
+  OrblitPhysicsRule flat = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  check(!orblit_physics_rule(bad, &flat), "a one-way rule with no direction is refused");
+  flat.through[1] = std::nanf("");
+  check(!orblit_physics_rule(bad, &flat), "and so is one pointing nowhere in particular");
+  orblit_physics_destroy(bad);
+}
+
 void switching() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(1, 0.5f, 0.0f, 20.0f, 0.0f));
@@ -6100,6 +6161,7 @@ int main() {
   lockingTurns();
   capping();
   ignoring();
+  passingUp();
   switching();
   centring();
   centringJoined();

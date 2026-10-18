@@ -1530,7 +1530,7 @@ void main() {
 
     test('its structs are the size the engine reads', () {
       expect(sizeOf<native.OrblitPhysicsZone>(), 40);
-      expect(sizeOf<native.OrblitPhysicsRule>(), 40);
+      expect(sizeOf<native.OrblitPhysicsRule>(), 48);
     });
 
     test('a body falling through a trigger enters and leaves it', () {
@@ -2288,6 +2288,26 @@ void main() {
 
       expect(heightOf(3), closeTo(0.5, 0.05), reason: 'fell through body 2');
       expect(heightOf(5), closeTo(1.5, 0.05), reason: 'stacked as usual');
+    });
+
+    test('a one-way platform lets a body up and holds it coming down', () {
+      floor();
+      physics.add(
+        2,
+        shape: const Shape.box(1.0, 0.1, 1.0),
+        motion: PhysicsMotion.fixed,
+        at: const [0.0, 2.0, 0.0],
+      );
+      physics.add(3, shape: box, at: const [0.0, 0.5, 0.0]);
+      const up = PhysicsRule(oneWay: [0.0, 1.0, 0.0]);
+      expect(physics.setRule(2, 3, up), isTrue);
+      physics.drive(3, velocity: const [0.0, 9.0, 0.0]);
+
+      run(4.0);
+
+      expect(heightOf(3), closeTo(2.6, 0.05), reason: 'landed on the platform');
+      const none = PhysicsRule(oneWay: [0.0, 0.0, 0.0]);
+      expect(physics.setRule(2, 3, none), isFalse);
     });
   });
 

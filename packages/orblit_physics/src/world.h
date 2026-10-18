@@ -296,6 +296,10 @@ class World {
 
   /// Whether this step has a contact between the bodies in `a` and `b`.
   bool holds(uint32_t a, uint32_t b) const;
+
+  /// Whether a sweep of the body in `row` is to leave out the body in `other`,
+  /// which it would hit as `impact`, because a one-way rule lets it through.
+  bool passes(uint32_t row, uint32_t other, const Impact &impact) const;
   void moveCharacters(float delta);
 
   /// Moves the character in `row` aside by `move`, as far as it will go: swept

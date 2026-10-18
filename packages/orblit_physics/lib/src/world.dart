@@ -266,12 +266,14 @@ final class PhysicsRule {
     this.moveScaleA = 1.0,
     this.moveScaleB = 1.0,
     this.ignore = false,
+    this.oneWay,
   }) : assert(
          friction != null ||
              restitution != null ||
              moveScaleA != 1.0 ||
              moveScaleB != 1.0 ||
-             ignore,
+             ignore ||
+             oneWay != null,
          'A rule that changes nothing is not a rule.',
        );
 
@@ -280,6 +282,16 @@ final class PhysicsRule {
   /// not read. A character does not read rules, so it still stops at a body
   /// it is told to ignore.
   final bool ignore;
+
+  /// Makes body `a` a one-way platform and `b` what passes through it, going
+  /// up along this direction, three numbers in the world's axes. `a` holds `b`
+  /// only while `b` is on that side of it and not rising through it, so a body
+  /// thrown up from below passes, and the same body coming down, or standing
+  /// on it, does not.
+  /// The rule is made for the two bodies named, so a platform that lets many
+  /// bodies through has one for each. A platform that turns keeps the
+  /// direction it was given. A character does not read rules.
+  final List<double>? oneWay;
 
   /// Replace the pair's friction and restitution outright.
   final double? friction;
@@ -1555,6 +1567,7 @@ class Physics {
     if (rule.restitution != null) fields |= 2;
     if (rule.moveScaleA != 1.0 || rule.moveScaleB != 1.0) fields |= 4;
     if (rule.ignore) fields |= 8;
+    if (rule.oneWay != null) fields |= 16;
     return _sendRule(a, b, fields, rule);
   }
 
@@ -1575,6 +1588,9 @@ class Physics {
       it.restitution = rule?.restitution ?? 0.0;
       it.moveScale[0] = rule?.moveScaleA ?? 1.0;
       it.moveScale[1] = rule?.moveScaleB ?? 1.0;
+      for (var i = 0; i < 3; i++) {
+        it.through[i] = rule?.oneWay?[i] ?? 0.0;
+      }
       return native.physicsRule(_alive, made);
     } finally {
       calloc.free(made);

@@ -803,6 +803,10 @@ typedef enum {
   /// read. A character does not read rules, so it still stops at a body it is
   /// told to ignore.
   ORBLIT_PHYSICS_RULE_IGNORE = 8,
+
+  /// `a` is a one-way platform and `b` passes through it along `through`. See
+  /// the struct. A pair that ignores each other does not read this.
+  ORBLIT_PHYSICS_RULE_ONE_WAY = 16,
 } OrblitPhysicsRuleField;
 
 /// What is different about the contact between two particular bodies, in place
@@ -831,6 +835,14 @@ typedef struct {
   /// crate without the crate slowing it. Both are one for a rule that leaves
   /// movement alone.
   float moveScale[2];
+
+  /// For ONE_WAY: the way `b` goes up through `a`, in the world's axes. It
+  /// need not be a unit vector, but it must not be zero. `a` holds `b` only
+  /// while `b` is on that side of it and not moving up through it, so a body
+  /// thrown up from below passes, and the same body coming down, or standing
+  /// on it, does not. A platform that turns keeps this direction. Leave it
+  /// zero when ONE_WAY is not asked for.
+  float through[3];
 } OrblitPhysicsRule;
 
 /// Sets or removes the rule between two bodies, waking both. Returns whether it
@@ -838,8 +850,8 @@ typedef struct {
 /// `a` and `b` however the world keeps them.
 ///
 /// False, and nothing changed, for a body that is not there, a body against
-/// itself, a zero id, a NaN or a negative move scale, or removing a rule there
-/// was not.
+/// itself, a zero id, a NaN or a negative move scale, ONE_WAY with a `through`
+/// that is zero or not a number, or removing a rule there was not.
 bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule);
 
 // --------------------------------------------------------------- controls ---

@@ -189,7 +189,8 @@ constexpr uint32_t kZoneFields = ORBLIT_PHYSICS_ZONE_GRAVITY |
 constexpr uint32_t kRuleFields = ORBLIT_PHYSICS_RULE_FRICTION |
                                  ORBLIT_PHYSICS_RULE_RESTITUTION |
                                  ORBLIT_PHYSICS_RULE_MOVE_SCALE |
-                                 ORBLIT_PHYSICS_RULE_IGNORE;
+                                 ORBLIT_PHYSICS_RULE_IGNORE |
+                                 ORBLIT_PHYSICS_RULE_ONE_WAY;
 
 constexpr uint32_t kLockBits =
     ORBLIT_PHYSICS_LOCK_MOVE_X | ORBLIT_PHYSICS_LOCK_MOVE_Y |
@@ -249,10 +250,16 @@ Zone zoneOf(const OrblitPhysicsZone &from) {
 }
 
 /// Whether the numbers of a rule mean anything. A move scale that is NaN fails
-/// the comparison, so only the two that clamp need asking about.
+/// the comparison, so only the two that clamp need asking about. A one-way
+/// direction needs one to point along.
 bool meaningful(const OrblitPhysicsRule &from) {
-  return !anyNan({from.friction, from.restitution}) && from.moveScale[0] >= 0.0f &&
-         from.moveScale[1] >= 0.0f;
+  if (anyNan({from.friction, from.restitution}) || !(from.moveScale[0] >= 0.0f) ||
+      !(from.moveScale[1] >= 0.0f)) {
+    return false;
+  }
+  if ((from.overrides & ORBLIT_PHYSICS_RULE_ONE_WAY) == 0) return true;
+  const Vec3 through(from.through[0], from.through[1], from.through[2]);
+  return lengthSquared(through) > 0.0f && std::isfinite(lengthSquared(through));
 }
 
 /// The rule with its move scales in the key's order, and the two values a body
@@ -264,7 +271,37 @@ Rule ruleOf(const OrblitPhysicsRule &from, const PairKey &key) {
   rule.restitution = clamped(from.restitution, 0.0f, 1.0f);
   rule.move[0] = from.moveScale[0];
   rule.move[1] = from.moveScale[1];
+  rule.through =
+      normalised(Vec3(from.through[0], from.through[1], from.through[2]));
   return key.a == from.a ? rule : rule.turned();
+}
+
+/// How fast a body may go up through a one-way platform and still be held by
+/// it. A body standing on one is nudged up a little by the solver's own push
+/// out of the overlap, and that is not a body passing through.
+constexpr float kOneWayRise = 0.25f;
+
+/// How squarely a contact must face up out of a one-way platform to hold. The
+/// side of a platform has none of it, so a body beside one is not held.
+constexpr float kOneWayFacing = 0.25f;
+
+/// Drops the points of a one-way pair that the passer goes through. It goes
+/// through while rising, and through any point that does not face up out of
+/// the platform, such as the underside or an edge it is climbing past.
+///
+/// shortcut: the speed is the centres', so a spinning body rising through a
+/// platform at its rim reads as slower than its lowest point is. Upgrade when
+/// a game spins a body through one.
+void letPass(Manifold &manifold, const Vec3 &firstMinusSecond) {
+  const Rule &rule = manifold.rule;
+  const bool rising = rule.rise(firstMinusSecond) > kOneWayRise;
+  uint32_t kept = 0;
+  for (uint32_t i = 0; i < manifold.count; ++i) {
+    if (rising || rule.lift(manifold.points[i].normal) <= kOneWayFacing) continue;
+    manifold.points[kept++] = manifold.points[i];
+  }
+  manifold.count = kept;
+  if (kept > 0) manifold.normal = deepest(manifold).normal;
 }
 
 } // namespace
@@ -1070,6 +1107,10 @@ void World::findContacts(float delta) {
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
     manifold.reversed = bodies_.id(a) != key.a;
     manifold.rule = ruleFor(key, bodies_.id(a));
+    if (manifold.rule.oneWay()) {
+      letPass(manifold, bodies_.velocity(a) - bodies_.velocity(b));
+      if (manifold.count == 0) continue;
+    }
 
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
@@ -1280,6 +1321,7 @@ float World::freeRun(uint32_t row, float delta) const {
     if (ignores(bodies_.id(row), bodies_.id(other))) return;
     if (joints_.apart(bodies_.id(row), bodies_.id(other))) return;
     if (!meets(bodies_, other, journey, impact)) return;
+    if (passes(row, other, impact)) return;
     if (!impact.started) {
       nearest = std::min(nearest, impact.distance + kPastTouch);
     } else if (!holds(row, other)) {
@@ -1289,6 +1331,17 @@ float World::freeRun(uint32_t row, float delta) const {
   bodies_.visitStill(journey.reach, ask);
   for (const uint32_t plane : planes_) ask(plane);
   return nearest / travel;
+}
+
+bool World::passes(uint32_t row, uint32_t other, const Impact &impact) const {
+  const Rule rule = ruleFor(PairKey::of(bodies_.id(row), bodies_.id(other)),
+                            bodies_.id(row));
+  if (!rule.oneWay()) return false;
+  // Only a body coming down onto a platform from clear is stopped by a sweep.
+  // Anything else is the contacts' business, and a body already inside one
+  // that the contacts let through must not be held there.
+  return impact.started ||
+         rule.rise(bodies_.velocity(row) - bodies_.velocity(other)) >= -kOneWayRise;
 }
 
 bool World::holds(uint32_t a, uint32_t b) const {

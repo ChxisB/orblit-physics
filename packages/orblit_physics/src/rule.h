@@ -27,12 +27,34 @@ struct Rule {
   /// For the first and second body of whatever it is attached to.
   float move[2] = {1.0f, 1.0f};
 
+  /// For ORBLIT_PHYSICS_RULE_ONE_WAY: the unit direction the passer goes up
+  /// through the platform, and which of the two bodies, 0 or 1, the platform is.
+  Vec3 through;
+  uint32_t platform = 0;
+
   /// The same rule with the two bodies named the other way round.
   Rule turned() const {
     Rule other = *this;
     other.move[0] = move[1];
     other.move[1] = move[0];
+    other.platform = 1 - platform;
     return other;
+  }
+
+  bool oneWay() const { return (overrides & ORBLIT_PHYSICS_RULE_ONE_WAY) != 0; }
+
+  /// How fast the passer goes up through the platform, given the first body's
+  /// velocity minus the second's. Negative when it comes down on it.
+  float rise(const Vec3 &firstMinusSecond) const {
+    const float along = dot(firstMinusSecond, through);
+    return platform == 0 ? -along : along;
+  }
+
+  /// How squarely a contact normal, which points out of the second body towards
+  /// the first, faces the passer out of the platform's top. One is straight up.
+  float lift(const Vec3 &normal) const {
+    const float along = dot(normal, through);
+    return platform == 1 ? along : -along;
   }
 };
 
