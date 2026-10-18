@@ -117,7 +117,7 @@ the body's move against fixed bodies and ground, for what the margin misses: a
 small body at a walking pace against a thin wall.
 
 Bodies that touch sleep and wake as one island, so a stack goes to sleep whole
-and a heap of 1,000 boxes is asleep within six seconds. Bodies joined together
+and a heap of 1,000 boxes is asleep within eight seconds. Bodies joined together
 sleep and wake as one as well: half a chain asleep is half a chain that has
 stopped being held. A body is put to sleep by the distance it walked as well as
 by its speed.
@@ -132,23 +132,45 @@ seeds there.
 
 `./tool/benchmark.sh` times a step on the scenes in `bench/benchmark.cpp`.
 These are from one run on an Apple M4 Pro at 60 steps a second, in microseconds
-a step.
+a step. Each scene ran on the solver of 0.15.2 and then on this one, from the
+same build of the benchmark, one after the other.
 
-| Scene | Mean | Median | Asleep at the end |
-| --- | ---: | ---: | --- |
-| Scatter, 2,000 spheres | 1,826 | 2,100 | 947 of 2,000 |
-| Heap, 1,000 boxes | 1,923 | 389 | all, by step 323 |
-| Wall, 500 boxes | 437 | 27 | all, by step 50 |
-| Wall, 2,000 boxes | 15,255 | 14,447 | 0 of 2,000 |
-| 5,000 fixed boxes and 200 spheres | 149 | 135 | 148 of 200 |
+| Scene | Mean before | Mean after | Median before | Median after | Asleep at the end, before and after |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Scatter, 2,000 spheres | 1,848 | 1,450 | 2,110 | 1,634 | 947 of 2,000 both |
+| Scatter, 2,000 continuous spheres | 2,931 | 2,535 | 3,411 | 2,902 | 957 of 2,000 both |
+| Heap, 1,000 boxes | 1,901 | 1,326 | 310 | 260 | all, by step 343 and by step 445 |
+| Wall, 500 boxes | 443 | 304 | 27 | 27 | all, by step 50 both |
+| Wall, 2,000 boxes, 50 wide and 40 high | 15,556 | 10,457 | 14,687 | 9,958 | 0 of 2,000 both |
+| Wall, 2,000 boxes, 100 wide and 20 high | 2,602 | 1,759 | 121 | 124 | all, by step 50 both |
+| 5,000 fixed boxes and 200 spheres | 152 | 122 | 137 | 111 | 143 of 200 both |
 
 A ray cast against 5,000 static boxes takes 2.3 µs. A 0.2 m sphere fired at a
 0.1 m wall crosses from none of 16 starts at any speed from 5 to 320 m/s.
 
-The wall of 2,000 boxes, 50 wide and 40 high, does not sleep. A mode grows at
-the top row's edge until the wall comes down, and more sub-steps only delay it.
-The median of the heap is the point it falls asleep, so it moves between runs.
-The mean is the figure to compare.
+Where the time went, on the wall of 2,000 boxes: more than nine tenths of a
+step is the solver. The contact search takes about 1.1 ms of the 15. The solver
+is bound by arithmetic, not by memory, so its cost is the number of contact
+passes and the multiplies in each one. Two changes cut it. A contact's lever
+arms are turned into the velocity change each push makes once a step, not in
+every pass. This moves answers by rounding. The sweeps over a manifold's points
+run for the manifold's own number of points, which lets the compiler unroll
+them. This changes no result: a hash of every body after a run is equal before
+and after it. Nothing here uses a second thread. A pool of threads over islands
+would help a scene of many separate piles. It would not help a wall or a heap,
+which are one island each.
+
+Whether a tall wall stands comes down to rounding. A wall of 2,000 boxes 100
+wide and 20 high stands and sleeps. So does every wall up to 20 high that was
+tried, from 5 to 50 wide, and a wall 5 wide up to 40 high. A wall 50 wide and
+40 high falls. Between those, from 25 to 40 high, some walls stand and some
+fall in no order, and the set differs between the solver of 0.15.2 and this
+one, and again with the compiler's float contraction switched off. More
+sub-steps hold more of them and cost a third more on every scene with
+contacts, so the default stays at six. The mean is the figure to compare. The
+median of the heap is the point it falls asleep, so it moves between runs.
+Across twelve seeds the heap was all asleep between step 285 and step 445, and
+between step 278 and step 361 before, so it may sleep a little later.
 
 ### Casting
 

@@ -380,6 +380,10 @@ int main(int argc, char **argv) {
   scene("Wall, 2,000 boxes", [] { return wall(50, 40, 0, 600); });
   scene("Wall, 2,000 boxes, 120 steps after 600",
         [] { return wall(50, 40, 600, 120); });
+  scene("Wall, 2,000 boxes, 100 wide and 20 high",
+        [] { return wall(100, 20, 0, 600); });
+  scene("Wall, 2,000 boxes, 100 wide and 20 high, 120 steps after 600",
+        [] { return wall(100, 20, 600, 120); });
   scene("Level, 5,000 fixed boxes and 200 spheres", [] { return level(false); });
   scene("Level, 5,000 fixed boxes and 200 continuous spheres",
         [] { return level(true); });

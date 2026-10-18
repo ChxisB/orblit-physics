@@ -1,3 +1,19 @@
+## 0.16.0
+
+- A step costs between a seventh and a third less on every scene with
+  contacts. A wall of 2,000 boxes took 15.6 ms and takes 10.5 ms. A scatter
+  of 2,000 spheres took 1.8 ms and takes 1.5 ms. The solver works out once a
+  step what each push does to a body, where it used to work it out in every
+  pass, and a manifold sweeps only the points it has. Nothing uses a second
+  thread.
+- Answers move by rounding, and that decides which tall walls stand. A wall
+  of 2,000 boxes, 100 wide and 20 high, stands and sleeps. A wall 50 wide and
+  40 high still falls at the default six sub-steps. Between 25 and 40 boxes
+  high some walls stand and some fall, and the set is not the same as before.
+  A heap of 1,000 boxes is all asleep between steps 285 and 445 over twelve
+  seeds, and was between 278 and 361.
+- The benchmark has a wall of 2,000 boxes that stands, 100 wide and 20 high.
+
 ## 0.15.2
 
 - Test that a crowd of 65 sleeping boxes, each hit by its own continuous
