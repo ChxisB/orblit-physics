@@ -16,6 +16,15 @@
 
 namespace orblit {
 
+/// How fast a body may go up through a one-way platform and still be held by
+/// it. A body standing on one is nudged up a little by the solver's own push
+/// out of the overlap, and that is not a body passing through.
+constexpr float kOneWayRise = 0.25f;
+
+/// How squarely a contact must face up out of a one-way platform to hold. The
+/// side of a platform has none of it, so a body beside one is not held.
+constexpr float kOneWayFacing = 0.25f;
+
 /// A rule between two bodies. Nothing set is an ordinary contact.
 struct Rule {
   /// OrblitPhysicsRuleField bits for the two values that replace the bodies'
@@ -50,11 +59,12 @@ struct Rule {
     return platform == 0 ? -along : along;
   }
 
-  /// How squarely a contact normal, which points out of the second body towards
-  /// the first, faces the passer out of the platform's top. One is straight up.
-  float lift(const Vec3 &normal) const {
+  /// Whether a contact normal, which points out of the second body towards the
+  /// first, faces the passer up out of the platform's top squarely enough to
+  /// hold it.
+  bool faces(const Vec3 &normal) const {
     const float along = dot(normal, through);
-    return platform == 1 ? along : -along;
+    return (platform == 1 ? along : -along) > kOneWayFacing;
   }
 };
 

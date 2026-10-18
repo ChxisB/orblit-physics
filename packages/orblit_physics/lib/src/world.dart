@@ -279,8 +279,7 @@ final class PhysicsRule {
 
   /// The two bodies pass through each other. There is no contact and no touch
   /// event, and a trigger does not see the other one. The other fields are
-  /// not read. A character does not read rules, so it still stops at a body
-  /// it is told to ignore.
+  /// not read. A character walks through a body it is told to ignore.
   final bool ignore;
 
   /// Makes body `a` a one-way platform and `b` what passes through it, going
@@ -290,7 +289,9 @@ final class PhysicsRule {
   /// on it, does not.
   /// The rule is made for the two bodies named, so a platform that lets many
   /// bodies through has one for each. A platform that turns keeps the
-  /// direction it was given. A character does not read rules.
+  /// direction it was given. A character named as `b` jumps up through it and
+  /// lands on it. The other fields are about the solver's contacts, which a
+  /// character has none of, so a character reads only this and [ignore].
   final List<double>? oneWay;
 
   /// Replace the pair's friction and restitution outright.

@@ -23,6 +23,7 @@
 #include "mass.h"
 #include "maths.h"
 #include "orblit_physics.h"
+#include "rule.h"
 #include "shape.h"
 
 namespace orblit {
@@ -70,6 +71,20 @@ struct PairKeyHash {
     return static_cast<size_t>(mixed ^ (mixed >> 29));
   }
 };
+
+/// What the game has said about pairs of bodies, by the pair.
+using Rules = std::unordered_map<PairKey, Rule, PairKeyHash>;
+
+/// What `rules` says about the pair, named the way round `first` and `second`
+/// are. Nothing said is an ordinary contact.
+inline Rule ruleBetween(const Rules &rules, OrblitPhysicsId first,
+                        OrblitPhysicsId second) {
+  if (rules.empty()) return Rule{};
+  const PairKey key = PairKey::of(first, second);
+  const auto found = rules.find(key);
+  if (found == rules.end()) return Rule{};
+  return first == key.a ? found->second : found->second.turned();
+}
 
 /// How a body was made. Everything that does not change after a create.
 struct BodyDescription {

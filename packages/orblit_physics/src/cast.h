@@ -100,7 +100,23 @@ struct Sieve {
   /// sensors and nothing solid, which is how a game asks which zone a point is
   /// in.
   bool triggers = false;
+
+  /// What the cast's owner has agreed with other bodies, with `ignore` as the
+  /// owner. A character walks through a body it is told to ignore, and up
+  /// through a platform it passes. A query leaves this null, because a ray has
+  /// no pair to be ruled on.
+  const Rules *rules = nullptr;
 };
+
+/// Whether the sieve's owner has been told to pass through the body `other`
+/// outright, before any geometry.
+bool ignoredBy(const Sieve &sieve, OrblitPhysicsId other);
+
+/// Whether the sieve's owner passes through the body `other` at a contact
+/// whose normal, out of `other` towards the owner, is `normal`: `other` is a
+/// one-way platform the owner passes, and the contact does not face up out of
+/// it. A platform the owner is, rather than passes, is not read.
+bool passesAt(const Sieve &sieve, OrblitPhysicsId other, const Vec3 &normal);
 
 /// Everything one cast asks of the world: a shape, where it goes, and which
 /// bodies it may meet on the way.

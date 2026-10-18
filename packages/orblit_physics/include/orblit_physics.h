@@ -800,12 +800,13 @@ typedef enum {
 
   /// The pair passes through each other. No contact, no touch events, and a
   /// trigger among them does not see the other. Nothing else in the rule is
-  /// read. A character does not read rules, so it still stops at a body it is
-  /// told to ignore.
+  /// read. A character walks through a body it is told to ignore.
   ORBLIT_PHYSICS_RULE_IGNORE = 8,
 
   /// `a` is a one-way platform and `b` passes through it along `through`. See
-  /// the struct. A pair that ignores each other does not read this.
+  /// the struct. A pair that ignores each other does not read this. A character
+  /// as `b` jumps up through the platform and lands on it. A character as `a`
+  /// does not let anything through for its own walk.
   ORBLIT_PHYSICS_RULE_ONE_WAY = 16,
 } OrblitPhysicsRuleField;
 
@@ -816,6 +817,8 @@ typedef enum {
 /// patch of ice slides, and says so once, rather than being asked about the
 /// contact every step. It holds whenever the two touch, and until it is
 /// removed or either body goes.
+/// A character reads only IGNORE and ONE_WAY. Friction, restitution and move
+/// scale are about the solver's contacts, and a character has none.
 typedef struct {
   OrblitPhysicsId a;
   OrblitPhysicsId b;

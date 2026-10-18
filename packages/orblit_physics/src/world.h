@@ -264,10 +264,6 @@ class World {
   /// they close at, and where. Nothing else is read or changed.
   bool meet(uint32_t a, uint32_t b, float delta, Manifold &out) const;
 
-  /// What `rules_` says about the pair, named the way round `first` and the
-  /// other body are, which is how a manifold names them.
-  Rule ruleFor(const PairKey &key, OrblitPhysicsId first) const;
-
   /// Whether a rule says the two bodies pass through each other.
   bool ignores(OrblitPhysicsId a, OrblitPhysicsId b) const;
 
@@ -424,7 +420,7 @@ class World {
   /// the row a body is in moving. A zone's key is the trigger it is over, and
   /// a rule's is its pair, with the move scales in the key's order.
   std::unordered_map<OrblitPhysicsId, Zone> zones_;
-  std::unordered_map<PairKey, Rule, PairKeyHash> rules_;
+  Rules rules_;
 
   /// What each row feels from the zones, rebuilt every step there are any.
   std::vector<Felt> felt_;

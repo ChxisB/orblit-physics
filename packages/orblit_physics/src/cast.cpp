@@ -316,12 +316,19 @@ bool sweepMesh(const Placed &moving, const Vec3 &direction, float distance,
   return found;
 }
 
+/// What the sieve's owner has agreed with `other`, from the owner's side.
+Rule agreedWith(const Sieve &sieve, OrblitPhysicsId other) {
+  if (sieve.rules == nullptr) return Rule{};
+  return ruleBetween(*sieve.rules, sieve.ignore, other);
+}
+
 /// Whether the sieve lets the body in `row` be met at all, before any geometry.
 bool asks(const Bodies &bodies, uint32_t row, const Sieve &sieve) {
   const OrblitPhysicsId id = bodies.id(row);
   if (id == sieve.ignore || (sieve.alsoIgnore != 0 && id == sieve.alsoIgnore)) {
     return false;
   }
+  if (ignoredBy(sieve, id)) return false;
   if (!interact(sieve.layerIs, sieve.layerCares, bodies.layerIs(row),
                 bodies.layerCares(row))) {
     return false;
@@ -336,6 +343,15 @@ bool leavingIt(const Journey &journey, const Impact &impact) {
 }
 
 } // namespace
+
+bool ignoredBy(const Sieve &sieve, OrblitPhysicsId other) {
+  return (agreedWith(sieve, other).overrides & ORBLIT_PHYSICS_RULE_IGNORE) != 0;
+}
+
+bool passesAt(const Sieve &sieve, OrblitPhysicsId other, const Vec3 &normal) {
+  const Rule rule = agreedWith(sieve, other);
+  return rule.oneWay() && rule.platform == 1 && !rule.faces(normal);
+}
 
 Vec3 support(const Placed &of, const Vec3 &direction) {
   if (of.shape.affine) return toVec(Convex(of.shape, of.at, of.rotation).support(D3(direction)));
@@ -435,7 +451,8 @@ bool meets(const Bodies &bodies, uint32_t row, const Journey &journey,
   if (!sweep(journey.moving, journey.direction, journey.distance, fixed, out)) {
     return false;
   }
-  return !leavingIt(journey, out);
+  return !leavingIt(journey, out) &&
+         !passesAt(journey.sieve, bodies.id(row), out.normal);
 }
 
 uint32_t nearest(const Bodies &bodies, const Journey &journey, Impact &out) {

@@ -276,15 +276,6 @@ Rule ruleOf(const OrblitPhysicsRule &from, const PairKey &key) {
   return key.a == from.a ? rule : rule.turned();
 }
 
-/// How fast a body may go up through a one-way platform and still be held by
-/// it. A body standing on one is nudged up a little by the solver's own push
-/// out of the overlap, and that is not a body passing through.
-constexpr float kOneWayRise = 0.25f;
-
-/// How squarely a contact must face up out of a one-way platform to hold. The
-/// side of a platform has none of it, so a body beside one is not held.
-constexpr float kOneWayFacing = 0.25f;
-
 /// Drops the points of a one-way pair that the passer goes through. It goes
 /// through while rising, and through any point that does not face up out of
 /// the platform, such as the underside or an edge it is climbing past.
@@ -297,7 +288,7 @@ void letPass(Manifold &manifold, const Vec3 &firstMinusSecond) {
   const bool rising = rule.rise(firstMinusSecond) > kOneWayRise;
   uint32_t kept = 0;
   for (uint32_t i = 0; i < manifold.count; ++i) {
-    if (rising || rule.lift(manifold.points[i].normal) <= kOneWayFacing) continue;
+    if (rising || !rule.faces(manifold.points[i].normal)) continue;
     manifold.points[kept++] = manifold.points[i];
   }
   manifold.count = kept;
@@ -1106,7 +1097,7 @@ void World::findContacts(float delta) {
 
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
     manifold.reversed = bodies_.id(a) != key.a;
-    manifold.rule = ruleFor(key, bodies_.id(a));
+    manifold.rule = ruleBetween(rules_, bodies_.id(a), bodies_.id(b));
     if (manifold.rule.oneWay()) {
       letPass(manifold, bodies_.velocity(a) - bodies_.velocity(b));
       if (manifold.count == 0) continue;
@@ -1227,12 +1218,6 @@ bool World::meet(uint32_t a, uint32_t b, float delta, Manifold &out) const {
                      margin, out);
 }
 
-Rule World::ruleFor(const PairKey &key, OrblitPhysicsId first) const {
-  const auto found = rules_.find(key);
-  if (found == rules_.end()) return Rule{};
-  return first == key.a ? found->second : found->second.turned();
-}
-
 void World::feelZones() {
   felt_.clear();
   if (zones_.empty()) return;
@@ -1334,8 +1319,7 @@ float World::freeRun(uint32_t row, float delta) const {
 }
 
 bool World::passes(uint32_t row, uint32_t other, const Impact &impact) const {
-  const Rule rule = ruleFor(PairKey::of(bodies_.id(row), bodies_.id(other)),
-                            bodies_.id(row));
+  const Rule rule = ruleBetween(rules_, bodies_.id(row), bodies_.id(other));
   if (!rule.oneWay()) return false;
   // Only a body coming down onto a platform from clear is stopped by a sweep.
   // Anything else is the contacts' business, and a body already inside one

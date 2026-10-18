@@ -3935,6 +3935,53 @@ void passingUp() {
   orblit_physics_destroy(bad);
 }
 
+/// Character 2, walked at a wall that is body 3, told to ignore it or not.
+float walkedAtWall(bool ignored) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 0.25f, 1.5f, 2.0f, 2.0f, 1.5f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  if (ignored) {
+    const OrblitPhysicsRule pass = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_IGNORE);
+    check(orblit_physics_rule(physics, &pass), "a character is told to ignore a wall");
+  }
+  walk(physics, 2, 2.0f, 0.0f, 2.0f);
+  const float x = coordinateOf(physics, 2, 0);
+  orblit_physics_destroy(physics);
+  return x;
+}
+
+/// Character 2 jumped at 7 m/s from the ground under a platform that is body 3,
+/// with a one-way rule that names `platform` first.
+OrblitPhysics *jumpedUnder(OrblitPhysicsId platform, OrblitPhysicsId passer) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 1.0f, 0.1f, 1.0f, 0.0f, 2.0f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  OrblitPhysicsRule pass = ruleFor(platform, passer, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  pass.through[1] = 1.0f;
+  check(orblit_physics_rule(physics, &pass), "a character is given a one-way platform");
+  drive(physics, 2, 0.0f, 7.0f, 0.0f, 0.0f);
+  walk(physics, 2, 0.0f, 0.0f, 3.0f);
+  return physics;
+}
+
+void characterRules() {
+  check(walkedAtWall(false) < 1.8f, "a character stops at a wall");
+  check(walkedAtWall(true) > 3.5f, "and walks through one it is told to ignore");
+
+  OrblitPhysics *lands = jumpedUnder(3, 2);
+  check(near(heightOf(lands, 2), 3.01f, 0.05f),
+        "a character that jumps up through a one-way platform lands on it");
+  check(footingOf(lands, 2).ground == 3, "and says it is standing on it");
+  orblit_physics_destroy(lands);
+
+  OrblitPhysics *under = jumpedUnder(2, 3);
+  check(heightOf(under, 2) < 1.5f,
+        "a rule that makes the character the platform does not let it through");
+  orblit_physics_destroy(under);
+}
+
 void switching() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(1, 0.5f, 0.0f, 20.0f, 0.0f));
@@ -6162,6 +6209,7 @@ int main() {
   capping();
   ignoring();
   passingUp();
+  characterRules();
   switching();
   centring();
   centringJoined();
