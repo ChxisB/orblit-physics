@@ -116,8 +116,8 @@ class Solver {
     float coupling[kMaxContacts][kMaxContacts] = {};
   };
 
-  /// What one direction at a contact does, worked out once per step so that a
-  /// pass does a handful of multiplies and not a handful of cross products.
+  /// What one direction at a contact does to each body. `prepare` builds it,
+  /// so a pass is multiplies and adds with no cross products.
   struct Axis {
     /// Dotted with a body's spin, how much of it counts along the direction.
     Vec3 turnA;
@@ -133,8 +133,6 @@ class Solver {
   /// Everything about one contact point, likewise.
   struct Row {
     uint32_t pair = 0;
-    Vec3 leverA;
-    Vec3 leverB;
     /// The two points, one on each surface, in each body's own frame, so a
     /// sub-step can find where they have moved to without running the
     /// narrowphase again.
@@ -205,17 +203,19 @@ class Solver {
   /// Fills in `pair.coupling` from the rows already built for it.
   void couple(Pair &pair) const;
 
-  /// Works out `axis` for a direction `along` at `row`.
-  static Axis axisOf(const Pair &pair, const Row &row, const Vec3 &along);
+  /// What a direction `along` does to the pair's bodies at a contact whose
+  /// levers from their centres are `leverA` and `leverB`.
+  [[nodiscard]] static Axis axisOf(const Pair &pair, const Vec3 &leverA,
+                                   const Vec3 &leverB, const Vec3 &along);
 
   /// How hard it is to change the velocity of the contact point along `along`,
   /// inverted. Zero when neither body can move, which makes the impulse zero
   /// without a branch anywhere else.
-  static float effectiveMass(const Axis &axis, const Vec3 &along);
+  [[nodiscard]] static float effectiveMass(const Axis &axis, const Vec3 &along);
 
   /// How fast `a`'s contact point moves along `along` relative to `b`'s.
-  static float speedAlong(const Bodies &bodies, const Pair &pair,
-                          const Axis &axis, const Vec3 &along);
+  [[nodiscard]] static float speedAlong(const Bodies &bodies, const Pair &pair,
+                                        const Axis &axis, const Vec3 &along);
 
   /// Pushes `a` along an axis by `impulse` and `b` the other way, turning both.
   static void push(Bodies &bodies, const Pair &pair, const Axis &axis,

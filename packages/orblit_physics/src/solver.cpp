@@ -46,28 +46,32 @@ Softness softnessFor(float h, float hertz) {
   return softnessOf(h, std::fmin(hertz, kMostOfRate / h), kDamping);
 }
 
-/// The sweeps of a manifold's small matrix, over the first `Slots` points. The
-/// length is a template argument so that the compiler can unroll it. A slot
-/// past the manifold's count has no mass, holds nothing and has no coupling,
-/// so it stays at zero and changes nothing, which is why a manifold of two or
-/// three points may run the sweeps of four.
+/// What a manifold's small matrix is solved from and into, a slot a point.
+struct Block {
+  float residual[kMaxContacts] = {};
+  float impulse[kMaxContacts] = {};
+  float take[kMaxContacts] = {};
+  float give[kMaxContacts] = {};
+};
+
+/// The sweeps of a manifold's small matrix over its first `Slots` points. The
+/// length is a template argument so that the compiler can unroll it.
 template <uint32_t Slots>
 void sweepBlock(const float (&coupling)[kMaxContacts][kMaxContacts],
-                const float (&take)[kMaxContacts],
-                const float (&give)[kMaxContacts],
-                float (&residual)[kMaxContacts],
-                float (&impulse)[kMaxContacts]) {
+                Block &block) {
   for (uint32_t sweep = 0; sweep < kBlockSweeps; ++sweep) {
     for (uint32_t i = 0; i < Slots; ++i) {
       // May push and never pull: a contact that would need to hold the
       // bodies together is a contact that has ended. A soft one takes only
       // part of the push, and gives back part of what it held.
-      const float next = std::fmax(
-          impulse[i] - take[i] * residual[i] - give[i] * impulse[i], 0.0f);
-      const float change = next - impulse[i];
-      impulse[i] = next;
+      const float next = std::fmax(block.impulse[i] -
+                                       block.take[i] * block.residual[i] -
+                                       block.give[i] * block.impulse[i],
+                                   0.0f);
+      const float change = next - block.impulse[i];
+      block.impulse[i] = next;
       for (uint32_t j = 0; j < Slots; ++j) {
-        residual[j] += coupling[i][j] * change;
+        block.residual[j] += coupling[i][j] * change;
       }
     }
   }
@@ -171,8 +175,8 @@ void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
       const Vec3 half = contact.normal * (contact.depth * 0.5f);
       const Vec3 onA = contact.at - half;
       const Vec3 onB = contact.at + half;
-      row.leverA = onA - bodies.centre(pair.a);
-      row.leverB = onB - bodies.centre(pair.b);
+      const Vec3 leverA = onA - bodies.centre(pair.a);
+      const Vec3 leverB = onB - bodies.centre(pair.b);
       // From the origin, not the centre: that is what the point and the
       // rotation carry it along with.
       row.localA = unrotate(bodies.rotation(pair.a), onA - bodies.at(pair.a));
@@ -182,10 +186,10 @@ void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
       row.normalImpulse = contact.normalImpulse * share;
       row.frictionImpulse[0] = contact.frictionImpulse[0] * share;
       row.frictionImpulse[1] = contact.frictionImpulse[1] * share;
-      row.axes[0] = axisOf(pair, row, row.normal);
+      row.axes[0] = axisOf(pair, leverA, leverB, row.normal);
       row.normalMass = effectiveMass(row.axes[0], row.normal);
       for (int t = 0; t < 2; ++t) {
-        row.axes[t + 1] = axisOf(pair, row, row.tangent[t]);
+        row.axes[t + 1] = axisOf(pair, leverA, leverB, row.tangent[t]);
         row.tangentMass[t] = effectiveMass(row.axes[t + 1], row.tangent[t]);
         row.belt[t] = dot(pair.belt, row.tangent[t]);
       }
@@ -193,11 +197,7 @@ void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
       // Restitution is decided here, from the speed the bodies met at, not
       // during the passes: by then the solver has already taken that speed
       // away, and a bounce computed from what is left is no bounce at all.
-      const Vec3 relativeSpeed = bodies.velocity(pair.a) +
-                                 cross(bodies.spin(pair.a), row.leverA) -
-                                 bodies.velocity(pair.b) -
-                                 cross(bodies.spin(pair.b), row.leverB);
-      const float closing = dot(relativeSpeed, row.normal);
+      const float closing = speedAlong(bodies, pair, row.axes[0], row.normal);
       row.rebound =
           closing < -settings.bounceThreshold ? -pair.bounciness * closing : 0.0f;
 
@@ -213,14 +213,12 @@ void Solver::couple(Pair &pair) const {
   const Vec3 together = pair.gainA + pair.gainB;
   for (uint32_t i = 0; i < pair.count; ++i) {
     const Row &from = rows_[pair.first + i];
-    const Vec3 turnA = cross(from.leverA, from.normal);
-    const Vec3 turnB = cross(from.leverB, from.normal);
     for (uint32_t j = 0; j < pair.count; ++j) {
       const Row &to = rows_[pair.first + j];
       pair.coupling[i][j] =
           dot(from.normal, mulPerAxis(together, to.normal)) +
-          dot(turnA, pair.inertiaA * cross(to.leverA, to.normal)) +
-          dot(turnB, pair.inertiaB * cross(to.leverB, to.normal));
+          dot(from.axes[0].turnA, to.axes[0].twistA) +
+          dot(from.axes[0].turnB, to.axes[0].twistB);
     }
   }
 }
@@ -336,31 +334,36 @@ void Solver::correctNormals(Bodies &bodies, const Pair &pair) {
   // wall flat leaves it turning. The points are few, so they are solved
   // against one another here, in a small matrix, and the bodies are changed
   // once at the end.
-  float residual[kMaxContacts] = {};
-  float impulse[kMaxContacts] = {};
-  float held[kMaxContacts] = {};
-  float take[kMaxContacts] = {};
-  float give[kMaxContacts] = {};
+  Block block;
   for (uint32_t i = 0; i < pair.count; ++i) {
     const Row &row = rows_[pair.first + i];
-    residual[i] =
+    block.residual[i] =
         speedAlong(bodies, pair, row.axes[0], row.normal) + row.allowed;
-    impulse[i] = held[i] = row.normalImpulse;
-    take[i] = row.massScale * row.normalMass;
-    give[i] = row.impulseScale;
+    block.impulse[i] = row.normalImpulse;
+    block.take[i] = row.massScale * row.normalMass;
+    block.give[i] = row.impulseScale;
   }
 
-  // A sphere meets with one point and should not pay for four.
-  if (pair.count == 1) {
-    sweepBlock<1>(pair.coupling, take, give, residual, impulse);
-  } else {
-    sweepBlock<kMaxContacts>(pair.coupling, take, give, residual, impulse);
+  // A manifold sweeps only the points it has. The length is a template
+  // argument so the common cases, a sphere's one and a box face's four, unroll.
+  switch (pair.count) {
+    case 1:
+      sweepBlock<1>(pair.coupling, block);
+      break;
+    case 2:
+      sweepBlock<2>(pair.coupling, block);
+      break;
+    case 3:
+      sweepBlock<3>(pair.coupling, block);
+      break;
+    default:
+      sweepBlock<kMaxContacts>(pair.coupling, block);
   }
 
   for (uint32_t i = 0; i < pair.count; ++i) {
     Row &row = rows_[pair.first + i];
-    row.normalImpulse = impulse[i];
-    push(bodies, pair, row.axes[0], impulse[i] - held[i]);
+    push(bodies, pair, row.axes[0], block.impulse[i] - row.normalImpulse);
+    row.normalImpulse = block.impulse[i];
   }
 }
 
@@ -372,11 +375,11 @@ void Solver::accumulate() {
   }
 }
 
-Solver::Axis Solver::axisOf(const Pair &pair, const Row &row,
-                            const Vec3 &along) {
+Solver::Axis Solver::axisOf(const Pair &pair, const Vec3 &leverA,
+                            const Vec3 &leverB, const Vec3 &along) {
   Axis axis;
-  axis.turnA = cross(row.leverA, along);
-  axis.turnB = cross(row.leverB, along);
+  axis.turnA = cross(leverA, along);
+  axis.turnB = cross(leverB, along);
   axis.pushA = mulPerAxis(along, pair.gainA);
   axis.pushB = mulPerAxis(along, pair.gainB);
   axis.twistA = pair.inertiaA * axis.turnA;
