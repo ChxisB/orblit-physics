@@ -155,9 +155,12 @@ void Solver::prepare(const Bodies &bodies, const Manifold *manifolds,
       row.normalImpulse = contact.normalImpulse * share;
       row.frictionImpulse[0] = contact.frictionImpulse[0] * share;
       row.frictionImpulse[1] = contact.frictionImpulse[1] * share;
-      row.normalMass = effectiveMass(pair, row, row.normal);
+      row.axes[0] = axisOf(pair, row, row.normal);
+      row.normalMass = effectiveMass(row.axes[0], row.normal);
       for (int t = 0; t < 2; ++t) {
-        row.tangentMass[t] = effectiveMass(pair, row, row.tangent[t]);
+        row.axes[t + 1] = axisOf(pair, row, row.tangent[t]);
+        row.tangentMass[t] = effectiveMass(row.axes[t + 1], row.tangent[t]);
+        row.belt[t] = dot(pair.belt, row.tangent[t]);
       }
 
       // Restitution is decided here, from the speed the bodies met at, not
@@ -244,19 +247,19 @@ void Solver::rebound(Bodies &bodies) {
     if (!bounces(row)) continue;
 
     const Pair &pair = pairs_[row.pair];
-    const float closing = dot(relative(bodies, pair, row), row.normal);
+    const float closing = speedAlong(bodies, pair, row.axes[0], row.normal);
     if (closing >= row.rebound) continue;
-    apply(bodies, pair, row, row.normal * (row.normalMass * (row.rebound - closing)));
+    push(bodies, pair, row.axes[0],
+         row.normalMass * (row.rebound - closing));
   }
 }
 
 void Solver::warmStart(Bodies &bodies) {
   for (const Row &row : rows_) {
     const Pair &pair = pairs_[row.pair];
-    apply(bodies, pair, row,
-          row.normal * row.normalImpulse +
-              row.tangent[0] * row.frictionImpulse[0] +
-              row.tangent[1] * row.frictionImpulse[1]);
+    push(bodies, pair, row.axes[0], row.normalImpulse);
+    push(bodies, pair, row.axes[1], row.frictionImpulse[0]);
+    push(bodies, pair, row.axes[2], row.frictionImpulse[1]);
   }
 }
 
@@ -290,11 +293,11 @@ void Solver::correctFriction(Bodies &bodies, const Pair &pair, Row &row) {
   const float bound = pair.friction * row.normalImpulse;
   for (int t = 0; t < 2; ++t) {
     const float sliding =
-        dot(relative(bodies, pair, row) + pair.belt, row.tangent[t]);
+        speedAlong(bodies, pair, row.axes[t + 1], row.tangent[t]) + row.belt[t];
     const float was = row.frictionImpulse[t];
     row.frictionImpulse[t] =
         clamped(was - row.tangentMass[t] * sliding, -bound, bound);
-    apply(bodies, pair, row, row.tangent[t] * (row.frictionImpulse[t] - was));
+    push(bodies, pair, row.axes[t + 1], row.frictionImpulse[t] - was);
   }
 }
 
@@ -310,7 +313,8 @@ void Solver::correctNormals(Bodies &bodies, const Pair &pair) {
   float held[kMaxContacts];
   for (uint32_t i = 0; i < pair.count; ++i) {
     const Row &row = rows_[pair.first + i];
-    residual[i] = dot(relative(bodies, pair, row), row.normal) + row.allowed;
+    residual[i] =
+        speedAlong(bodies, pair, row.axes[0], row.normal) + row.allowed;
     held[i] = row.normalImpulse;
   }
 
@@ -335,7 +339,7 @@ void Solver::correctNormals(Bodies &bodies, const Pair &pair) {
 
   for (uint32_t i = 0; i < pair.count; ++i) {
     const Row &row = rows_[pair.first + i];
-    apply(bodies, pair, row, row.normal * (row.normalImpulse - held[i]));
+    push(bodies, pair, row.axes[0], row.normalImpulse - held[i]);
   }
 }
 
@@ -347,27 +351,37 @@ void Solver::accumulate() {
   }
 }
 
-float Solver::effectiveMass(const Pair &pair, const Row &row, const Vec3 &along) {
-  const Vec3 turnA = cross(row.leverA, along);
-  const Vec3 turnB = cross(row.leverB, along);
-  const float k = dot(along, mulPerAxis(pair.gainA, along)) +
-                  dot(along, mulPerAxis(pair.gainB, along)) +
-                  dot(cross(pair.inertiaA * turnA, row.leverA), along) +
-                  dot(cross(pair.inertiaB * turnB, row.leverB), along);
+Solver::Axis Solver::axisOf(const Pair &pair, const Row &row,
+                            const Vec3 &along) {
+  Axis axis;
+  axis.turnA = cross(row.leverA, along);
+  axis.turnB = cross(row.leverB, along);
+  axis.pushA = mulPerAxis(along, pair.gainA);
+  axis.pushB = mulPerAxis(along, pair.gainB);
+  axis.twistA = pair.inertiaA * axis.turnA;
+  axis.twistB = pair.inertiaB * axis.turnB;
+  return axis;
+}
+
+float Solver::effectiveMass(const Axis &axis, const Vec3 &along) {
+  const float k = dot(along, axis.pushA) + dot(along, axis.pushB) +
+                  dot(axis.twistA, axis.turnA) + dot(axis.twistB, axis.turnB);
   return k > kTiny ? 1.0f / k : 0.0f;
 }
 
-Vec3 Solver::relative(const Bodies &bodies, const Pair &pair, const Row &row) {
-  return bodies.velocity(pair.a) + cross(bodies.spin(pair.a), row.leverA) -
-         bodies.velocity(pair.b) - cross(bodies.spin(pair.b), row.leverB);
+float Solver::speedAlong(const Bodies &bodies, const Pair &pair,
+                         const Axis &axis, const Vec3 &along) {
+  return dot(bodies.velocity(pair.a) - bodies.velocity(pair.b), along) +
+         dot(bodies.spin(pair.a), axis.turnA) -
+         dot(bodies.spin(pair.b), axis.turnB);
 }
 
-void Solver::apply(Bodies &bodies, const Pair &pair, const Row &row,
-                   const Vec3 &impulse) {
-  bodies.velocity(pair.a) += mulPerAxis(impulse, pair.gainA);
-  bodies.spin(pair.a) += pair.inertiaA * cross(row.leverA, impulse);
-  bodies.velocity(pair.b) -= mulPerAxis(impulse, pair.gainB);
-  bodies.spin(pair.b) -= pair.inertiaB * cross(row.leverB, impulse);
+void Solver::push(Bodies &bodies, const Pair &pair, const Axis &axis,
+                  float impulse) {
+  bodies.velocity(pair.a) += axis.pushA * impulse;
+  bodies.spin(pair.a) += axis.twistA * impulse;
+  bodies.velocity(pair.b) -= axis.pushB * impulse;
+  bodies.spin(pair.b) -= axis.twistB * impulse;
 }
 
 } // namespace orblit
