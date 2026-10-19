@@ -4196,6 +4196,134 @@ void wakingControls() {
   orblit_physics_destroy(physics);
 }
 
+// --- floating ------------------------------------------------------------- //
+//
+// A fluid zone lifts what it has part under, and slows it.
+
+/// A pool of water forty metres deep and forty across, its surface `top`
+/// metres up. A thousand kilograms a cubic metre, which a body floats in when
+/// its own density is lower.
+OrblitPhysics *poolWith(float top, float drag) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, triggerAt(1, 20.0f, 0.0f, top - 20.0f, 0.0f));
+  OrblitPhysicsZone water = zoneOn(1, ORBLIT_PHYSICS_ZONE_FLUID, 0, 0.0f);
+  water.fluid[0] = 1000.0f;
+  water.fluid[1] = drag;
+  orblit_physics_zone(physics, &water);
+  return physics;
+}
+
+/// Where a body settles in a pool: its height after `seconds`, dropped from
+/// a little above the surface.
+float restingAt(float top, OrblitPhysicsCommand body, float seconds) {
+  OrblitPhysics *physics = poolWith(top, 3.0f);
+  body.at[1] = top + 0.3f;
+  submit(physics, body);
+  run(physics, seconds);
+  const float height = heightOf(physics, body.id);
+  orblit_physics_destroy(physics);
+  return height;
+}
+
+/// The angle a body is turned about z, from its rotation.
+float rollOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float transform[7] = {0};
+  orblit_physics_transform(physics, id, transform);
+  return 2.0f * std::atan2(transform[5], transform[6]);
+}
+
+void floating() {
+  OrblitPhysicsCommand heavy = boxAt(2, 0.5f, 0.0f, 0.0f, 0.0f);
+  heavy.mass = 750.0f;
+  OrblitPhysicsCommand even = heavy;
+  even.mass = 500.0f;
+  OrblitPhysicsCommand light = heavy;
+  light.mass = 250.0f;
+  check(near(restingAt(0.0f, heavy, 12.0f), -0.25f, 0.03f),
+        "a box of three quarters the density of water sits a quarter above it");
+  check(near(restingAt(0.0f, even, 12.0f), 0.0f, 0.03f),
+        "half the density sits with its middle at the surface");
+  check(near(restingAt(0.0f, light, 12.0f), 0.25f, 0.03f),
+        "a quarter of the density sits a quarter above");
+  check(near(restingAt(2.0f, even, 12.0f), 2.0f, 0.03f),
+        "and the surface is the top of the trigger wherever that is");
+
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.0f, 0.0f);
+  const float roundVolume = 4.0f / 3.0f * 3.14159265f * 0.125f;
+  ball.mass = roundVolume * 500.0f;
+  check(near(restingAt(0.0f, ball, 12.0f), 0.0f, 0.03f),
+        "a ball of half the density sits with its middle at the surface");
+  ball.mass /= 2.0f;
+  // The cap under the surface is a quarter of the ball when it is 0.3264 deep.
+  check(near(restingAt(0.0f, ball, 12.0f), 0.1736f, 0.03f),
+        "and one of a quarter sits higher by the cap that is under");
+
+  OrblitPhysicsCommand log = capsuleAt(2, 0.25f, 0.5f, 0.0f, 0.0f, 0.0f);
+  layDown(log);
+  const float pi = 3.14159265f;
+  log.mass = 500.0f * (pi * 0.0625f * 1.0f + 4.0f / 3.0f * pi * 0.015625f);
+  check(near(restingAt(0.0f, log, 12.0f), 0.0f, 0.03f),
+        "a capsule lying at half the density rides axis to the surface");
+
+  OrblitPhysicsCommand stone = heavy;
+  stone.mass = 1500.0f;
+  check(restingAt(0.0f, stone, 3.0f) < -3.0f, "a body denser than water sinks");
+}
+
+void floatingTurns() {
+  OrblitPhysics *physics = poolWith(0.0f, 4.0f);
+  OrblitPhysicsCommand plank = boxAt(2, 1.0f, 0.0f, 0.0f, 0.0f);
+  plank.size[1] = 0.1f;
+  plank.size[2] = 0.4f;
+  plank.mass = 160.0f;
+  plank.rotation[2] = std::sin(0.25f);
+  plank.rotation[3] = std::cos(0.25f);
+  submit(physics, plank);
+  check(near(rollOf(physics, 2), 0.5f, 0.01f), "the plank starts tipped");
+  run(physics, 8.0f);
+  check(std::fabs(rollOf(physics, 2)) < 0.05f,
+        "a plank tipped in water is turned level by where the fluid pushes it");
+  orblit_physics_destroy(physics);
+}
+
+void floatingSlows() {
+  OrblitPhysics *physics = poolWith(0.0f, 2.0f);
+  // Neutral: as dense as the water, so it neither rises nor sinks.
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, -5.0f, 0.0f);
+  ball.mass = 4.0f / 3.0f * 3.14159265f * 0.125f * 1000.0f;
+  submit(physics, ball);
+  drive(physics, 2, 5.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), -5.0f, 0.05f),
+        "a body as dense as the water hangs in it");
+  check(speedOf(physics, 2) < 1.0f, "and is slowed by its drag");
+
+  submit(physics, sphereAt(3, 0.5f, 5.0f, -5.0f, 0.0f));
+  OrblitPhysicsControls weightless = controlsOf(3);
+  weightless.gravityScale = 0.0f;
+  control(physics, weightless);
+  run(physics, 1.0f);
+  check(near(velocityOf(physics, 3, 1), 0.0f, 0.001f),
+        "a body that feels no gravity is not lifted either");
+  orblit_physics_destroy(physics);
+}
+
+void fluidIsChecked() {
+  OrblitPhysics *physics = poolWith(0.0f, 1.0f);
+  OrblitPhysicsZone zone = zoneOn(1, ORBLIT_PHYSICS_ZONE_FLUID, 0, 0.0f);
+  zone.fluid[0] = -1.0f;
+  check(!orblit_physics_zone(physics, &zone),
+        "a fluid with a negative density is refused");
+  zone.fluid[0] = 1000.0f;
+  zone.fluid[1] = std::nanf("");
+  check(!orblit_physics_zone(physics, &zone), "and one with NaN drag");
+  zone.fluid[1] = -1.0f;
+  zone.overrides = ORBLIT_PHYSICS_ZONE_GRAVITY;
+  check(orblit_physics_zone(physics, &zone),
+        "while the numbers of a field the zone does not claim mean nothing");
+  orblit_physics_destroy(physics);
+}
+
 // --- seeing what happened ------------------------------------------------- //
 
 /// What a replay has to give back: where everything is, how it moves and
@@ -6190,6 +6318,10 @@ int main() {
   stayingInside();
   zoning();
   zoneEdits();
+  floating();
+  floatingTurns();
+  floatingSlows();
+  fluidIsChecked();
   conveying();
   wakingBelts();
   pinnedBelts();

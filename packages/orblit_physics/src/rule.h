@@ -76,6 +76,8 @@ struct Zone {
   Vec3 gravity;
   float linearDamping = 0.0f;
   float angularDamping = 0.0f;
+  float density = 0.0f;
+  float drag = 0.0f;
 };
 
 /// What one body feels from every zone it is in, settled field by field.
@@ -86,7 +88,8 @@ struct Zone {
 class Felt {
  public:
   /// Lets `zone`, which is the body `by`, speak for whichever fields it claims.
-  void add(OrblitPhysicsId by, const Zone &zone) {
+  /// `surface` is the height of its fluid, which only a fluid zone is asked.
+  void add(OrblitPhysicsId by, const Zone &zone, float surface) {
     if (claim(kGravity, zone.overrides & ORBLIT_PHYSICS_ZONE_GRAVITY, by,
               zone.priority)) {
       gravity_ = zone.gravity;
@@ -98,6 +101,12 @@ class Felt {
     if (claim(kAngular, zone.overrides & ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING, by,
               zone.priority)) {
       angular_ = zone.angularDamping;
+    }
+    if (claim(kFluid, zone.overrides & ORBLIT_PHYSICS_ZONE_FLUID, by,
+              zone.priority)) {
+      density_ = zone.density;
+      drag_ = zone.drag;
+      surface_ = surface;
     }
   }
 
@@ -112,8 +121,14 @@ class Felt {
     return claims_[kAngular].by != 0 ? angular_ : own;
   }
 
+  /// Whether a fluid zone spoke, and if so what it said.
+  bool fluid() const { return claims_[kFluid].by != 0; }
+  float density() const { return density_; }
+  float drag() const { return drag_; }
+  float surface() const { return surface_; }
+
  private:
-  enum Field { kGravity, kLinear, kAngular };
+  enum Field { kGravity, kLinear, kAngular, kFluid };
 
   struct Claim {
     /// Zero for nobody, which no body can be: ids start at one.
@@ -131,10 +146,13 @@ class Felt {
     return outbids;
   }
 
-  Claim claims_[3];
+  Claim claims_[4];
   Vec3 gravity_;
   float linear_ = 0.0f;
   float angular_ = 0.0f;
+  float density_ = 0.0f;
+  float drag_ = 0.0f;
+  float surface_ = 0.0f;
 };
 
 } // namespace orblit

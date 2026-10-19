@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iterator>
 
+#include "buoyancy.h"
 #include "cast.h"
 
 namespace orblit {
@@ -184,7 +185,8 @@ bool anyNan(std::initializer_list<float> values) {
 
 constexpr uint32_t kZoneFields = ORBLIT_PHYSICS_ZONE_GRAVITY |
                                  ORBLIT_PHYSICS_ZONE_LINEAR_DAMPING |
-                                 ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING;
+                                 ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING |
+                                 ORBLIT_PHYSICS_ZONE_FLUID;
 
 constexpr uint32_t kRuleFields = ORBLIT_PHYSICS_RULE_FRICTION |
                                  ORBLIT_PHYSICS_RULE_RESTITUTION |
@@ -246,6 +248,8 @@ Zone zoneOf(const OrblitPhysicsZone &from) {
   zone.gravity = vectorOf(from.gravity);
   zone.linearDamping = from.damping[0];
   zone.angularDamping = from.damping[1];
+  zone.density = from.fluid[0];
+  zone.drag = from.fluid[1];
   return zone;
 }
 
@@ -632,9 +636,14 @@ bool World::zone(const OrblitPhysicsZone &from) {
   const uint32_t row = bodies_.rowOf(from.body);
   if (row == Bodies::kNone || !bodies_.sensor(row)) return false;
   if (anyNan({from.gravity[0], from.gravity[1], from.gravity[2], from.damping[0],
-              from.damping[1]})) {
+              from.damping[1], from.fluid[0], from.fluid[1]})) {
     return false;
   }
+  // A fluid with no weight or a negative one is a mistake, where a gravity
+  // that points up is a choice. Only a fluid zone is held to it, so the
+  // fields a zone does not claim may hold anything.
+  const bool fluid = (from.overrides & ORBLIT_PHYSICS_ZONE_FLUID) != 0;
+  if (fluid && !(from.fluid[0] >= 0.0f && from.fluid[1] >= 0.0f)) return false;
 
   if ((from.overrides & kZoneFields) == 0) {
     if (zones_.erase(from.body) == 0) return false;
@@ -1227,9 +1236,10 @@ void World::feelZones() {
   Manifold inside;
   for (const auto &entry : zones_) {
     const uint32_t trigger = bodies_.rowOf(entry.first);
+    const float surface = bodies_.bounds(trigger).high.y;
     for (uint32_t row = 0; row < count; ++row) {
       if (bodies_.solved(row) && within(trigger, row, inside)) {
-        felt_[row].add(entry.first, entry.second);
+        felt_[row].add(entry.first, entry.second, surface);
       }
     }
   }
@@ -1249,9 +1259,26 @@ void World::integrateVelocities(float delta) {
         damped(felt.linearDamping(bodies_.linearDamping(row)), delta);
     bodies_.spin(row) *=
         damped(felt.angularDamping(bodies_.angularDamping(row)), delta);
+    if (felt.fluid()) buoy(row, felt, delta);
     // Gravity, or a zone's, may point along an axis the body is locked on.
     bodies_.hold(row);
   }
+}
+
+void World::buoy(uint32_t row, const Felt &felt, float delta) {
+  const Shape &shape = bodies_.shape(row);
+  const Wet wet = submerged(shape, bodies_.at(row), bodies_.rotation(row),
+                            felt.surface());
+  if (!(wet.fraction > 0.0f)) return;
+  // The weight of the fluid the body pushes aside, against gravity as the body
+  // feels it, so a body with no gravity has nothing to be held up against.
+  const float scale = bodies_.controls(row).gravityScale;
+  const Vec3 gravity = felt.gravity(gravity_) * scale;
+  const float displaced = felt.density() * wet.fraction * volumeOf(shape);
+  push(row, gravity * (-displaced * delta), wet.centre);
+  const float slowed = damped(felt.drag() * wet.fraction, delta);
+  bodies_.velocity(row) *= slowed;
+  bodies_.spin(row) *= slowed;
 }
 
 void World::capSpeeds() {

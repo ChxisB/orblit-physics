@@ -278,6 +278,9 @@ class World {
   void solveStep(float delta);
   void integrateVelocities(float delta);
 
+  /// Lifts and slows a body that a fluid zone has part under the surface.
+  void buoy(uint32_t row, const Felt &felt, float delta);
+
   /// Holds each body the solver moves to its caps, after the contacts have had
   /// their say, so a cap limits where the body goes and not what it hits.
   void capSpeeds();

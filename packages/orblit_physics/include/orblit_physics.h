@@ -757,6 +757,12 @@ typedef enum {
 
   /// The region's angular damping replaces the body's own.
   ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING = 4,
+
+  /// The region is a fluid. Its surface is the top of the trigger's bounds,
+  /// level, and a box, sphere or capsule in it is pushed up by the weight of
+  /// the fluid it displaces and slowed by `fluid[1]` in proportion to how much
+  /// of it is under. Other shapes feel the other fields only.
+  ORBLIT_PHYSICS_ZONE_FLUID = 8,
 } OrblitPhysicsZoneField;
 
 /// A trigger that changes how bodies inside it move. Water is a zone with a
@@ -781,14 +787,23 @@ typedef struct {
 
   /// Linear then angular, as a fraction shed per second, like a body's.
   float damping[2];
+
+  /// For ZONE_FLUID. The fluid's density in kilograms per cubic metre, a
+  /// thousand for water, then the fraction of a body's linear and angular
+  /// speed it sheds per second when the body is wholly under. Neither may be
+  /// negative. The lift is that density times the volume under the surface
+  /// times the gravity the body feels, so a body floats when its own density
+  /// is lower. A body far lighter than the fluid is thrown out of it hard.
+  float fluid[2];
 } OrblitPhysicsZone;
 
 /// Sets or removes the zone over a trigger. Bodies inside it are woken so a
 /// crate asleep in new water floats. Returns whether it took.
 ///
 /// False, and nothing changed, for a body that is not there or is not a
-/// trigger, a NaN in any field, or removing a zone there was not. A dynamic
-/// body is the only kind a zone acts on: it moves what the solver moves.
+/// trigger, a NaN in any field, a negative fluid density or drag, or removing a
+/// zone there was not. A dynamic body is the only kind a zone acts on: it
+/// moves what the solver moves.
 bool orblit_physics_zone(OrblitPhysics *physics, const OrblitPhysicsZone *zone);
 
 // ------------------------------------------------------------------ rules ---
