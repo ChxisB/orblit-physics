@@ -6,7 +6,6 @@
 #ifndef ORBLIT_PHYSICS_BUOYANCY_H
 #define ORBLIT_PHYSICS_BUOYANCY_H
 
-#include <algorithm>
 #include <cmath>
 
 #include "maths.h"
@@ -79,8 +78,11 @@ inline Cells cellsOf(const Shape &shape, const Vec3 axes[3]) {
   if (capsule) {
     const float r = shape.size.x;
     out.half = {r, shape.size.y + r, r};
-    const int along = static_cast<int>(std::ceil(kCells * out.half.y / r));
-    out.count[1] = std::min(kMostAlong, along);
+    // Clamped as a float, because a long capsule of a tiny radius is a
+    // quotient too big for an int.
+    const float along = std::ceil(kCells * out.half.y / r);
+    const float most = static_cast<float>(kMostAlong);
+    out.count[1] = static_cast<int>(std::fmin(most, along));
   }
   for (int i = 0; i < 3; ++i) {
     out.size[i] = 2.0f * out.half[i] / static_cast<float>(out.count[i]);

@@ -801,8 +801,8 @@ typedef struct {
 /// crate asleep in new water floats. Returns whether it took.
 ///
 /// False, and nothing changed, for a body that is not there or is not a
-/// trigger, a NaN in any field, a negative fluid density or drag, or removing a
-/// zone there was not. A dynamic body is the only kind a zone acts on: it
+/// trigger, a NaN in any field, a fluid density or drag that is negative or
+/// infinite, or removing a zone there was not. A dynamic body is the only kind a zone acts on: it
 /// moves what the solver moves.
 bool orblit_physics_zone(OrblitPhysics *physics, const OrblitPhysicsZone *zone);
 

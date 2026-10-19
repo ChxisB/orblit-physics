@@ -118,6 +118,12 @@ bool ignoredBy(const Sieve &sieve, OrblitPhysicsId other);
 /// it. A platform the owner is, rather than passes, is not read.
 bool passesAt(const Sieve &sieve, OrblitPhysicsId other, const Vec3 &normal);
 
+/// Whether the sieve's owner, moving at `velocity`, goes up through the
+/// platform `other` that it passes fast enough to be let through wherever the
+/// two overlap, which is how a jump gets its head and then its feet past one.
+bool risingThrough(const Sieve &sieve, OrblitPhysicsId other,
+                   const Vec3 &velocity);
+
 /// Everything one cast asks of the world: a shape, where it goes, and which
 /// bodies it may meet on the way.
 struct Journey {

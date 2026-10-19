@@ -3951,9 +3951,9 @@ float walkedAtWall(bool ignored) {
   return x;
 }
 
-/// Character 2 jumped at 7 m/s from the ground under a platform that is body 3,
-/// with a one-way rule that names `platform` first.
-OrblitPhysics *jumpedUnder(OrblitPhysicsId platform, OrblitPhysicsId passer) {
+/// Character 2 about to jump at 7 m/s from the ground under a platform that is
+/// body 3, with a one-way rule that names `platform` first.
+OrblitPhysics *jumper(OrblitPhysicsId platform, OrblitPhysicsId passer) {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, groundPlane(1));
   submit(physics, slabAt(3, 1.0f, 0.1f, 1.0f, 0.0f, 2.0f, 0.0f));
@@ -3962,8 +3962,73 @@ OrblitPhysics *jumpedUnder(OrblitPhysicsId platform, OrblitPhysicsId passer) {
   pass.through[1] = 1.0f;
   check(orblit_physics_rule(physics, &pass), "a character is given a one-way platform");
   drive(physics, 2, 0.0f, 7.0f, 0.0f, 0.0f);
+  return physics;
+}
+
+/// Character 2 jumped, and left to land.
+OrblitPhysics *jumpedUnder(OrblitPhysicsId platform, OrblitPhysicsId passer) {
+  OrblitPhysics *physics = jumper(platform, passer);
   walk(physics, 2, 0.0f, 0.0f, 3.0f);
   return physics;
+}
+
+/// The most character 2 rises in one step of a two second jump. A jump at 7 m/s
+/// rises 0.12 m a step, so more than that is the character being lifted.
+float biggestRise(OrblitPhysics *physics) {
+  float biggest = 0.0f;
+  float before = heightOf(physics, 2);
+  for (int i = 0; i < 120; ++i) {
+    if (i > 0) {
+      const float fall = footingOf(physics, 2).velocity[1] - 9.81f * kStep;
+      drive(physics, 2, 0.0f, fall, 0.0f, 0.0f);
+    }
+    step(physics);
+    biggest = std::fmax(biggest, heightOf(physics, 2) - before);
+    before = heightOf(physics, 2);
+  }
+  return biggest;
+}
+
+/// Whether character 2, crouched under a beam that is body 3 with a rule of
+/// `overrides` between them, is let stand up into it. No rule when it is zero.
+bool stoodUnderBeam(uint32_t overrides) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 2.0f, 0.1f, 2.0f, 0.0f, 1.3f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  if (overrides != 0) {
+    OrblitPhysicsRule rule = ruleFor(3, 2, overrides);
+    rule.through[1] = 1.0f;
+    check(orblit_physics_rule(physics, &rule), "a beam is given a rule");
+  }
+  const bool crouched = stanceAs(physics, 2, 0.3f, 0.2f);
+  const bool stood = stanceAs(physics, 2, 0.3f, 0.6f);
+  orblit_physics_destroy(physics);
+  return crouched && stood;
+}
+
+/// Whether a box resting on the ground sleeps with a slab 5 mm into its top,
+/// a slab that is awake, weighs nothing and slides along, with a one-way rule
+/// between them. A box woken by touching a platform it passes never sleeps.
+bool sleptUnderSlidingSlab() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.25f, 0.0f, 0.25f, 0.0f));
+  OrblitPhysicsCommand slab = slabAt(3, 5.0f, 0.1f, 1.0f, 0.0f, 0.595f, 0.0f);
+  slab.motion = ORBLIT_PHYSICS_DYNAMIC;
+  submit(physics, slab);
+  OrblitPhysicsControls floats = controlsOf(3);
+  floats.gravityScale = 0.0f;
+  control(physics, floats);
+  drive(physics, 3, 1.0f, 0.0f, 0.0f, 0.0f);
+
+  OrblitPhysicsRule rule = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  rule.through[1] = 1.0f;
+  check(orblit_physics_rule(physics, &rule), "a slab is given a rule");
+  run(physics, 3.0f);
+  const bool slept = orblit_physics_asleep(physics, 2);
+  orblit_physics_destroy(physics);
+  return slept;
 }
 
 void characterRules() {
@@ -3975,6 +4040,16 @@ void characterRules() {
         "a character that jumps up through a one-way platform lands on it");
   check(footingOf(lands, 2).ground == 3, "and says it is standing on it");
   orblit_physics_destroy(lands);
+
+  OrblitPhysics *rising = jumper(3, 2);
+  check(biggestRise(rising) < 0.15f, "it is not lifted onto the platform on the way up");
+  orblit_physics_destroy(rising);
+
+  check(!stoodUnderBeam(0), "a crouched character cannot stand into a beam");
+  check(stoodUnderBeam(ORBLIT_PHYSICS_RULE_IGNORE), "unless it is told to ignore it");
+  check(stoodUnderBeam(ORBLIT_PHYSICS_RULE_ONE_WAY), "or the beam is a platform it passes");
+  check(sleptUnderSlidingSlab(),
+        "a box under a platform it passes goes to sleep against it");
 
   OrblitPhysics *under = jumpedUnder(2, 3);
   check(heightOf(under, 2) < 1.5f,
@@ -4317,6 +4392,12 @@ void fluidIsChecked() {
   zone.fluid[0] = 1000.0f;
   zone.fluid[1] = std::nanf("");
   check(!orblit_physics_zone(physics, &zone), "and one with NaN drag");
+  zone.fluid[1] = 1.0f;
+  zone.fluid[0] = INFINITY;
+  check(!orblit_physics_zone(physics, &zone), "and one of infinite density");
+  zone.fluid[0] = 1000.0f;
+  zone.fluid[1] = INFINITY;
+  check(!orblit_physics_zone(physics, &zone), "or infinite drag");
   zone.fluid[1] = -1.0f;
   zone.overrides = ORBLIT_PHYSICS_ZONE_GRAVITY;
   check(orblit_physics_zone(physics, &zone),

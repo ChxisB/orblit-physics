@@ -334,6 +334,30 @@ class Walker {
     return rows;
   }
 
+  /// Whether the character, put at `at` with `mine` as its bounds, is inside
+  /// the body in `row` in a way that body holds it, and if so how, in
+  /// `manifold`. Not a sensor, not a body it has been told to ignore, and not
+  /// a one-way platform it is going up through or past the side of.
+  bool overlapsSolidly(uint32_t row, const Vec3 &at, const Bounds &mine,
+                       Manifold &manifold) const {
+    // A sensor is somewhere to be, not something to be pushed out of.
+    if (bodies_.sensor(row)) return false;
+    if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),
+                  bodies_.layerCares(row)) ||
+        ignoredBy(sieve_, bodies_.id(row))) {
+      return false;
+    }
+    const bool half = bodies_.shape(row).kind == ShapeKind::plane;
+    if (!half && !mine.overlaps(bodies_.bounds(row))) return false;
+    if (!collide(shape_, at, rotation_, bodies_.shape(row), bodies_.at(row),
+                 bodies_.rotation(row), manifold) ||
+        manifold.count == 0) {
+      return false;
+    }
+    return !passesAt(sieve_, bodies_.id(row), manifold.normal) &&
+           !risingThrough(sieve_, bodies_.id(row), character_.wanted);
+  }
+
   /// Pushes it out of whatever fixed or driven body it overlaps, as far as
   /// the skin beyond touching.
   ///
@@ -346,22 +370,7 @@ class Walker {
       bool moved = false;
       const Bounds mine = shape_.boundsAt(at, rotation_).grown(skin());
       for (const uint32_t row : obstaclesNear(mine)) {
-        if (row == self) continue;
-        // A sensor is somewhere to be, not something to be pushed out of.
-        if (bodies_.sensor(row)) continue;
-        if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),
-                      bodies_.layerCares(row)) ||
-            ignoredBy(sieve_, bodies_.id(row))) {
-          continue;
-        }
-        const bool half = bodies_.shape(row).kind == ShapeKind::plane;
-        if (!half && !mine.overlaps(bodies_.bounds(row))) continue;
-        if (!collide(shape_, at, rotation_, bodies_.shape(row), bodies_.at(row),
-                     bodies_.rotation(row), manifold) ||
-            manifold.count == 0 ||
-            passesAt(sieve_, bodies_.id(row), manifold.normal)) {
-          continue;
-        }
+        if (row == self || !overlapsSolidly(row, at, mine, manifold)) continue;
         float deepest = 0.0f;
         for (uint32_t c = 0; c < manifold.count; ++c) {
           deepest = std::fmax(deepest, manifold.points[c].depth);

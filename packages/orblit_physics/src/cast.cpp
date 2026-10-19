@@ -322,6 +322,13 @@ Rule agreedWith(const Sieve &sieve, OrblitPhysicsId other) {
   return ruleBetween(*sieve.rules, sieve.ignore, other);
 }
 
+/// The rule the sieve's owner has with `other` when `other` is a one-way
+/// platform the owner passes, and an ordinary pair when it is not.
+Rule platformPassed(const Sieve &sieve, OrblitPhysicsId other) {
+  const Rule rule = agreedWith(sieve, other);
+  return rule.oneWay() && rule.platform == 1 ? rule : Rule{};
+}
+
 /// Whether the sieve lets the body in `row` be met at all, before any geometry.
 bool asks(const Bodies &bodies, uint32_t row, const Sieve &sieve) {
   const OrblitPhysicsId id = bodies.id(row);
@@ -349,8 +356,14 @@ bool ignoredBy(const Sieve &sieve, OrblitPhysicsId other) {
 }
 
 bool passesAt(const Sieve &sieve, OrblitPhysicsId other, const Vec3 &normal) {
-  const Rule rule = agreedWith(sieve, other);
-  return rule.oneWay() && rule.platform == 1 && !rule.faces(normal);
+  const Rule rule = platformPassed(sieve, other);
+  return rule.oneWay() && !rule.faces(normal);
+}
+
+bool risingThrough(const Sieve &sieve, OrblitPhysicsId other,
+                   const Vec3 &velocity) {
+  const Rule rule = platformPassed(sieve, other);
+  return rule.oneWay() && rule.rise(velocity) > kOneWayRise;
 }
 
 Vec3 support(const Placed &of, const Vec3 &direction) {

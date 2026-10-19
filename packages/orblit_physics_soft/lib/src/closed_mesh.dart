@@ -86,8 +86,22 @@ final class MeshVolume {
   /// What the constraint has pushed in the sub-step being solved.
   double _lambda = 0;
 
-  /// The volume the particles in [x] enclose, in cubic metres.
-  double volumeOf(Float64List x) => _gather(x);
+  /// The volume the particles in [x] enclose, in cubic metres. Reads [x] and
+  /// changes nothing, so it can be asked at any time.
+  double volumeOf(Float64List x) {
+    final triangles = _mesh.triangles;
+    var sum = 0.0;
+    for (var t = 0; t < triangles.length; t += 3) {
+      final a = triangles[t] * 3;
+      final b = triangles[t + 1] * 3;
+      final c = triangles[t + 2] * 3;
+      sum +=
+          x[a] * (x[b + 1] * x[c + 2] - x[b + 2] * x[c + 1]) +
+          x[a + 1] * (x[b + 2] * x[c] - x[b] * x[c + 2]) +
+          x[a + 2] * (x[b] * x[c + 1] - x[b + 1] * x[c]);
+    }
+    return sum / 6;
+  }
 
   void restart() => _lambda = 0;
 

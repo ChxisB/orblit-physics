@@ -1520,8 +1520,8 @@ class Physics {
 
   /// Puts `zone` over the trigger `id`, replacing any it had, and wakes what
   /// is inside it. False, and nothing changed, for a body that is not there or
-  /// not a trigger, a number that is not a number, or a negative fluid density
-  /// or drag.
+  /// not a trigger, a number that is not a number, or a fluid density or drag
+  /// that is negative or infinite.
   ///
   /// It changes what the solver moves, so it acts on free bodies only. A
   /// character asks for its own gravity and is not touched by one.

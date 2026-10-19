@@ -639,11 +639,14 @@ bool World::zone(const OrblitPhysicsZone &from) {
               from.damping[1], from.fluid[0], from.fluid[1]})) {
     return false;
   }
-  // A fluid with no weight or a negative one is a mistake, where a gravity
-  // that points up is a choice. Only a fluid zone is held to it, so the
-  // fields a zone does not claim may hold anything.
+  // A fluid that weighs less than nothing, or without end, is a mistake,
+  // where a gravity that points up is a choice. Only a fluid zone is held to
+  // it, so the fields a zone does not claim may hold anything.
   const bool fluid = (from.overrides & ORBLIT_PHYSICS_ZONE_FLUID) != 0;
-  if (fluid && !(from.fluid[0] >= 0.0f && from.fluid[1] >= 0.0f)) return false;
+  if (fluid && !(allFinite({from.fluid[0], from.fluid[1]}) &&
+                 from.fluid[0] >= 0.0f && from.fluid[1] >= 0.0f)) {
+    return false;
+  }
 
   if ((from.overrides & kZoneFields) == 0) {
     if (zones_.erase(from.body) == 0) return false;
@@ -729,6 +732,7 @@ bool World::stance(OrblitPhysicsId id, uint32_t kind, const float size[4]) {
   sieve.layerIs = bodies_.layerIs(row);
   sieve.layerCares = bodies_.layerCares(row);
   sieve.ignore = id;
+  sieve.rules = &rules_;
   Impact hit;
   if (nearest(bodies_, Journey{Placed{next, at, rotation}, up, 0.0f, sieve}, hit) !=
       Bodies::kNone) {
@@ -1099,18 +1103,13 @@ void World::findContacts(float delta) {
     const uint32_t b = candidate.second;
     // Still asleep after the pass above means it did not touch.
     if (bodies_.asleep(a) || bodies_.asleep(b)) continue;
-    if (!meet(a, b, delta, manifold)) continue;
+    if (!touch(a, b, delta, manifold)) continue;
 
     manifold.a = a;
     manifold.b = b;
 
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
     manifold.reversed = bodies_.id(a) != key.a;
-    manifold.rule = ruleBetween(rules_, bodies_.id(a), bodies_.id(b));
-    if (manifold.rule.oneWay()) {
-      letPass(manifold, bodies_.velocity(a) - bodies_.velocity(b));
-      if (manifold.count == 0) continue;
-    }
 
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
@@ -1174,7 +1173,7 @@ void World::wakeTouched(float delta) {
     // a neighbour a centimetre away, which would wake that neighbour back
     // when it slept and keep a heap from ever settling. A fast one is woken
     // a step early, so that what hits it is stopped there.
-    if (!meet(a, b, delta, scratch)) continue;
+    if (!touch(a, b, delta, scratch)) continue;
     wake(a);
     wake(b);
   }
@@ -1209,6 +1208,15 @@ bool World::beyondPlane(uint32_t body, uint32_t plane, float margin) const {
   const Vec3 half = (around.high - around.low) * 0.5f;
   const float lowest = dot(normal, centre) - dot(absPerAxis(normal), half);
   return lowest - surface > margin;
+}
+
+bool World::touch(uint32_t a, uint32_t b, float delta, Manifold &out) const {
+  if (!meet(a, b, delta, out)) return false;
+  out.rule = ruleBetween(rules_, bodies_.id(a), bodies_.id(b));
+  if (out.rule.oneWay()) {
+    letPass(out, bodies_.velocity(a) - bodies_.velocity(b));
+  }
+  return out.count > 0;
 }
 
 bool World::meet(uint32_t a, uint32_t b, float delta, Manifold &out) const {
@@ -1319,6 +1327,7 @@ float World::freeRun(uint32_t row, float delta) const {
   sieve.layerIs = bodies_.layerIs(row);
   sieve.layerCares = bodies_.layerCares(row);
   sieve.ignore = bodies_.id(row);
+  sieve.rules = &rules_;
   const Placed moving{bodies_.shape(row), bodies_.at(row), bodies_.rotation(row)};
   const Journey journey(moving, velocity * (1.0f / length(velocity)), travel, sieve);
 
@@ -1330,7 +1339,6 @@ float World::freeRun(uint32_t row, float delta) const {
   float nearest = travel;
   const auto ask = [&](uint32_t other) {
     Impact impact;
-    if (ignores(bodies_.id(row), bodies_.id(other))) return;
     if (joints_.apart(bodies_.id(row), bodies_.id(other))) return;
     if (!meets(bodies_, other, journey, impact)) return;
     if (passes(row, other, impact)) return;

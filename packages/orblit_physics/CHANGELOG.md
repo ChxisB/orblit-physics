@@ -15,8 +15,8 @@
   the middle of the part under, so a tilted plank turns level. It floats when
   its own density is lower. The drag slows it by how much of it is under. A
   body with a gravity scale of zero is not lifted. A cylinder, hull, compound
-  or scaled shape feels the other fields only. A negative density or drag is
-  refused.
+  or scaled shape feels the other fields only. A density or drag that is
+  negative or infinite is refused.
 - `OrblitPhysicsRule` and `OrblitPhysicsZone` are 48 bytes each, and there is
   a new rule bit, `ORBLIT_PHYSICS_RULE_ONE_WAY`, and zone bit,
   `ORBLIT_PHYSICS_ZONE_FLUID`. A native caller rebuilds against the new header.

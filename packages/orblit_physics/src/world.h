@@ -264,6 +264,10 @@ class World {
   /// they close at, and where. Nothing else is read or changed.
   bool meet(uint32_t a, uint32_t b, float delta, Manifold &out) const;
 
+  /// `meet`, less what a one-way rule between the two lets pass, with the rule
+  /// they have set in `out.rule`. False when nothing is left to hold them.
+  bool touch(uint32_t a, uint32_t b, float delta, Manifold &out) const;
+
   /// Whether a rule says the two bodies pass through each other.
   bool ignores(OrblitPhysicsId a, OrblitPhysicsId b) const;
 
