@@ -132,23 +132,30 @@ float turnAbout(const Quat &q, const Vec3 &up) {
                     : 2.0f * std::atan2(along, q.w);
 }
 
+/// What a character can meet: the bodies, and what it has agreed with each.
+struct Surroundings {
+  const Bodies &bodies;
+  const Rules &rules;
+};
+
 /// One character's view of the world for one step: what it can meet and how
 /// it slides along it. Reads the bodies and never writes them, so whatever it
 /// works out is thrown away unless the step decides to keep it.
 class Walker {
  public:
-  Walker(const Bodies &bodies, const Character &character, uint32_t row,
+  Walker(const Surroundings &around, const Character &character, uint32_t row,
          const Vec3 &up, float delta)
-      : bodies_(bodies),
+      : bodies_(around.bodies),
         character_(character),
         up_(up),
         delta_(delta),
-        shape_(bodies.shape(row)),
-        rotation_(bodies.rotation(row)) {
-    sieve_.layerIs = bodies.layerIs(row);
-    sieve_.layerCares = bodies.layerCares(row);
+        shape_(around.bodies.shape(row)),
+        rotation_(around.bodies.rotation(row)) {
+    sieve_.layerIs = bodies_.layerIs(row);
+    sieve_.layerCares = bodies_.layerCares(row);
     sieve_.ignore = character.id;
     sieve_.leaving = true;
+    sieve_.rules = &around.rules;
   }
 
   float skin() const { return character_.skin; }
@@ -327,6 +334,30 @@ class Walker {
     return rows;
   }
 
+  /// Whether the character, put at `at` with `mine` as its bounds, is inside
+  /// the body in `row` in a way that body holds it, and if so how, in
+  /// `manifold`. Not a sensor, not a body it has been told to ignore, and not
+  /// a one-way platform it is going up through or past the side of.
+  bool overlapsSolidly(uint32_t row, const Vec3 &at, const Bounds &mine,
+                       Manifold &manifold) const {
+    // A sensor is somewhere to be, not something to be pushed out of.
+    if (bodies_.sensor(row)) return false;
+    if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),
+                  bodies_.layerCares(row)) ||
+        ignoredBy(sieve_, bodies_.id(row))) {
+      return false;
+    }
+    const bool half = bodies_.shape(row).kind == ShapeKind::plane;
+    if (!half && !mine.overlaps(bodies_.bounds(row))) return false;
+    if (!collide(shape_, at, rotation_, bodies_.shape(row), bodies_.at(row),
+                 bodies_.rotation(row), manifold) ||
+        manifold.count == 0) {
+      return false;
+    }
+    return !passesAt(sieve_, bodies_.id(row), manifold.normal) &&
+           !risingThrough(sieve_, bodies_.id(row), character_.wanted);
+  }
+
   /// Pushes it out of whatever fixed or driven body it overlaps, as far as
   /// the skin beyond touching.
   ///
@@ -339,20 +370,7 @@ class Walker {
       bool moved = false;
       const Bounds mine = shape_.boundsAt(at, rotation_).grown(skin());
       for (const uint32_t row : obstaclesNear(mine)) {
-        if (row == self) continue;
-        // A sensor is somewhere to be, not something to be pushed out of.
-        if (bodies_.sensor(row)) continue;
-        if (!interact(sieve_.layerIs, sieve_.layerCares, bodies_.layerIs(row),
-                      bodies_.layerCares(row))) {
-          continue;
-        }
-        const bool half = bodies_.shape(row).kind == ShapeKind::plane;
-        if (!half && !mine.overlaps(bodies_.bounds(row))) continue;
-        if (!collide(shape_, at, rotation_, bodies_.shape(row), bodies_.at(row),
-                     bodies_.rotation(row), manifold) ||
-            manifold.count == 0) {
-          continue;
-        }
+        if (row == self || !overlapsSolidly(row, at, mine, manifold)) continue;
         float deepest = 0.0f;
         for (uint32_t c = 0; c < manifold.count; ++c) {
           deepest = std::fmax(deepest, manifold.points[c].depth);
@@ -482,7 +500,7 @@ void World::moveCharacters(float delta) {
 
 void World::moveCharacter(Character &character, uint32_t row, const Vec3 &up,
                           float delta) {
-  const Walker walker(bodies_, character, row, up, delta);
+  const Walker walker({bodies_, rules_}, character, row, up, delta);
   const Vec3 start = bodies_.at(row);
   Vec3 at = start;
 
@@ -586,7 +604,7 @@ void World::yield(uint32_t row, const Vec3 &move, const Vec3 &up, float delta) {
   Character *other = characterOf(bodies_.id(row));
   if (other == nullptr) return;
 
-  const Walker walker(bodies_, *other, row, up, delta);
+  const Walker walker({bodies_, rules_}, *other, row, up, delta);
   const Slid moved = walker.slide(bodies_.at(row), move, Vec3{}, 0, nullptr);
   bodies_.at(row) = moved.at;
   bodies_.refresh(row);

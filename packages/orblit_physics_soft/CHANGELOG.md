@@ -1,3 +1,13 @@
+## 0.2.0
+
+- `SoftBody.balloon` makes a closed triangle mesh whose edges are links and
+  whose volume is held as a constraint, so a balloon or a pillow squashes
+  under a load without going flat. `volumeCompliance` lets the volume give.
+  A surface with a hole, or wound inside out, throws `ArgumentError`.
+- `SoftBody.volume` reads what a balloon encloses, or null for a body that is
+  not closed.
+- A balloon holds no bend links, so it wrinkles when squeezed.
+
 ## 0.1.0
 
 - `SoftBody.cloth` and `SoftBody.rope` make particles joined by distance

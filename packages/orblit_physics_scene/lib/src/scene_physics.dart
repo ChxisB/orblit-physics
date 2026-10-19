@@ -300,8 +300,8 @@ class ScenePhysics {
   ///
   /// It holds through the edits that rebuild either body, and ends when
   /// either entity loses its body or goes. It replaces any rule the world had
-  /// for the pair. A character does not read it. [physics] rules for one pair
-  /// are the way to say anything else about it.
+  /// for the pair. A character reads it too, and walks through the other body.
+  /// [physics] rules for one pair are the way to say anything else about it.
   bool ignore(String a, String b) {
     final first = _bodyOf[a];
     final second = _bodyOf[b];

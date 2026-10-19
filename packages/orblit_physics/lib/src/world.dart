@@ -232,13 +232,15 @@ final class PhysicsEvent {
 /// What a zone changes about the bodies inside it. A field left null is left
 /// as the body has it.
 ///
-/// Water is a weak gravity and a lot of damping. A lift shaft is a gravity
-/// that points up.
+/// Water is a fluid, or for a pool that only slows things, a weak gravity and
+/// a lot of damping. A lift shaft is a gravity that points up.
 final class PhysicsZone {
   const PhysicsZone({
     this.gravity,
     this.linearDamping,
     this.angularDamping,
+    this.fluidDensity,
+    this.fluidDrag = 0.0,
     this.priority = 0,
   });
 
@@ -248,6 +250,18 @@ final class PhysicsZone {
   /// A fraction shed per second, in place of the body's own.
   final double? linearDamping;
   final double? angularDamping;
+
+  /// Makes the zone a fluid of this density in kilograms per cubic metre, a
+  /// thousand for water. Its surface is the top of the trigger's bounds, level.
+  /// A sphere, box or capsule in it is lifted by the weight of the fluid it
+  /// displaces, at the middle of what is under, so a tilted one is turned back
+  /// level. It floats when its own density is lower. A body far lighter than
+  /// the fluid is thrown out of it hard. Other shapes are not lifted.
+  final double? fluidDensity;
+
+  /// The fraction of a body's speed the fluid sheds per second when it is
+  /// wholly under, and less as less of it is. Ignored without a density.
+  final double fluidDrag;
 
   /// Where zones overlap, each field takes the answer of the zone that claims
   /// it with the highest priority, and at a tie the lower body id.
@@ -266,20 +280,33 @@ final class PhysicsRule {
     this.moveScaleA = 1.0,
     this.moveScaleB = 1.0,
     this.ignore = false,
+    this.oneWay,
   }) : assert(
          friction != null ||
              restitution != null ||
              moveScaleA != 1.0 ||
              moveScaleB != 1.0 ||
-             ignore,
+             ignore ||
+             oneWay != null,
          'A rule that changes nothing is not a rule.',
        );
 
   /// The two bodies pass through each other. There is no contact and no touch
   /// event, and a trigger does not see the other one. The other fields are
-  /// not read. A character does not read rules, so it still stops at a body
-  /// it is told to ignore.
+  /// not read. A character walks through a body it is told to ignore.
   final bool ignore;
+
+  /// Makes body `a` a one-way platform and `b` what passes through it, going
+  /// up along this direction, three numbers in the world's axes. `a` holds `b`
+  /// only while `b` is on that side of it and not rising through it, so a body
+  /// thrown up from below passes, and the same body coming down, or standing
+  /// on it, does not.
+  /// The rule is made for the two bodies named, so a platform that lets many
+  /// bodies through has one for each. A platform that turns keeps the
+  /// direction it was given. A character named as `b` jumps up through it and
+  /// lands on it. The other fields are about the solver's contacts, which a
+  /// character has none of, so a character reads only this and [ignore].
+  final List<double>? oneWay;
 
   /// Replace the pair's friction and restitution outright.
   final double? friction;
@@ -1493,7 +1520,8 @@ class Physics {
 
   /// Puts `zone` over the trigger `id`, replacing any it had, and wakes what
   /// is inside it. False, and nothing changed, for a body that is not there or
-  /// not a trigger, or a number that is not a number.
+  /// not a trigger, a number that is not a number, or a fluid density or drag
+  /// that is negative or infinite.
   ///
   /// It changes what the solver moves, so it acts on free bodies only. A
   /// character asks for its own gravity and is not touched by one.
@@ -1503,6 +1531,7 @@ class Physics {
     if (gravity != null) fields |= 1;
     if (zone.linearDamping != null) fields |= 2;
     if (zone.angularDamping != null) fields |= 4;
+    if (zone.fluidDensity != null) fields |= 8;
     return _sendZone(
       id,
       fields,
@@ -1510,6 +1539,8 @@ class Physics {
       gravity: gravity,
       linearDamping: zone.linearDamping,
       angularDamping: zone.angularDamping,
+      fluidDensity: zone.fluidDensity,
+      fluidDrag: zone.fluidDrag,
     );
   }
 
@@ -1524,6 +1555,8 @@ class Physics {
     List<double>? gravity,
     double? linearDamping,
     double? angularDamping,
+    double? fluidDensity,
+    double fluidDrag = 0.0,
   }) {
     _requireAlive();
     _flush();
@@ -1536,6 +1569,8 @@ class Physics {
       if (gravity != null) _write3(it.gravity, gravity);
       it.damping[0] = linearDamping ?? 0.0;
       it.damping[1] = angularDamping ?? 0.0;
+      it.fluid[0] = fluidDensity ?? 0.0;
+      it.fluid[1] = fluidDrag;
       return native.physicsZone(_alive, made);
     } finally {
       calloc.free(made);
@@ -1555,6 +1590,7 @@ class Physics {
     if (rule.restitution != null) fields |= 2;
     if (rule.moveScaleA != 1.0 || rule.moveScaleB != 1.0) fields |= 4;
     if (rule.ignore) fields |= 8;
+    if (rule.oneWay != null) fields |= 16;
     return _sendRule(a, b, fields, rule);
   }
 
@@ -1575,6 +1611,9 @@ class Physics {
       it.restitution = rule?.restitution ?? 0.0;
       it.moveScale[0] = rule?.moveScaleA ?? 1.0;
       it.moveScale[1] = rule?.moveScaleB ?? 1.0;
+      for (var i = 0; i < 3; i++) {
+        it.through[i] = rule?.oneWay?[i] ?? 0.0;
+      }
       return native.physicsRule(_alive, made);
     } finally {
       calloc.free(made);

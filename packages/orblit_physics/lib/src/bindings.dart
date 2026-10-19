@@ -362,6 +362,9 @@ final class OrblitPhysicsZone extends Struct {
 
   @Array(2)
   external Array<Float> damping;
+
+  @Array(2)
+  external Array<Float> fluid;
 }
 
 /// `OrblitPhysicsRule`, field for field.
@@ -383,6 +386,9 @@ final class OrblitPhysicsRule extends Struct {
 
   @Array(2)
   external Array<Float> moveScale;
+
+  @Array(3)
+  external Array<Float> through;
 }
 
 /// `OrblitPhysicsControls`, field for field.

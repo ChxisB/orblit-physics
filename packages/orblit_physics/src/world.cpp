@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iterator>
 
+#include "buoyancy.h"
 #include "cast.h"
 
 namespace orblit {
@@ -184,12 +185,14 @@ bool anyNan(std::initializer_list<float> values) {
 
 constexpr uint32_t kZoneFields = ORBLIT_PHYSICS_ZONE_GRAVITY |
                                  ORBLIT_PHYSICS_ZONE_LINEAR_DAMPING |
-                                 ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING;
+                                 ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING |
+                                 ORBLIT_PHYSICS_ZONE_FLUID;
 
 constexpr uint32_t kRuleFields = ORBLIT_PHYSICS_RULE_FRICTION |
                                  ORBLIT_PHYSICS_RULE_RESTITUTION |
                                  ORBLIT_PHYSICS_RULE_MOVE_SCALE |
-                                 ORBLIT_PHYSICS_RULE_IGNORE;
+                                 ORBLIT_PHYSICS_RULE_IGNORE |
+                                 ORBLIT_PHYSICS_RULE_ONE_WAY;
 
 constexpr uint32_t kLockBits =
     ORBLIT_PHYSICS_LOCK_MOVE_X | ORBLIT_PHYSICS_LOCK_MOVE_Y |
@@ -245,14 +248,22 @@ Zone zoneOf(const OrblitPhysicsZone &from) {
   zone.gravity = vectorOf(from.gravity);
   zone.linearDamping = from.damping[0];
   zone.angularDamping = from.damping[1];
+  zone.density = from.fluid[0];
+  zone.drag = from.fluid[1];
   return zone;
 }
 
 /// Whether the numbers of a rule mean anything. A move scale that is NaN fails
-/// the comparison, so only the two that clamp need asking about.
+/// the comparison, so only the two that clamp need asking about. A one-way
+/// direction needs one to point along.
 bool meaningful(const OrblitPhysicsRule &from) {
-  return !anyNan({from.friction, from.restitution}) && from.moveScale[0] >= 0.0f &&
-         from.moveScale[1] >= 0.0f;
+  if (anyNan({from.friction, from.restitution}) || !(from.moveScale[0] >= 0.0f) ||
+      !(from.moveScale[1] >= 0.0f)) {
+    return false;
+  }
+  if ((from.overrides & ORBLIT_PHYSICS_RULE_ONE_WAY) == 0) return true;
+  const Vec3 through(from.through[0], from.through[1], from.through[2]);
+  return lengthSquared(through) > 0.0f && std::isfinite(lengthSquared(through));
 }
 
 /// The rule with its move scales in the key's order, and the two values a body
@@ -264,7 +275,28 @@ Rule ruleOf(const OrblitPhysicsRule &from, const PairKey &key) {
   rule.restitution = clamped(from.restitution, 0.0f, 1.0f);
   rule.move[0] = from.moveScale[0];
   rule.move[1] = from.moveScale[1];
+  rule.through =
+      normalised(Vec3(from.through[0], from.through[1], from.through[2]));
   return key.a == from.a ? rule : rule.turned();
+}
+
+/// Drops the points of a one-way pair that the passer goes through. It goes
+/// through while rising, and through any point that does not face up out of
+/// the platform, such as the underside or an edge it is climbing past.
+///
+/// shortcut: the speed is the centres', so a spinning body rising through a
+/// platform at its rim reads as slower than its lowest point is. Upgrade when
+/// a game spins a body through one.
+void letPass(Manifold &manifold, const Vec3 &firstMinusSecond) {
+  const Rule &rule = manifold.rule;
+  const bool rising = rule.rise(firstMinusSecond) > kOneWayRise;
+  uint32_t kept = 0;
+  for (uint32_t i = 0; i < manifold.count; ++i) {
+    if (rising || !rule.faces(manifold.points[i].normal)) continue;
+    manifold.points[kept++] = manifold.points[i];
+  }
+  manifold.count = kept;
+  if (kept > 0) manifold.normal = deepest(manifold).normal;
 }
 
 } // namespace
@@ -604,7 +636,15 @@ bool World::zone(const OrblitPhysicsZone &from) {
   const uint32_t row = bodies_.rowOf(from.body);
   if (row == Bodies::kNone || !bodies_.sensor(row)) return false;
   if (anyNan({from.gravity[0], from.gravity[1], from.gravity[2], from.damping[0],
-              from.damping[1]})) {
+              from.damping[1], from.fluid[0], from.fluid[1]})) {
+    return false;
+  }
+  // A fluid that weighs less than nothing, or without end, is a mistake,
+  // where a gravity that points up is a choice. Only a fluid zone is held to
+  // it, so the fields a zone does not claim may hold anything.
+  const bool fluid = (from.overrides & ORBLIT_PHYSICS_ZONE_FLUID) != 0;
+  if (fluid && !(allFinite({from.fluid[0], from.fluid[1]}) &&
+                 from.fluid[0] >= 0.0f && from.fluid[1] >= 0.0f)) {
     return false;
   }
 
@@ -692,6 +732,7 @@ bool World::stance(OrblitPhysicsId id, uint32_t kind, const float size[4]) {
   sieve.layerIs = bodies_.layerIs(row);
   sieve.layerCares = bodies_.layerCares(row);
   sieve.ignore = id;
+  sieve.rules = &rules_;
   Impact hit;
   if (nearest(bodies_, Journey{Placed{next, at, rotation}, up, 0.0f, sieve}, hit) !=
       Bodies::kNone) {
@@ -1062,14 +1103,13 @@ void World::findContacts(float delta) {
     const uint32_t b = candidate.second;
     // Still asleep after the pass above means it did not touch.
     if (bodies_.asleep(a) || bodies_.asleep(b)) continue;
-    if (!meet(a, b, delta, manifold)) continue;
+    if (!touch(a, b, delta, manifold)) continue;
 
     manifold.a = a;
     manifold.b = b;
 
     const PairKey key = PairKey::of(bodies_.id(a), bodies_.id(b));
     manifold.reversed = bodies_.id(a) != key.a;
-    manifold.rule = ruleFor(key, bodies_.id(a));
 
     const auto before = wasTouching_.find(key);
     if (before != wasTouching_.end() && before->second.count > 0) {
@@ -1133,7 +1173,7 @@ void World::wakeTouched(float delta) {
     // a neighbour a centimetre away, which would wake that neighbour back
     // when it slept and keep a heap from ever settling. A fast one is woken
     // a step early, so that what hits it is stopped there.
-    if (!meet(a, b, delta, scratch)) continue;
+    if (!touch(a, b, delta, scratch)) continue;
     wake(a);
     wake(b);
   }
@@ -1170,6 +1210,15 @@ bool World::beyondPlane(uint32_t body, uint32_t plane, float margin) const {
   return lowest - surface > margin;
 }
 
+bool World::touch(uint32_t a, uint32_t b, float delta, Manifold &out) const {
+  if (!meet(a, b, delta, out)) return false;
+  out.rule = ruleBetween(rules_, bodies_.id(a), bodies_.id(b));
+  if (out.rule.oneWay()) {
+    letPass(out, bodies_.velocity(a) - bodies_.velocity(b));
+  }
+  return out.count > 0;
+}
+
 bool World::meet(uint32_t a, uint32_t b, float delta, Manifold &out) const {
   // How far the two can close on each other this step. Two bodies falling
   // together close on nothing, which is why this is not the sum of reaches.
@@ -1186,12 +1235,6 @@ bool World::meet(uint32_t a, uint32_t b, float delta, Manifold &out) const {
                      margin, out);
 }
 
-Rule World::ruleFor(const PairKey &key, OrblitPhysicsId first) const {
-  const auto found = rules_.find(key);
-  if (found == rules_.end()) return Rule{};
-  return first == key.a ? found->second : found->second.turned();
-}
-
 void World::feelZones() {
   felt_.clear();
   if (zones_.empty()) return;
@@ -1201,9 +1244,10 @@ void World::feelZones() {
   Manifold inside;
   for (const auto &entry : zones_) {
     const uint32_t trigger = bodies_.rowOf(entry.first);
+    const float surface = bodies_.bounds(trigger).high.y;
     for (uint32_t row = 0; row < count; ++row) {
       if (bodies_.solved(row) && within(trigger, row, inside)) {
-        felt_[row].add(entry.first, entry.second);
+        felt_[row].add(entry.first, entry.second, surface);
       }
     }
   }
@@ -1223,9 +1267,26 @@ void World::integrateVelocities(float delta) {
         damped(felt.linearDamping(bodies_.linearDamping(row)), delta);
     bodies_.spin(row) *=
         damped(felt.angularDamping(bodies_.angularDamping(row)), delta);
+    if (felt.fluid()) buoy(row, felt, delta);
     // Gravity, or a zone's, may point along an axis the body is locked on.
     bodies_.hold(row);
   }
+}
+
+void World::buoy(uint32_t row, const Felt &felt, float delta) {
+  const Shape &shape = bodies_.shape(row);
+  const Wet wet = submerged(shape, bodies_.at(row), bodies_.rotation(row),
+                            felt.surface());
+  if (!(wet.fraction > 0.0f)) return;
+  // The weight of the fluid the body pushes aside, against gravity as the body
+  // feels it, so a body with no gravity has nothing to be held up against.
+  const float scale = bodies_.controls(row).gravityScale;
+  const Vec3 gravity = felt.gravity(gravity_) * scale;
+  const float displaced = felt.density() * wet.fraction * volumeOf(shape);
+  push(row, gravity * (-displaced * delta), wet.centre);
+  const float slowed = damped(felt.drag() * wet.fraction, delta);
+  bodies_.velocity(row) *= slowed;
+  bodies_.spin(row) *= slowed;
 }
 
 void World::capSpeeds() {
@@ -1266,6 +1327,7 @@ float World::freeRun(uint32_t row, float delta) const {
   sieve.layerIs = bodies_.layerIs(row);
   sieve.layerCares = bodies_.layerCares(row);
   sieve.ignore = bodies_.id(row);
+  sieve.rules = &rules_;
   const Placed moving{bodies_.shape(row), bodies_.at(row), bodies_.rotation(row)};
   const Journey journey(moving, velocity * (1.0f / length(velocity)), travel, sieve);
 
@@ -1277,9 +1339,9 @@ float World::freeRun(uint32_t row, float delta) const {
   float nearest = travel;
   const auto ask = [&](uint32_t other) {
     Impact impact;
-    if (ignores(bodies_.id(row), bodies_.id(other))) return;
     if (joints_.apart(bodies_.id(row), bodies_.id(other))) return;
     if (!meets(bodies_, other, journey, impact)) return;
+    if (passes(row, other, impact)) return;
     if (!impact.started) {
       nearest = std::min(nearest, impact.distance + kPastTouch);
     } else if (!holds(row, other)) {
@@ -1289,6 +1351,16 @@ float World::freeRun(uint32_t row, float delta) const {
   bodies_.visitStill(journey.reach, ask);
   for (const uint32_t plane : planes_) ask(plane);
   return nearest / travel;
+}
+
+bool World::passes(uint32_t row, uint32_t other, const Impact &impact) const {
+  const Rule rule = ruleBetween(rules_, bodies_.id(row), bodies_.id(other));
+  if (!rule.oneWay()) return false;
+  // Only a body coming down onto a platform from clear is stopped by a sweep.
+  // Anything else is the contacts' business, and a body already inside one
+  // that the contacts let through must not be held there.
+  return impact.started ||
+         rule.rise(bodies_.velocity(row) - bodies_.velocity(other)) >= -kOneWayRise;
 }
 
 bool World::holds(uint32_t a, uint32_t b) const {

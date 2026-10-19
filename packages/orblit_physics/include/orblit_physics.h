@@ -757,6 +757,12 @@ typedef enum {
 
   /// The region's angular damping replaces the body's own.
   ORBLIT_PHYSICS_ZONE_ANGULAR_DAMPING = 4,
+
+  /// The region is a fluid. Its surface is the top of the trigger's bounds,
+  /// level, and a box, sphere or capsule in it is pushed up by the weight of
+  /// the fluid it displaces and slowed by `fluid[1]` in proportion to how much
+  /// of it is under. Other shapes feel the other fields only.
+  ORBLIT_PHYSICS_ZONE_FLUID = 8,
 } OrblitPhysicsZoneField;
 
 /// A trigger that changes how bodies inside it move. Water is a zone with a
@@ -781,14 +787,23 @@ typedef struct {
 
   /// Linear then angular, as a fraction shed per second, like a body's.
   float damping[2];
+
+  /// For ZONE_FLUID. The fluid's density in kilograms per cubic metre, a
+  /// thousand for water, then the fraction of a body's linear and angular
+  /// speed it sheds per second when the body is wholly under. Neither may be
+  /// negative. The lift is that density times the volume under the surface
+  /// times the gravity the body feels, so a body floats when its own density
+  /// is lower. A body far lighter than the fluid is thrown out of it hard.
+  float fluid[2];
 } OrblitPhysicsZone;
 
 /// Sets or removes the zone over a trigger. Bodies inside it are woken so a
 /// crate asleep in new water floats. Returns whether it took.
 ///
 /// False, and nothing changed, for a body that is not there or is not a
-/// trigger, a NaN in any field, or removing a zone there was not. A dynamic
-/// body is the only kind a zone acts on: it moves what the solver moves.
+/// trigger, a NaN in any field, a fluid density or drag that is negative or
+/// infinite, or removing a zone there was not. A dynamic body is the only kind a zone acts on: it
+/// moves what the solver moves.
 bool orblit_physics_zone(OrblitPhysics *physics, const OrblitPhysicsZone *zone);
 
 // ------------------------------------------------------------------ rules ---
@@ -800,9 +815,14 @@ typedef enum {
 
   /// The pair passes through each other. No contact, no touch events, and a
   /// trigger among them does not see the other. Nothing else in the rule is
-  /// read. A character does not read rules, so it still stops at a body it is
-  /// told to ignore.
+  /// read. A character walks through a body it is told to ignore.
   ORBLIT_PHYSICS_RULE_IGNORE = 8,
+
+  /// `a` is a one-way platform and `b` passes through it along `through`. See
+  /// the struct. A pair that ignores each other does not read this. A character
+  /// as `b` jumps up through the platform and lands on it. A character as `a`
+  /// does not let anything through for its own walk.
+  ORBLIT_PHYSICS_RULE_ONE_WAY = 16,
 } OrblitPhysicsRuleField;
 
 /// What is different about the contact between two particular bodies, in place
@@ -812,6 +832,8 @@ typedef enum {
 /// patch of ice slides, and says so once, rather than being asked about the
 /// contact every step. It holds whenever the two touch, and until it is
 /// removed or either body goes.
+/// A character reads only IGNORE and ONE_WAY. Friction, restitution and move
+/// scale are about the solver's contacts, and a character has none.
 typedef struct {
   OrblitPhysicsId a;
   OrblitPhysicsId b;
@@ -831,6 +853,14 @@ typedef struct {
   /// crate without the crate slowing it. Both are one for a rule that leaves
   /// movement alone.
   float moveScale[2];
+
+  /// For ONE_WAY: the way `b` goes up through `a`, in the world's axes. It
+  /// need not be a unit vector, but it must not be zero. `a` holds `b` only
+  /// while `b` is on that side of it and not moving up through it, so a body
+  /// thrown up from below passes, and the same body coming down, or standing
+  /// on it, does not. A platform that turns keeps this direction. Leave it
+  /// zero when ONE_WAY is not asked for.
+  float through[3];
 } OrblitPhysicsRule;
 
 /// Sets or removes the rule between two bodies, waking both. Returns whether it
@@ -838,8 +868,8 @@ typedef struct {
 /// `a` and `b` however the world keeps them.
 ///
 /// False, and nothing changed, for a body that is not there, a body against
-/// itself, a zero id, a NaN or a negative move scale, or removing a rule there
-/// was not.
+/// itself, a zero id, a NaN or a negative move scale, ONE_WAY with a `through`
+/// that is zero or not a number, or removing a rule there was not.
 bool orblit_physics_rule(OrblitPhysics *physics, const OrblitPhysicsRule *rule);
 
 // --------------------------------------------------------------- controls ---

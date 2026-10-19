@@ -1,3 +1,26 @@
+## 0.17.0
+
+- Add one-way platforms as a pair rule. `PhysicsRule(oneWay: [x, y, z])`
+  makes body `a` a platform that body `b` goes up through along that
+  direction. `a` holds `b` only while `b` is on that side of it and not rising
+  through it, so a body thrown up from below passes and lands on top. A
+  platform that turns keeps the direction.
+- A character now reads the pair rules `ignore` and `oneWay`. It walks
+  through a body it is told to ignore, and jumps up through a one-way
+  platform and lands on it. Friction, restitution and move scale are the
+  solver's, and a character has no contacts there.
+- Add fluid zones. `PhysicsZone(fluidDensity:, fluidDrag:)` makes a trigger
+  a fluid with its surface at the top of the trigger's bounds. A sphere, box
+  or capsule in it is pushed up by the weight of the fluid it displaces, at
+  the middle of the part under, so a tilted plank turns level. It floats when
+  its own density is lower. The drag slows it by how much of it is under. A
+  body with a gravity scale of zero is not lifted. A cylinder, hull, compound
+  or scaled shape feels the other fields only. A density or drag that is
+  negative or infinite is refused.
+- `OrblitPhysicsRule` and `OrblitPhysicsZone` are 48 bytes each, and there is
+  a new rule bit, `ORBLIT_PHYSICS_RULE_ONE_WAY`, and zone bit,
+  `ORBLIT_PHYSICS_ZONE_FLUID`. A native caller rebuilds against the new header.
+
 ## 0.16.0
 
 - A step costs between a seventh and a third less on every scene with

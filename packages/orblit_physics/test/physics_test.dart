@@ -1529,8 +1529,8 @@ void main() {
         seen.where((it) => it.kind == kind && it.a == a && it.b == b).length;
 
     test('its structs are the size the engine reads', () {
-      expect(sizeOf<native.OrblitPhysicsZone>(), 40);
-      expect(sizeOf<native.OrblitPhysicsRule>(), 40);
+      expect(sizeOf<native.OrblitPhysicsZone>(), 48);
+      expect(sizeOf<native.OrblitPhysicsRule>(), 48);
     });
 
     test('a body falling through a trigger enters and leaves it', () {
@@ -1673,6 +1673,35 @@ void main() {
 
       expect(physics.velocityOf(2)![0], lessThan(0.1));
       expect(heightOf(2), lessThan(10.0), reason: 'gravity was not changed');
+    });
+
+    test('a fluid zone floats a light box and sinks a heavy one', () {
+      trigger(1, at: const [0.0, -20.0, 0.0], half: 20.0);
+      expect(
+        physics.setZone(
+          1,
+          const PhysicsZone(fluidDensity: 1000.0, fluidDrag: 3.0),
+        ),
+        isTrue,
+      );
+      // A box a metre across holds a cubic metre, so its mass is its density.
+      for (final (id, mass) in [(2, 500.0), (3, 2000.0)]) {
+        physics.add(
+          id,
+          shape: const Shape.box(0.5, 0.5, 0.5),
+          at: [id * 3.0, 0.3, 0.0],
+          mass: mass,
+        );
+      }
+
+      run(12.0);
+
+      expect(heightOf(2), closeTo(0.0, 0.03), reason: 'half its density');
+      expect(heightOf(3), lessThan(-3.0), reason: 'twice the density');
+      expect(
+        physics.setZone(1, const PhysicsZone(fluidDensity: -1.0)),
+        isFalse,
+      );
     });
 
     test('a zone is refused on what is not a trigger, and for NaN', () {
@@ -2288,6 +2317,26 @@ void main() {
 
       expect(heightOf(3), closeTo(0.5, 0.05), reason: 'fell through body 2');
       expect(heightOf(5), closeTo(1.5, 0.05), reason: 'stacked as usual');
+    });
+
+    test('a one-way platform lets a body up and holds it coming down', () {
+      floor();
+      physics.add(
+        2,
+        shape: const Shape.box(1.0, 0.1, 1.0),
+        motion: PhysicsMotion.fixed,
+        at: const [0.0, 2.0, 0.0],
+      );
+      physics.add(3, shape: box, at: const [0.0, 0.5, 0.0]);
+      const up = PhysicsRule(oneWay: [0.0, 1.0, 0.0]);
+      expect(physics.setRule(2, 3, up), isTrue);
+      physics.drive(3, velocity: const [0.0, 9.0, 0.0]);
+
+      run(4.0);
+
+      expect(heightOf(3), closeTo(2.6, 0.05), reason: 'landed on the platform');
+      const none = PhysicsRule(oneWay: [0.0, 0.0, 0.0]);
+      expect(physics.setRule(2, 3, none), isFalse);
     });
   });
 

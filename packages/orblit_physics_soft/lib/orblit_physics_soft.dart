@@ -1,8 +1,9 @@
-/// Cloth and rope for an Orblit physics world.
+/// Cloth, rope and balloons for an Orblit physics world.
 ///
 /// Particles joined by distance links, solved as position constraints in
-/// fixed sub-steps. The links are data, so a cloth, a rope and later a jelly
-/// differ by which ones they are made of. Rigid bodies move particles. The
+/// fixed sub-steps. The links are data, so a cloth and a rope differ by which
+/// ones they are made of. A balloon adds a constraint on the volume its
+/// closed surface encloses. Rigid bodies move particles. The
 /// particles do not move rigid bodies.
 library;
 

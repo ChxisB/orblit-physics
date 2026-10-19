@@ -3927,6 +3927,189 @@ void ignoring() {
   check(timesEntered(true) == 0, "and nothing for a ball it ignores");
 }
 
+/// A box at `y` given `up` m/s, with a platform across the sky at height two.
+/// `platform` and `box` are the ids, so both orders of the pair's key are
+/// read. `fast` marks the box continuous.
+OrblitPhysics *boxByPlatform(OrblitPhysicsId platform, OrblitPhysicsId box, float y,
+                             float up, bool oneWay, bool fast = false) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(platform, 1.0f, 0.1f, 1.0f, 0.0f, 2.0f, 0.0f));
+  submit(physics, boxAt(box, 0.25f, 0.0f, y, 0.0f));
+  if (oneWay) {
+    OrblitPhysicsRule pass = ruleFor(platform, box, ORBLIT_PHYSICS_RULE_ONE_WAY);
+    pass.through[1] = 1.0f;
+    check(orblit_physics_rule(physics, &pass), "a pair is made a one-way platform");
+  }
+  if (fast) {
+    OrblitPhysicsControls controls = controlsOf(box);
+    controls.continuous = true;
+    control(physics, controls);
+  }
+  drive(physics, box, 0.0f, up, 0.0f, 0.0f);
+  return physics;
+}
+
+void passingUp() {
+  OrblitPhysics *blocked = boxByPlatform(3, 2, 0.5f, 9.0f, false);
+  run(blocked, 3.0f);
+  check(heightOf(blocked, 2) < 2.0f, "a box thrown at an ordinary slab stays under it");
+  orblit_physics_destroy(blocked);
+
+  const OrblitPhysicsId platforms[2] = {3, 2};
+  for (const OrblitPhysicsId platform : platforms) {
+    const OrblitPhysicsId box = platform == 3 ? 2 : 3;
+    OrblitPhysics *thrown = boxByPlatform(platform, box, 0.5f, 9.0f, true);
+    run(thrown, 4.0f);
+    check(near(heightOf(thrown, box), 2.35f, 0.05f),
+          "a box thrown up through a one-way platform lands on it");
+    check(orblit_physics_asleep(thrown, box), "and goes to sleep there");
+    orblit_physics_destroy(thrown);
+
+    OrblitPhysics *dropped = boxByPlatform(platform, box, 5.0f, 0.0f, true);
+    run(dropped, 3.0f);
+    check(near(heightOf(dropped, box), 2.35f, 0.05f),
+          "a box dropped on one rests on it, whichever id is the larger");
+    orblit_physics_destroy(dropped);
+  }
+
+  // A metre a step is more than the platform and the box are thick together.
+  OrblitPhysics *shot = boxByPlatform(3, 2, 0.5f, 60.0f, true, true);
+  run(shot, 14.0f);
+  check(near(heightOf(shot, 2), 2.35f, 0.05f),
+        "a continuous box fired up through it lands on it too");
+  orblit_physics_destroy(shot);
+
+  OrblitPhysics *bad = boxByPlatform(3, 2, 5.0f, 0.0f, false);
+  OrblitPhysicsRule flat = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  check(!orblit_physics_rule(bad, &flat), "a one-way rule with no direction is refused");
+  flat.through[1] = std::nanf("");
+  check(!orblit_physics_rule(bad, &flat), "and so is one pointing nowhere in particular");
+  orblit_physics_destroy(bad);
+}
+
+/// Character 2, walked at a wall that is body 3, told to ignore it or not.
+float walkedAtWall(bool ignored) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 0.25f, 1.5f, 2.0f, 2.0f, 1.5f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  if (ignored) {
+    const OrblitPhysicsRule pass = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_IGNORE);
+    check(orblit_physics_rule(physics, &pass), "a character is told to ignore a wall");
+  }
+  walk(physics, 2, 2.0f, 0.0f, 2.0f);
+  const float x = coordinateOf(physics, 2, 0);
+  orblit_physics_destroy(physics);
+  return x;
+}
+
+/// Character 2 about to jump at 7 m/s from the ground under a platform that is
+/// body 3, with a one-way rule that names `platform` first.
+OrblitPhysics *jumper(OrblitPhysicsId platform, OrblitPhysicsId passer) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 1.0f, 0.1f, 1.0f, 0.0f, 2.0f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  OrblitPhysicsRule pass = ruleFor(platform, passer, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  pass.through[1] = 1.0f;
+  check(orblit_physics_rule(physics, &pass), "a character is given a one-way platform");
+  drive(physics, 2, 0.0f, 7.0f, 0.0f, 0.0f);
+  return physics;
+}
+
+/// Character 2 jumped, and left to land.
+OrblitPhysics *jumpedUnder(OrblitPhysicsId platform, OrblitPhysicsId passer) {
+  OrblitPhysics *physics = jumper(platform, passer);
+  walk(physics, 2, 0.0f, 0.0f, 3.0f);
+  return physics;
+}
+
+/// The most character 2 rises in one step of a two second jump. A jump at 7 m/s
+/// rises 0.12 m a step, so more than that is the character being lifted.
+float biggestRise(OrblitPhysics *physics) {
+  float biggest = 0.0f;
+  float before = heightOf(physics, 2);
+  for (int i = 0; i < 120; ++i) {
+    if (i > 0) {
+      const float fall = footingOf(physics, 2).velocity[1] - 9.81f * kStep;
+      drive(physics, 2, 0.0f, fall, 0.0f, 0.0f);
+    }
+    step(physics);
+    biggest = std::fmax(biggest, heightOf(physics, 2) - before);
+    before = heightOf(physics, 2);
+  }
+  return biggest;
+}
+
+/// Whether character 2, crouched under a beam that is body 3 with a rule of
+/// `overrides` between them, is let stand up into it. No rule when it is zero.
+bool stoodUnderBeam(uint32_t overrides) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, slabAt(3, 2.0f, 0.1f, 2.0f, 0.0f, 1.3f, 0.0f));
+  addCharacter(physics, 2, 0.0f, 0.0f, 0.0f);
+  if (overrides != 0) {
+    OrblitPhysicsRule rule = ruleFor(3, 2, overrides);
+    rule.through[1] = 1.0f;
+    check(orblit_physics_rule(physics, &rule), "a beam is given a rule");
+  }
+  const bool crouched = stanceAs(physics, 2, 0.3f, 0.2f);
+  const bool stood = stanceAs(physics, 2, 0.3f, 0.6f);
+  orblit_physics_destroy(physics);
+  return crouched && stood;
+}
+
+/// Whether a box resting on the ground sleeps with a slab 5 mm into its top,
+/// a slab that is awake, weighs nothing and slides along, with a one-way rule
+/// between them. A box woken by touching a platform it passes never sleeps.
+bool sleptUnderSlidingSlab() {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, groundPlane(1));
+  submit(physics, boxAt(2, 0.25f, 0.0f, 0.25f, 0.0f));
+  OrblitPhysicsCommand slab = slabAt(3, 5.0f, 0.1f, 1.0f, 0.0f, 0.595f, 0.0f);
+  slab.motion = ORBLIT_PHYSICS_DYNAMIC;
+  submit(physics, slab);
+  OrblitPhysicsControls floats = controlsOf(3);
+  floats.gravityScale = 0.0f;
+  control(physics, floats);
+  drive(physics, 3, 1.0f, 0.0f, 0.0f, 0.0f);
+
+  OrblitPhysicsRule rule = ruleFor(3, 2, ORBLIT_PHYSICS_RULE_ONE_WAY);
+  rule.through[1] = 1.0f;
+  check(orblit_physics_rule(physics, &rule), "a slab is given a rule");
+  run(physics, 3.0f);
+  const bool slept = orblit_physics_asleep(physics, 2);
+  orblit_physics_destroy(physics);
+  return slept;
+}
+
+void characterRules() {
+  check(walkedAtWall(false) < 1.8f, "a character stops at a wall");
+  check(walkedAtWall(true) > 3.5f, "and walks through one it is told to ignore");
+
+  OrblitPhysics *lands = jumpedUnder(3, 2);
+  check(near(heightOf(lands, 2), 3.01f, 0.05f),
+        "a character that jumps up through a one-way platform lands on it");
+  check(footingOf(lands, 2).ground == 3, "and says it is standing on it");
+  orblit_physics_destroy(lands);
+
+  OrblitPhysics *rising = jumper(3, 2);
+  check(biggestRise(rising) < 0.15f, "it is not lifted onto the platform on the way up");
+  orblit_physics_destroy(rising);
+
+  check(!stoodUnderBeam(0), "a crouched character cannot stand into a beam");
+  check(stoodUnderBeam(ORBLIT_PHYSICS_RULE_IGNORE), "unless it is told to ignore it");
+  check(stoodUnderBeam(ORBLIT_PHYSICS_RULE_ONE_WAY), "or the beam is a platform it passes");
+  check(sleptUnderSlidingSlab(),
+        "a box under a platform it passes goes to sleep against it");
+
+  OrblitPhysics *under = jumpedUnder(2, 3);
+  check(heightOf(under, 2) < 1.5f,
+        "a rule that makes the character the platform does not let it through");
+  orblit_physics_destroy(under);
+}
+
 void switching() {
   OrblitPhysics *physics = orblit_physics_create(nullptr);
   submit(physics, sphereAt(1, 0.5f, 0.0f, 20.0f, 0.0f));
@@ -4138,6 +4321,140 @@ void wakingControls() {
   lift.gravityScale = -1.0f;
   control(physics, lift);
   check(!orblit_physics_asleep(physics, 2), "and is woken by a change to how it moves");
+  orblit_physics_destroy(physics);
+}
+
+// --- floating ------------------------------------------------------------- //
+//
+// A fluid zone lifts what it has part under, and slows it.
+
+/// A pool of water forty metres deep and forty across, its surface `top`
+/// metres up. A thousand kilograms a cubic metre, which a body floats in when
+/// its own density is lower.
+OrblitPhysics *poolWith(float top, float drag) {
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  submit(physics, triggerAt(1, 20.0f, 0.0f, top - 20.0f, 0.0f));
+  OrblitPhysicsZone water = zoneOn(1, ORBLIT_PHYSICS_ZONE_FLUID, 0, 0.0f);
+  water.fluid[0] = 1000.0f;
+  water.fluid[1] = drag;
+  orblit_physics_zone(physics, &water);
+  return physics;
+}
+
+/// Where a body settles in a pool: its height after `seconds`, dropped from
+/// a little above the surface.
+float restingAt(float top, OrblitPhysicsCommand body, float seconds) {
+  OrblitPhysics *physics = poolWith(top, 3.0f);
+  body.at[1] = top + 0.3f;
+  submit(physics, body);
+  run(physics, seconds);
+  const float height = heightOf(physics, body.id);
+  orblit_physics_destroy(physics);
+  return height;
+}
+
+/// The angle a body is turned about z, from its rotation.
+float rollOf(OrblitPhysics *physics, OrblitPhysicsId id) {
+  float transform[7] = {0};
+  orblit_physics_transform(physics, id, transform);
+  return 2.0f * std::atan2(transform[5], transform[6]);
+}
+
+void floating() {
+  OrblitPhysicsCommand heavy = boxAt(2, 0.5f, 0.0f, 0.0f, 0.0f);
+  heavy.mass = 750.0f;
+  OrblitPhysicsCommand even = heavy;
+  even.mass = 500.0f;
+  OrblitPhysicsCommand light = heavy;
+  light.mass = 250.0f;
+  check(near(restingAt(0.0f, heavy, 12.0f), -0.25f, 0.03f),
+        "a box of three quarters the density of water sits a quarter above it");
+  check(near(restingAt(0.0f, even, 12.0f), 0.0f, 0.03f),
+        "half the density sits with its middle at the surface");
+  check(near(restingAt(0.0f, light, 12.0f), 0.25f, 0.03f),
+        "a quarter of the density sits a quarter above");
+  check(near(restingAt(2.0f, even, 12.0f), 2.0f, 0.03f),
+        "and the surface is the top of the trigger wherever that is");
+
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, 0.0f, 0.0f);
+  const float roundVolume = 4.0f / 3.0f * 3.14159265f * 0.125f;
+  ball.mass = roundVolume * 500.0f;
+  check(near(restingAt(0.0f, ball, 12.0f), 0.0f, 0.03f),
+        "a ball of half the density sits with its middle at the surface");
+  ball.mass /= 2.0f;
+  // The cap under the surface is a quarter of the ball when it is 0.3264 deep.
+  check(near(restingAt(0.0f, ball, 12.0f), 0.1736f, 0.03f),
+        "and one of a quarter sits higher by the cap that is under");
+
+  OrblitPhysicsCommand log = capsuleAt(2, 0.25f, 0.5f, 0.0f, 0.0f, 0.0f);
+  layDown(log);
+  const float pi = 3.14159265f;
+  log.mass = 500.0f * (pi * 0.0625f * 1.0f + 4.0f / 3.0f * pi * 0.015625f);
+  check(near(restingAt(0.0f, log, 12.0f), 0.0f, 0.03f),
+        "a capsule lying at half the density rides axis to the surface");
+
+  OrblitPhysicsCommand stone = heavy;
+  stone.mass = 1500.0f;
+  check(restingAt(0.0f, stone, 3.0f) < -3.0f, "a body denser than water sinks");
+}
+
+void floatingTurns() {
+  OrblitPhysics *physics = poolWith(0.0f, 4.0f);
+  OrblitPhysicsCommand plank = boxAt(2, 1.0f, 0.0f, 0.0f, 0.0f);
+  plank.size[1] = 0.1f;
+  plank.size[2] = 0.4f;
+  plank.mass = 160.0f;
+  plank.rotation[2] = std::sin(0.25f);
+  plank.rotation[3] = std::cos(0.25f);
+  submit(physics, plank);
+  check(near(rollOf(physics, 2), 0.5f, 0.01f), "the plank starts tipped");
+  run(physics, 8.0f);
+  check(std::fabs(rollOf(physics, 2)) < 0.05f,
+        "a plank tipped in water is turned level by where the fluid pushes it");
+  orblit_physics_destroy(physics);
+}
+
+void floatingSlows() {
+  OrblitPhysics *physics = poolWith(0.0f, 2.0f);
+  // Neutral: as dense as the water, so it neither rises nor sinks.
+  OrblitPhysicsCommand ball = sphereAt(2, 0.5f, 0.0f, -5.0f, 0.0f);
+  ball.mass = 4.0f / 3.0f * 3.14159265f * 0.125f * 1000.0f;
+  submit(physics, ball);
+  drive(physics, 2, 5.0f, 0.0f, 0.0f, 0.0f);
+  run(physics, 1.0f);
+  check(near(heightOf(physics, 2), -5.0f, 0.05f),
+        "a body as dense as the water hangs in it");
+  check(speedOf(physics, 2) < 1.0f, "and is slowed by its drag");
+
+  submit(physics, sphereAt(3, 0.5f, 5.0f, -5.0f, 0.0f));
+  OrblitPhysicsControls weightless = controlsOf(3);
+  weightless.gravityScale = 0.0f;
+  control(physics, weightless);
+  run(physics, 1.0f);
+  check(near(velocityOf(physics, 3, 1), 0.0f, 0.001f),
+        "a body that feels no gravity is not lifted either");
+  orblit_physics_destroy(physics);
+}
+
+void fluidIsChecked() {
+  OrblitPhysics *physics = poolWith(0.0f, 1.0f);
+  OrblitPhysicsZone zone = zoneOn(1, ORBLIT_PHYSICS_ZONE_FLUID, 0, 0.0f);
+  zone.fluid[0] = -1.0f;
+  check(!orblit_physics_zone(physics, &zone),
+        "a fluid with a negative density is refused");
+  zone.fluid[0] = 1000.0f;
+  zone.fluid[1] = std::nanf("");
+  check(!orblit_physics_zone(physics, &zone), "and one with NaN drag");
+  zone.fluid[1] = 1.0f;
+  zone.fluid[0] = INFINITY;
+  check(!orblit_physics_zone(physics, &zone), "and one of infinite density");
+  zone.fluid[0] = 1000.0f;
+  zone.fluid[1] = INFINITY;
+  check(!orblit_physics_zone(physics, &zone), "or infinite drag");
+  zone.fluid[1] = -1.0f;
+  zone.overrides = ORBLIT_PHYSICS_ZONE_GRAVITY;
+  check(orblit_physics_zone(physics, &zone),
+        "while the numbers of a field the zone does not claim mean nothing");
   orblit_physics_destroy(physics);
 }
 
@@ -6197,6 +6514,10 @@ int main() {
   stayingInside();
   zoning();
   zoneEdits();
+  floating();
+  floatingTurns();
+  floatingSlows();
+  fluidIsChecked();
   conveying();
   wakingBelts();
   pinnedBelts();
@@ -6215,6 +6536,8 @@ int main() {
   lockingTurns();
   capping();
   ignoring();
+  passingUp();
+  characterRules();
   switching();
   centring();
   centringJoined();

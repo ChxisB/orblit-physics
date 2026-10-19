@@ -264,9 +264,9 @@ class World {
   /// they close at, and where. Nothing else is read or changed.
   bool meet(uint32_t a, uint32_t b, float delta, Manifold &out) const;
 
-  /// What `rules_` says about the pair, named the way round `first` and the
-  /// other body are, which is how a manifold names them.
-  Rule ruleFor(const PairKey &key, OrblitPhysicsId first) const;
+  /// `meet`, less what a one-way rule between the two lets pass, with the rule
+  /// they have set in `out.rule`. False when nothing is left to hold them.
+  bool touch(uint32_t a, uint32_t b, float delta, Manifold &out) const;
 
   /// Whether a rule says the two bodies pass through each other.
   bool ignores(OrblitPhysicsId a, OrblitPhysicsId b) const;
@@ -282,6 +282,9 @@ class World {
   void solveStep(float delta);
   void integrateVelocities(float delta);
 
+  /// Lifts and slows a body that a fluid zone has part under the surface.
+  void buoy(uint32_t row, const Felt &felt, float delta);
+
   /// Holds each body the solver moves to its caps, after the contacts have had
   /// their say, so a cap limits where the body goes and not what it hits.
   void capSpeeds();
@@ -296,6 +299,10 @@ class World {
 
   /// Whether this step has a contact between the bodies in `a` and `b`.
   bool holds(uint32_t a, uint32_t b) const;
+
+  /// Whether a sweep of the body in `row` is to leave out the body in `other`,
+  /// which it would hit as `impact`, because a one-way rule lets it through.
+  bool passes(uint32_t row, uint32_t other, const Impact &impact) const;
   void moveCharacters(float delta);
 
   /// Moves the character in `row` aside by `move`, as far as it will go: swept
@@ -420,7 +427,7 @@ class World {
   /// the row a body is in moving. A zone's key is the trigger it is over, and
   /// a rule's is its pair, with the move scales in the key's order.
   std::unordered_map<OrblitPhysicsId, Zone> zones_;
-  std::unordered_map<PairKey, Rule, PairKeyHash> rules_;
+  Rules rules_;
 
   /// What each row feels from the zones, rebuilt every step there are any.
   std::vector<Felt> felt_;
