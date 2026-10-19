@@ -1,8 +1,8 @@
 name: orblit_physics_soft
 description: >-
-  Cloth and rope for an Orblit physics world. Particles joined by distance
-  constraints, solved by position-based dynamics in fixed sub-steps.
-version: 0.1.0
+  Cloth, rope and balloons for an Orblit physics world. Particles joined by
+  distance constraints, solved by position-based dynamics in fixed sub-steps.
+version: 0.2.0
 publish_to: none
 
 environment:

@@ -5,6 +5,7 @@ import 'package:vector_math/vector_math_64.dart';
 
 import 'air.dart';
 import 'anchor.dart';
+import 'closed_mesh.dart';
 import 'spec.dart';
 import 'surface.dart';
 
@@ -17,6 +18,10 @@ import 'surface.dart';
 /// chain. Each step moves the particles under gravity, then pulls
 /// every link back to its length. The links are solved as position
 /// constraints, so they stay stable at a stiffness a spring would blow up at.
+///
+/// A balloon is a closed mesh of particles that also holds the volume it began
+/// with, so a body of it sags under gravity and squashes under a load without
+/// going flat. A pillow is two sheets that close up round their rims.
 ///
 /// A particle can be pinned, which holds it where the caller puts it.
 ///
@@ -34,8 +39,10 @@ final class SoftBody {
     required _Links links,
     required this.surface,
     required this.air,
+    MeshVolume? volume,
   }) : _x = x,
        _links = links,
+       _volume = volume,
        _prev = Float64List.fromList(x),
        _v = Float64List(x.length),
        _inverseMass = 1 / mass,
@@ -80,6 +87,55 @@ final class SoftBody {
     );
   }
 
+  /// A closed surface of [triangles] over [points], three indices into
+  /// [points] for each triangle, wound so the normals point out. Every edge is
+  /// a link, and the volume the points enclose is held as a constraint. A
+  /// [volumeCompliance] above zero lets it give under load.
+  ///
+  /// Throws [ArgumentError] for a surface with a hole in it or one wound
+  /// inside out.
+  ///
+  /// shortcut: no link resists folding across an edge, so the shape is held by
+  /// the volume alone and a balloon wrinkles when squeezed. Add bend links
+  /// across each shared edge if a game needs it taut.
+  factory SoftBody.balloon({
+    required List<Vector3> points,
+    required List<int> triangles,
+    double particleMass = 0.01,
+    double volumeCompliance = 0,
+    SoftSpec? spec,
+    SoftSurface? surface,
+    SoftAir? air,
+  }) {
+    _checkMass(particleMass);
+    if (!(volumeCompliance >= 0)) {
+      throw ArgumentError.value(
+        volumeCompliance,
+        'volumeCompliance',
+        'must not be negative',
+      );
+    }
+    final soft = spec ?? SoftSpec();
+    final x = Float64List(points.length * 3);
+    for (var i = 0; i < points.length; i++) {
+      points[i].copyIntoArray(x, i * 3);
+    }
+    final mesh = ClosedMesh(points.length, triangles);
+    final links = _LinkBuilder(x);
+    for (final (a, b) in mesh.edges) {
+      links.stretch(a, b, soft.stretchCompliance);
+    }
+    return SoftBody._(
+      spec: soft,
+      x: x,
+      mass: particleMass,
+      links: links.build(),
+      surface: surface,
+      air: air,
+      volume: MeshVolume(mesh, x, compliance: volumeCompliance),
+    );
+  }
+
   /// A chain through [points], each joined to the next. It resists folding
   /// across the particle between two links.
   factory SoftBody.rope({
@@ -116,6 +172,9 @@ final class SoftBody {
   }
 
   final SoftSpec spec;
+
+  /// The closed mesh and its volume, for a balloon.
+  final MeshVolume? _volume;
 
   /// What the particles stay off, or null for a body that falls through
   /// everything.
@@ -155,6 +214,10 @@ final class SoftBody {
 
   /// Whether the solver has stopped for lack of anything to do.
   bool get asleep => _asleep;
+
+  /// The volume a balloon encloses now, in cubic metres, or null for a body
+  /// that is not closed.
+  double? get volume => _volume?.volumeOf(_x);
 
   Vector3 positionOf(int i) => Vector3.array(_x, i * 3);
 
@@ -361,11 +424,13 @@ final class SoftBody {
   void _solve(double h) {
     final links = _links;
     links.lambda.fillRange(0, links.length, 0);
+    _volume?.restart();
     final inverseSquare = 1 / (h * h);
     for (var pass = 0; pass < spec.iterations; pass++) {
       for (var l = 0; l < links.length; l++) {
         _project(l, inverseSquare);
       }
+      _volume?.project(_x, _w, inverseSquare);
       _press();
     }
   }
