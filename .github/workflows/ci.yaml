@@ -38,6 +38,42 @@ jobs:
         working-directory: orblit-physics
         run: ./tool/check.sh
 
+  # The .NET port. The engine packages are packed from the engine checkout
+  # beside this one, so a change here is tested against the engine as it is now.
+  dotnet:
+    name: .NET (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      ORBLIT_FEED: ${{ runner.temp }}/feed
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: orblit-physics
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ChxisB/orblit
+          path: orblit
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: orblit-physics/dotnet/global.json
+
+      - name: Pack the engine
+        shell: bash
+        working-directory: orblit
+        run: tool/pack_local.sh
+
+      - name: Check
+        shell: bash
+        working-directory: orblit-physics
+        run: tool/check_dotnet.sh
+
   # Checks each commit on a pull request against commitlint.config.mjs.
   # Pull requests only, since a push to main has no range to check. It
   # checks out the branch head, not the merge commit GitHub makes, so the

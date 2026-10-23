@@ -6,3 +6,11 @@ pubspec.lock
 
 # Written by tool/link_local.sh for working against a sibling checkout.
 pubspec_overrides.yaml
+
+# Built by the .NET gates.
+dotnet/**/bin/
+dotnet/**/obj/
+dotnet/**/TestResults/
+
+# The solver the .NET package loads, built by tool/build_native.sh.
+dotnet/native/
