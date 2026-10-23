@@ -67,4 +67,24 @@ internal static partial class NativeMethods
     [LibraryImport(Library, EntryPoint = "orblit_physics_stance")]
     [return: MarshalAs(UnmanagedType.U1)]
     internal static unsafe partial bool Stance(nint physics, ulong id, uint shape, float* size);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_join")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Join(nint physics, NativeJoint* joint);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_join_path")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool JoinPath(nint physics, NativeJoint* joint, float* points, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_unjoin")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Unjoin(nint physics, ulong joint);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_joint")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool ReadJoint(nint physics, ulong joint, NativeJointState* state);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_aim")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Aim(nint physics, ulong joint, float* rest, float goal);
 }

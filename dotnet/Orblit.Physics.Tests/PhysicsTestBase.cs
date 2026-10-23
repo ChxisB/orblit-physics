@@ -9,12 +9,19 @@ public abstract class PhysicsTestBase : IDisposable
     /// <summary>Ground at y = 0, facing up, never moving.</summary>
     protected const ulong Ground = 1;
 
-    protected Physics World { get; } = new();
+    protected Physics World { get; private set; } = new();
 
     public void Dispose()
     {
         World.Dispose();
         GC.SuppressFinalize(this);
+    }
+
+    /// <summary>Replaces the world with a fresh one, for a scenario that runs twice.</summary>
+    protected void Restart()
+    {
+        World.Dispose();
+        World = new Physics();
     }
 
     /// <summary>Lays the floor every scenario here stands on.</summary>

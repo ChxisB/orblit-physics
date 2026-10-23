@@ -129,3 +129,48 @@ internal unsafe struct NativeFooting
     public byte Ceiling;
     public fixed byte Reserved[5];
 }
+
+/// <summary><c>OrblitPhysicsJoint</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeJoint
+{
+    public ulong Id;
+    public ulong A;
+    public ulong B;
+    public uint Kind;
+    public uint Limited;
+    public fixed float At[3];
+    public fixed float Rotation[4];
+    public fixed float To[3];
+    public fixed float Low[6];
+    public fixed float High[6];
+    public float Swing;
+    public float Speed;
+    public float Strength;
+    public float Goal;
+    public float GoalHertz;
+    public float GoalRatio;
+    public fixed float SpringHertz[6];
+    public fixed float SpringRatio[6];
+    public fixed float SpringRest[6];
+    public float LimitHertz;
+    public float LimitRatio;
+    public float BreakingForce;
+    public float BreakingTorque;
+    public float Ratio;
+    public fixed float AxisB[3];
+    public fixed float Over[6];
+    public byte Collide;
+    public byte Follow;
+    public fixed byte Reserved[2];
+}
+
+/// <summary><c>OrblitPhysicsJointState</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeJointState
+{
+    public fixed float Offset[3];
+    public fixed float Angles[3];
+    public float Force;
+    public float Torque;
+}
