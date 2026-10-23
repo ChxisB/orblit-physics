@@ -7,7 +7,7 @@ public class NativeSettingsAddedTests
     [Fact]
     public void SettingsAreTheSizeTheSolverReads()
     {
-        Assert.Equal(52, Marshal.SizeOf<NativeMethods.Settings>());
+        Assert.Equal(52, Marshal.SizeOf<NativeSettings>());
     }
 
     [Fact]

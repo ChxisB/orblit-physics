@@ -13,38 +13,58 @@ internal static partial class NativeMethods
 
     static NativeMethods() => NativeLoader.Register(typeof(NativeMethods).Assembly, Library);
 
-    /// <summary>
-    /// <c>OrblitPhysicsSettings</c>. The header has a C <c>bool</c> and three
-    /// reserved bytes where this has four bytes, because a <see cref="bool"/> is
-    /// not blittable.
-    /// </summary>
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct Settings
-    {
-        public float GravityX;
-        public float GravityY;
-        public float GravityZ;
-        public uint SubSteps;
-        public uint VelocitySteps;
-        public uint PositionSteps;
-        public uint JointSteps;
-        public float Slop;
-        public float ContactHertz;
-        public float BounceThreshold;
-        public float SleepSpeed;
-        public float SleepAfter;
-        public byte Sleeping;
-        public byte Reserved0;
-        public byte Reserved1;
-        public byte Reserved2;
-    }
-
     [LibraryImport(Library, EntryPoint = "orblit_physics_defaults")]
-    internal static partial void Defaults(out Settings settings);
+    internal static partial void Defaults(out NativeSettings settings);
 
     [LibraryImport(Library, EntryPoint = "orblit_physics_create")]
-    internal static partial nint Create(in Settings settings);
+    internal static partial nint Create(in NativeSettings settings);
 
     [LibraryImport(Library, EntryPoint = "orblit_physics_destroy")]
     internal static partial void Destroy(nint physics);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_submit")]
+    internal static unsafe partial void Submit(nint physics, NativeCommand* commands, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_step")]
+    internal static partial void Step(nint physics, float delta);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_read")]
+    internal static unsafe partial uint Read(nint physics, ulong* ids, uint count, float* output, uint stride, uint offset);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_events")]
+    internal static unsafe partial NativeEvent* Events(nint physics, out uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_count")]
+    internal static partial uint Count(nint physics);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_alive")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Alive(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_asleep")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Asleep(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_transform")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Transform(nint physics, ulong id, float* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_velocity")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Velocity(nint physics, ulong id, float* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Cast(nint physics, in NativeCast query, out NativeHit hit);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_ground")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Ground(nint physics, in NativeGround ground);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_footing")]
+    internal static unsafe partial uint Footing(nint physics, ulong* ids, uint count, NativeFooting* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_stance")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Stance(nint physics, ulong id, uint shape, float* size);
 }
