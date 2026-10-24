@@ -12,6 +12,6 @@
   </ItemGroup>
   <!-- The solver, built by tool/build_native.sh. It flows to every project that references this one, and into the package. -->
   <ItemGroup>
-    <Content Include="..\native\runtimes\**\*" Link="runtimes\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="runtimes\%(RecursiveDir)" />
+    <Content Include="..\native\runtimes\**\*" Link="runtimes\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="runtimes\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

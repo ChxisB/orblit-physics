@@ -2,6 +2,8 @@
 
 ## 0.17.0
 
+The solver is packed at `runtimes/<rid>/native`, where NuGet looks for it.
+
 Loads the solver and makes a world from its settings. The version is the one
 the package had when the port began.
 
