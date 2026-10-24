@@ -18,10 +18,10 @@ public abstract class PhysicsTestBase : IDisposable
     }
 
     /// <summary>Replaces the world with a fresh one, for a scenario that runs twice.</summary>
-    protected void Restart()
+    protected void Restart(PhysicsSettings? settings = null)
     {
         World.Dispose();
-        World = new Physics();
+        World = new Physics(settings);
     }
 
     /// <summary>Lays the floor every scenario here stands on.</summary>

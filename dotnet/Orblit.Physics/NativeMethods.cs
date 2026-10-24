@@ -75,6 +75,14 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.U1)]
     internal static partial bool Rule(nint physics, in NativeRule rule);
 
+    [LibraryImport(Library, EntryPoint = "orblit_physics_controls")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Controls(nint physics, in NativeControls controls);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_gravity")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Gravity(nint physics, float* gravity);
+
     [LibraryImport(Library, EntryPoint = "orblit_physics_ground")]
     [return: MarshalAs(UnmanagedType.U1)]
     internal static partial bool Ground(nint physics, in NativeGround ground);

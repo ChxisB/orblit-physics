@@ -199,3 +199,18 @@ internal unsafe struct NativeRule
     public fixed float MoveScale[2];
     public fixed float Through[3];
 }
+
+/// <summary><c>OrblitPhysicsControls</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeControls
+{
+    public ulong Body;
+    public uint Locks;
+    public float GravityScale;
+    public float MaxSpeed;
+    public float MaxSpin;
+    public fixed float Centre[3];
+    public fixed float Inertia[3];
+    public byte Continuous;
+    public byte Quiet;
+}

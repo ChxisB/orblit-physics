@@ -7,7 +7,7 @@ the Dart package had when the port began.
 
 Adds bodies, characters and height ground. A world steps, and answers each
 body's transform, velocity, footing and events, and the first thing a ray or
-shape meets. Body controls and the convex shapes follow in later parts.
+shape meets. The convex shapes follow in a later part.
 
 Adds joints. A `Joint` says which of the six ways its second body may move,
 and `Physics.Join` says where it goes. Eleven kinds hold bodies together:
@@ -23,3 +23,9 @@ two named bodies: its friction, its restitution, how much of the push each
 takes, passing through, or a one-way platform. `SetSurface` makes a belt.
 `CastAll`, `CastAny` and `Overlap` ask what a ray or a shape meets, in order,
 at all, or where it stands.
+
+Adds body controls. `SetControls` sets how a body moves apart from its shape:
+which of the six ways are locked, how much gravity it feels, a cap on its
+speed and on its spin, where its weight is, its inertia, and whether it is
+stopped at a thin wall. `SetMotion` makes a body fixed, driven or free, and
+`SetGravity` sets the world's gravity.
