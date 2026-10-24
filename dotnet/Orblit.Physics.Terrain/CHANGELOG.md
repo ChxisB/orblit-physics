@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-The version is the one the Dart package had when the port began.
+The version is the one the package had when the port began.
 
 First release. `TerrainPhysics` lays a terrain in a physics world as ground:
 one height field a region, for the regions near a point, each with a margin

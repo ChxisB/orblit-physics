@@ -2,7 +2,7 @@
 
 ## 0.2.0
 
-The version is the one the Dart package had when the port began.
+The version is the one the package had when the port began.
 
 - `SoftBody.Balloon` makes a closed triangle mesh whose edges are links and
   whose volume is held as a constraint, so a balloon or a pillow squashes
