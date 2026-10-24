@@ -88,5 +88,19 @@ public abstract class PhysicsTestBase : IDisposable
         return heights;
     }
 
+    /// <summary>The eight corners of a cube reaching <paramref name="half"/> either side of the origin.</summary>
+    protected static double[] Cube(double half)
+    {
+        var corners = new List<double>();
+        for (var i = 0; i < 8; i++)
+        {
+            corners.Add((i & 1) == 0 ? -half : half);
+            corners.Add((i & 2) == 0 ? -half : half);
+            corners.Add((i & 4) == 0 ? -half : half);
+        }
+
+        return [.. corners];
+    }
+
     protected static int Steps(double seconds) => (int)Math.Round(seconds * 60, MidpointRounding.AwayFromZero);
 }

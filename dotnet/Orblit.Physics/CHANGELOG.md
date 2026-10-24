@@ -7,7 +7,7 @@ the Dart package had when the port began.
 
 Adds bodies, characters and height ground. A world steps, and answers each
 body's transform, velocity, footing and events, and the first thing a ray or
-shape meets. The convex shapes follow in a later part.
+shape meets.
 
 Adds joints. A `Joint` says which of the six ways its second body may move,
 and `Physics.Join` says where it goes. Eleven kinds hold bodies together:
@@ -34,3 +34,11 @@ Adds seeing what happened. `Snapshot` copies the whole world and `Restore`
 makes a world that copy again, in the same world or in another. `Contacts`
 lists the points where bodies touched in the last step, and `Stats` says how
 much a world holds and how much its last step looked at.
+
+Adds hulls, compounds and meshes. `LayHull` cooks a cloud of points into a
+convex solid that any number of bodies name with `Shape.Hull`. A `ShapePart`
+is one convex shape with an offset, a turn and a scale, and `LayCompound`
+joins up to 64 of them into one body named with `Shape.Compound`. `LayMesh`
+takes indexed triangles for fixed ground and walls, named with `Shape.Mesh`.
+Each asset stays while a body names it, and `DropHull`, `DropCompound` and
+`DropMesh` take an unused one away.

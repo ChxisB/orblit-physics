@@ -23,7 +23,7 @@ public sealed class Shape
     /// <inheritdoc cref="X"/>
     public double W { get; private init; }
 
-    /// <summary>The asset a hull or compound names, and zero otherwise.</summary>
+    /// <summary>The asset a hull, compound or mesh names, and zero otherwise.</summary>
     public ulong Asset { get; private init; }
 
     /// <summary>A ball of <paramref name="radius"/> metres.</summary>
@@ -60,4 +60,29 @@ public sealed class Shape
     /// </summary>
     public static Shape Plane(double nx, double ny, double nz, double offset = 0.0) =>
         new(3) { X = nx, Y = ny, Z = nz, W = offset };
+
+    /// <summary>
+    /// The convex solid laid with <see cref="Physics.LayHull"/> under
+    /// <paramref name="id"/>. A body made from it is placed by the origin of
+    /// the frame its points were given in and weighs from the middle of the
+    /// solid, wherever that falls.
+    /// </summary>
+    /// <remarks>
+    /// A body or a cast naming a hull that was not laid makes nothing and meets
+    /// nothing.
+    /// </remarks>
+    public static Shape Hull(ulong id) => new(7) { Asset = id };
+
+    /// <summary>
+    /// The parts laid under <paramref name="id"/> with
+    /// <see cref="Physics.LayCompound"/>. The origin stays where the parts were
+    /// placed; a free body turns about their combined mass.
+    /// </summary>
+    public static Shape Compound(ulong id) => new(8) { Asset = id };
+
+    /// <summary>
+    /// The two-sided triangles laid by <see cref="Physics.LayMesh"/>. Only fixed
+    /// bodies can use a mesh. A moving collider must use a hull or convex parts.
+    /// </summary>
+    public static Shape Mesh(ulong id) => new(9) { Asset = id };
 }

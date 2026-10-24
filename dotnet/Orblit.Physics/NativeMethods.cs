@@ -129,4 +129,28 @@ internal static partial class NativeMethods
 
     [LibraryImport(Library, EntryPoint = "orblit_physics_stats")]
     internal static partial void Stats(nint physics, out NativeStats stats);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_hull")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Hull(nint physics, ulong id, float* xyz, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_hull_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool HullDrop(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_compound")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Compound(nint physics, ulong id, NativePart* parts, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_compound_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool CompoundDrop(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_mesh")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Mesh(nint physics, ulong id, float* xyz, uint vertices, uint* indices, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_mesh_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool MeshDrop(nint physics, ulong id);
 }

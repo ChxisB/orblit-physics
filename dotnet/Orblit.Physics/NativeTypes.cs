@@ -246,3 +246,15 @@ internal struct NativeStats
     public uint Points;
     public float StepMicroseconds;
 }
+
+/// <summary><c>OrblitPhysicsPart</c>. Scale and turn are one row-major matrix.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativePart
+{
+    public uint Shape;
+    public uint Reserved;
+    public ulong Hull;
+    public fixed float Size[4];
+    public fixed float At[3];
+    public fixed float Linear[9];
+}
