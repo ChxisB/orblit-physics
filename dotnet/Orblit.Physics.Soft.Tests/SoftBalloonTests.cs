@@ -5,7 +5,7 @@ namespace Orblit.Physics.Soft.Tests;
 public class SoftBalloonTests : SoftTestBase
 {
     /// <summary>The plane y = 0, for a body to land on.</summary>
-    private sealed class Floor : ISoftSurface
+    internal sealed class Floor : ISoftSurface
     {
         public SoftContact? Sweep(Vector3 from, Vector3 direction, double distance, double radius)
         {

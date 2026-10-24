@@ -9,19 +9,19 @@ namespace Orblit.Physics.Vehicle.Tests;
 /// </summary>
 public class VehicleReferenceAddedTests
 {
-    private const double Dt = 1.0 / 60;
+    internal const double Dt = 1.0 / 60;
 
     /// <summary>The numbers are pinned to nine decimals, so this is every digit they have.</summary>
     private const double Close = 1e-9;
 
-    private static DriveSpec Drive() =>
+    internal static DriveSpec Drive() =>
         new(
             new EngineSpec([(1000, 160), (3000, 220), (5000, 240), (6500, 200)]),
             [3.6, 2.2, 1.5, 1.1, 0.9],
             finalDrive: 4.5,
             diffLock: 50);
 
-    private static VehicleSpec Car(DriveSpec? drive = null) =>
+    internal static VehicleSpec Car(DriveSpec? drive = null) =>
         new(
             mass: 1200,
             centre: [0, 0, -0.4],
@@ -39,14 +39,14 @@ public class VehicleReferenceAddedTests
                             brakeTorque: 3000))),
             ]);
 
-    private static (Physics Physics, Vehicle Car) Make(VehicleSpec spec)
+    internal static (Physics Physics, Vehicle Car) Make(VehicleSpec spec)
     {
         var physics = new Physics();
         physics.Add(900, Shape.Plane(0, 1, 0), PhysicsMotion.Fixed);
         return (physics, new Vehicle(physics, 1, Shape.Box(0.9, 0.3, 2.0), spec, at: [0, 0.6, 0]));
     }
 
-    private static void Run(Physics physics, Vehicle car, double seconds)
+    internal static void Run(Physics physics, Vehicle car, double seconds)
     {
         var steps = (int)Math.Round(seconds / Dt, MidpointRounding.AwayFromZero);
         for (var i = 0; i < steps; i++)
