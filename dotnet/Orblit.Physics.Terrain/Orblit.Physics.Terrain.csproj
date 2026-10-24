@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Description>An Orblit terrain as ground in a physics world. Lays a height field for each region near a point, and lays it again when the terrain under it changes.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.Terrain" />
+    <PackageReference Include="Orblit.VectorMath" />
+    <ProjectReference Include="..\Orblit.Physics\Orblit.Physics.csproj" />
+  </ItemGroup>
+</Project>
