@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Description>A ragdoll for an Orblit physics world. A body for each bone a spec names, joined as the rig is, held animated, powered or limp.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.Rig" />
+    <PackageReference Include="Orblit.VectorMath" />
+    <ProjectReference Include="..\Orblit.Physics\Orblit.Physics.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orblit.Physics.Rig.Tests" />
+  </ItemGroup>
+</Project>
