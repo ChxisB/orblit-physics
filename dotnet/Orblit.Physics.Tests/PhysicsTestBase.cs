@@ -88,5 +88,5 @@ public abstract class PhysicsTestBase : IDisposable
         return heights;
     }
 
-    private static int Steps(double seconds) => (int)Math.Round(seconds * 60, MidpointRounding.AwayFromZero);
+    protected static int Steps(double seconds) => (int)Math.Round(seconds * 60, MidpointRounding.AwayFromZero);
 }

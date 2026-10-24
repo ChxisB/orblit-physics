@@ -174,3 +174,28 @@ internal unsafe struct NativeJointState
     public float Force;
     public float Torque;
 }
+
+/// <summary><c>OrblitPhysicsZone</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeZone
+{
+    public ulong Body;
+    public uint Overrides;
+    public int Priority;
+    public fixed float Gravity[3];
+    public fixed float Damping[2];
+    public fixed float Fluid[2];
+}
+
+/// <summary><c>OrblitPhysicsRule</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeRule
+{
+    public ulong A;
+    public ulong B;
+    public uint Overrides;
+    public float Friction;
+    public float Restitution;
+    public fixed float MoveScale[2];
+    public fixed float Through[3];
+}

@@ -57,6 +57,24 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.U1)]
     internal static partial bool Cast(nint physics, in NativeCast query, out NativeHit hit);
 
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast_all")]
+    internal static unsafe partial uint CastAll(nint physics, in NativeCast query, NativeHit* hits, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast_any")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool CastAny(nint physics, in NativeCast query);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_overlap")]
+    internal static unsafe partial uint Overlap(nint physics, in NativeCast query, ulong* ids, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_zone")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Zone(nint physics, in NativeZone zone);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_rule")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Rule(nint physics, in NativeRule rule);
+
     [LibraryImport(Library, EntryPoint = "orblit_physics_ground")]
     [return: MarshalAs(UnmanagedType.U1)]
     internal static partial bool Ground(nint physics, in NativeGround ground);

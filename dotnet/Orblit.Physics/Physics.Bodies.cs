@@ -202,6 +202,21 @@ public sealed unsafe partial class Physics
     public void Wake(ulong id) => Queue(6, id);
 
     /// <summary>
+    /// Sets how fast a body's surface moves, in world metres per second, while
+    /// the body stays where it is: a conveyor belt. What stands on it is dragged
+    /// by friction towards the speed of the surface, and to that speed and no
+    /// more. Only the part along the surface it touches counts, so a velocity
+    /// straight into the body does nothing. It holds until set again, and zero
+    /// is an ordinary surface. Bodies on it are woken, so a belt that starts
+    /// carries the crate that had gone to sleep on it.
+    /// </summary>
+    public void SetSurface(ulong id, IReadOnlyList<double> velocity)
+    {
+        var command = Queue(8, id);
+        Write(command->Vector, velocity, 3);
+    }
+
+    /// <summary>
     /// Changes the shape character <paramref name="id"/> is made of, keeping
     /// its feet where they are, and answers whether it did. A crouch is a
     /// shorter capsule from the same sole. False, and nothing changed, for a
