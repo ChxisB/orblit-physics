@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.13.0</Version>
+    <Description>An Orblit scene in a physics world. A body for each entity that has a body component, joints, zones, characters and cars, written back to the document.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.Motion" />
+    <PackageReference Include="Orblit.Scene" />
+    <PackageReference Include="Orblit.VectorMath" />
+    <ProjectReference Include="..\Orblit.Physics\Orblit.Physics.csproj" />
+    <ProjectReference Include="..\Orblit.Physics.Vehicle\Orblit.Physics.Vehicle.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orblit.Physics.Scene.Tests" />
+  </ItemGroup>
+</Project>
