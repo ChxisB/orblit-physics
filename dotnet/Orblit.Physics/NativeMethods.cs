@@ -113,4 +113,20 @@ internal static partial class NativeMethods
     [LibraryImport(Library, EntryPoint = "orblit_physics_aim")]
     [return: MarshalAs(UnmanagedType.U1)]
     internal static unsafe partial bool Aim(nint physics, ulong joint, float* rest, float goal);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_snapshot")]
+    internal static partial nint Snapshot(nint physics);
+
+    // The engine answers false only for a null pointer, which is refused before the call.
+    [LibraryImport(Library, EntryPoint = "orblit_physics_restore")]
+    internal static partial void Restore(nint physics, nint snapshot);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_snapshot_destroy")]
+    internal static partial void SnapshotDestroy(nint snapshot);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_contacts")]
+    internal static unsafe partial uint Contacts(nint physics, NativeContact* output, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_stats")]
+    internal static partial void Stats(nint physics, out NativeStats stats);
 }

@@ -214,3 +214,35 @@ internal unsafe struct NativeControls
     public byte Continuous;
     public byte Quiet;
 }
+
+/// <summary><c>OrblitPhysicsContact</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct NativeContact
+{
+    public ulong A;
+    public ulong B;
+    public fixed float At[3];
+    public fixed float Normal[3];
+    public float Depth;
+    public float Impulse;
+}
+
+/// <summary><c>OrblitPhysicsStats</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeStats
+{
+    public uint Bodies;
+    public uint StaticBodies;
+    public uint KinematicBodies;
+    public uint DynamicBodies;
+    public uint Asleep;
+    public uint Triggers;
+    public uint Characters;
+    public uint Joints;
+    public uint Zones;
+    public uint Rules;
+    public uint Pairs;
+    public uint Touching;
+    public uint Points;
+    public float StepMicroseconds;
+}

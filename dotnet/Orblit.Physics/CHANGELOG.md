@@ -29,3 +29,8 @@ which of the six ways are locked, how much gravity it feels, a cap on its
 speed and on its spin, where its weight is, its inertia, and whether it is
 stopped at a thin wall. `SetMotion` makes a body fixed, driven or free, and
 `SetGravity` sets the world's gravity.
+
+Adds seeing what happened. `Snapshot` copies the whole world and `Restore`
+makes a world that copy again, in the same world or in another. `Contacts`
+lists the points where bodies touched in the last step, and `Stats` says how
+much a world holds and how much its last step looked at.
