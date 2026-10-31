@@ -11,4 +11,7 @@ This repository differs in three ways.
 - The engine packages come from a folder. The engine's `tool/pack_local.sh`
   packs them, into `~/.orblit/feed` unless `ORBLIT_FEED` names another.
   `Directory.Packages.props` pins the versions.
+- This repository's `tool/pack_local.sh` packs the physics packages into the
+  same folder, so a repo such as `orblit-site` restores them too. Run
+  `tool/build_native.sh` first, or `Orblit.Physics` ships without the solver.
 - A part declares only the native calls it makes.
