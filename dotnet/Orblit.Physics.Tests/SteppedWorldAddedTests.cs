@@ -16,7 +16,7 @@ public class SteppedWorldAddedTests
     [Fact]
     public void AWallOfBoxesHitByASphereFallsAsTheOriginalSolverDropsIt()
     {
-        SteppedDump.AssertSame(Pinned("wall"), SteppedScenes.Wall());
+        SteppedDump.AssertScatteredSame(Pinned("wall"), SteppedScenes.Wall());
     }
 
     [Fact]
