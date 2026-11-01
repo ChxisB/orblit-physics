@@ -6,40 +6,10 @@ on:
   pull_request:
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: orblit-physics
-
-      # The solver depends on nothing, but the scene bridge reads Orblit's
-      # scene documents. CI checks the engine out beside this repository and
-      # points the bridge at it, so a change here is tested against the engine
-      # as it is now rather than whatever a lockfile last saw.
-      - uses: actions/checkout@v4
-        with:
-          # No token: the engine is public, and the default GITHUB_TOKEN
-          # reads it.
-          repository: ChxisB/orblit
-          path: orblit
-
-      - uses: dart-lang/setup-dart@v1
-        with:
-          # Pinned: the formatter changes between releases, and tracking
-          # stable turns an unrelated SDK bump into a red build.
-          sdk: 3.13.0
-
-      - name: Link the engine
-        working-directory: orblit-physics
-        run: ./tool/link_local.sh ../orblit
-
-      - name: Check
-        working-directory: orblit-physics
-        run: ./tool/check.sh
-
-  # The .NET port. The engine packages are packed from the engine checkout
-  # beside this one, so a change here is tested against the engine as it is now.
+  # The engine packages are packed from the engine checkout beside this one.
+  # The engine branch with this branch's name is the pair when there is one,
+  # so a change here and the engine change it needs build together. Without
+  # one it uses the engine's default branch.
   dotnet:
     name: .NET (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -53,9 +23,26 @@ jobs:
         with:
           path: orblit-physics
 
+      - id: engine
+        shell: bash
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if git ls-remote --exit-code --heads \
+              https://github.com/ChxisB/orblit.git "$BRANCH" > /dev/null; then
+            echo "Building against ChxisB/orblit@$BRANCH"
+            echo "ref=$BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "No matching engine branch; using its default"
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
         with:
+          # No token: the engine is public, and the default GITHUB_TOKEN
+          # reads it.
           repository: ChxisB/orblit
+          ref: ${{ steps.engine.outputs.ref }}
           path: orblit
 
       - uses: actions/setup-dotnet@v4
@@ -64,6 +51,13 @@ jobs:
 
       # The runner context exists in a step and not in a job's env, so the
       # feed folder is named on each step that reads it.
+      # The packages carry the native core only if it is built before they are
+      # packed.
+      - name: Build the engine natives
+        shell: bash
+        working-directory: orblit
+        run: tool/build_native.sh
+
       - name: Pack the engine
         shell: bash
         working-directory: orblit

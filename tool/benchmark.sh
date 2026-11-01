@@ -1,7 +1,7 @@
 #!/bin/bash
-# Builds and runs the solver benchmark, without Dart in the way.
+# Builds and runs the solver benchmark on its own.
 #
-# Not part of check.sh: the numbers belong to the machine, so nothing here can
+# Not part of check_dotnet.sh: the numbers belong to the machine, so nothing here can
 # fail a build. Run it before and after a change to the solver, on the same
 # machine, and compare.
 set -euo pipefail

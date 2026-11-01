@@ -12,17 +12,18 @@ the longer version of this.
 ## Checking your work
 
 ```sh
-./tool/check.sh
+./tool/check_dotnet.sh
 ```
 
-That runs the C++ checks on their own first, then analyzes and tests the Dart
-package. The C++ checks are worth running by themselves while working on the
-solver — `./tool/check_native.sh` compiles and runs them in a second or two,
-with no build hook and no Dart in the way.
+That runs the C++ checks first, then builds the solver, and builds, tests and
+format-checks the C# packages. It needs the .NET 10 SDK, CMake and the engine
+packages in the local feed. The README says how to pack them. The C++ checks
+are worth running by themselves while working on the solver.
+`./tool/check_native.sh` compiles and runs them in a second or two.
 
 A change to the solver wants a case in
 `packages/orblit_physics/src/orblit_physics_test.cpp`, which is where behaviour
-is pinned down. The Dart tests exist to prove the boundary works, not to
+is pinned down. The C# tests exist to prove the boundary works, not to
 re-test the maths.
 
 ## Licence

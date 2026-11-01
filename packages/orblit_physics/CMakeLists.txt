@@ -1,5 +1,4 @@
-# Builds the solver for the .NET packages. The Dart build uses hook/build.dart
-# and does not read this file. Both compile the same sources.
+# Builds the solver for the .NET packages.
 #
 # Usage: cmake -S packages/orblit_physics -B <build dir> -DORBLIT_RID=osx-arm64
 #        cmake --build <build dir> --config Release

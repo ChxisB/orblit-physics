@@ -1,9 +1,8 @@
 // Orblit physics: a rigid-body solver in C++, behind a C ABI.
 //
-// This header is the whole contract. Dart binds to it over dart:ffi, a script
-// runtime binds to it directly, and a headless test harness with no renderer
-// anywhere near it binds to the same functions — which is why nothing here
-// mentions any of them.
+// This header is the whole contract. The C# package binds to it, and a headless
+// test harness with no renderer anywhere near it binds to the same functions,
+// which is why nothing here mentions either of them.
 //
 // Three ideas carry the design:
 //
