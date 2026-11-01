@@ -199,7 +199,8 @@ public class SoftCollisionTests : SoftTestBase
         Run(cloth, 1);
         var each = clock.Elapsed.TotalMilliseconds / 60;
 
-        // The aim is 1 ms. The bound only catches a step that has got far worse.
-        Less(each, 5);
+        // The aim is 1 ms. The bound only catches a step that has got far worse. The tests run unoptimised,
+        // and a shared runner took 6.5 ms a step on Linux and 8.4 ms on Windows.
+        Less(each, OperatingSystem.IsMacOS() ? 5 : 25);
     }
 }

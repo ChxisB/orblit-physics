@@ -3,7 +3,8 @@ namespace Orblit.Physics.Tests;
 /// <summary>
 /// Three worlds stepped for a few seconds, compared body for body with a run
 /// of the same worlds on an independent build of the original solver, taken on
-/// this machine. Every word of every body must be the same bit for bit.
+/// a Mac. Every word of every body must be the same bit for bit there, and
+/// close to it on another system.
 /// </summary>
 public class SteppedWorldAddedTests
 {
@@ -15,18 +16,18 @@ public class SteppedWorldAddedTests
     [Fact]
     public void AWallOfBoxesHitByASphereFallsAsTheOriginalSolverDropsIt()
     {
-        Assert.Equal(Pinned("wall"), SteppedScenes.Wall());
+        SteppedDump.AssertSame(Pinned("wall"), SteppedScenes.Wall());
     }
 
     [Fact]
     public void ACharacterThatClimbsALedgeAndPushesACrateEndsWhereTheOriginalSolverPutsIt()
     {
-        Assert.Equal(Pinned("character"), SteppedScenes.Character());
+        SteppedDump.AssertSame(Pinned("character"), SteppedScenes.Character());
     }
 
     [Fact]
     public void AChainOfJointsSwingsAsTheOriginalSolverSwingsIt()
     {
-        Assert.Equal(Pinned("chain"), SteppedScenes.Chain());
+        SteppedDump.AssertSame(Pinned("chain"), SteppedScenes.Chain());
     }
 }

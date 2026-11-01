@@ -1,9 +1,12 @@
+using Orblit.Physics.Tests;
+
 namespace Orblit.Physics.Vehicle.Tests;
 
 /// <summary>
 /// The three cars of <see cref="VehicleReferenceAddedTests"/> compared with a
 /// run of the same cars on an independent build of the original solver, taken
-/// on this machine. The chassis and every wheel must be the same bit for bit.
+/// on a Mac. The chassis and every wheel must be the same bit for bit there,
+/// and close to it on another system.
 /// </summary>
 public class SteppedCarAddedTests
 {
@@ -24,6 +27,6 @@ public class SteppedCarAddedTests
     public void ACarEndsAsTheOriginalSolverLeavesItBitForBit(string scene)
     {
         Assert.NotEmpty(Pinned(scene));
-        Assert.Equal(Pinned(scene), Ran(scene));
+        SteppedDump.AssertSame(Pinned(scene), Ran(scene));
     }
 }

@@ -8,6 +8,9 @@
     <None Include="Reference\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\Orblit.Physics.Tests\SteppedDump.cs" Link="SteppedDump.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Orblit.Physics.Vehicle\Orblit.Physics.Vehicle.csproj" />
   </ItemGroup>
 </Project>
