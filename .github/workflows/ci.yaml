@@ -48,8 +48,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    env:
-      ORBLIT_FEED: ${{ runner.temp }}/feed
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,14 +62,20 @@ jobs:
         with:
           global-json-file: orblit-physics/dotnet/global.json
 
+      # The runner context exists in a step and not in a job's env, so the
+      # feed folder is named on each step that reads it.
       - name: Pack the engine
         shell: bash
         working-directory: orblit
+        env:
+          ORBLIT_FEED: ${{ runner.temp }}/feed
         run: tool/pack_local.sh
 
       - name: Check
         shell: bash
         working-directory: orblit-physics
+        env:
+          ORBLIT_FEED: ${{ runner.temp }}/feed
         run: tool/check_dotnet.sh
 
   # Checks each commit on a pull request against commitlint.config.mjs.
