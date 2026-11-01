@@ -1,90 +1,89 @@
 # orblit-physics
 
 Rigid body physics for [Orblit](https://github.com/ChxisB/orblit). A sequential
-impulse solver written in C++, driven from Dart.
+impulse solver written in C++, driven from C#.
 
 ```sh
-cd packages/orblit_physics && dart test
+git clone https://github.com/ChxisB/orblit.git       # beside this one
+orblit/tool/build_native.sh                            # the engine's native core
+orblit/tool/pack_local.sh                              # packs the engine into ~/.orblit/feed
+./tool/check_dotnet.sh                                 # the solver, then build, test and format
 ```
 
-```sh
-./tool/check.sh          # the C++ checks, then analyze and test
-```
+It needs the .NET 10 SDK and CMake. `ORBLIT_FEED` names another feed folder.
 
 ## The shape of it
 
-A world is a queue and a step. Dart describes what it wants — add this body,
-shove that one, drive the platform — and those commands sit in one native
-buffer until the next `step` applies them in order. Reading goes the same way
-round: `readInto` fills a caller's float buffer for every body it was asked
-about, at whatever stride that buffer already uses. A tick costs two crossings
-of the FFI boundary, not two per body.
+A world is a queue and a step. The caller says what it wants. Add this body,
+shove that one, drive the platform. Those commands sit in one native buffer
+until the next `Step` applies them in order. Reading goes the same way round.
+`ReadInto` fills a caller's float buffer for every body it was asked about, at
+whatever stride that buffer already uses. A tick costs two calls across the
+native boundary, not two per body.
 
-```dart
-final physics = Physics();
+```csharp
+using var physics = new Physics();
 
-physics.add(ground, shape: const Shape.plane(0, 1, 0), motion: PhysicsMotion.fixed);
-physics.add(ball, shape: const Shape.sphere(0.5), at: [0, 3, 0], restitution: 0.6);
+physics.Add(ground, Shape.Plane(0, 1, 0), PhysicsMotion.Fixed);
+physics.Add(ball, Shape.Sphere(0.5), at: [0, 3, 0], restitution: 0.6);
 
-physics.step(1 / 60);
+physics.Step(1.0 / 60);
 
-for (final event in physics.events) {
-  if (event.kind == PhysicsEventKind.touchBegan) playThud(event.force);
+foreach (var change in physics.Events)
+{
+    if (change.Kind == PhysicsEventKind.TouchBegan) PlayThud(change.Force);
 }
 ```
 
 Bodies are named by whatever integer the caller already uses for them, usually
 an Orblit entity handle. The solver never looks inside one, which is why
-`orblit_physics` does not depend on `orblit_core` — or on anything else in the
-engine. It is a physics library that Orblit happens to use.
+`Orblit.Physics` does not depend on `Orblit.Core`. Its one engine dependency is
+`Orblit.Interop`, which loads native libraries. It is a physics library that
+Orblit happens to use.
 
 ## In a scene
 
-`orblit_physics_scene` is one of three packages here that know about Orblit;
+`Orblit.Physics.Scene` is one of three packages here that know about Orblit;
 the others lay its terrain, [below](#on-terrain), and give a rig a body for each
 limb, [below that](#on-a-rig). This one simulates the
 entities in a scene document that have a body component, and answers each step
 with the same kind of diff an edit makes, so whatever already draws a document
 draws the simulation.
 
-```dart
-final scene = ScenePhysics(document);
+```csharp
+var scene = new ScenePhysics(document);
 
 // Every frame.
-view.apply(scene.advance(elapsed));
+view.Apply(scene.Advance(elapsed));
 
 // When the author drags a crate.
-scene.apply(edit);
+scene.Apply(edit);
 ```
 
-`advance` steps the world at a fixed sixtieth however unevenly it is called,
+`Advance` steps the world at a fixed sixtieth however unevenly it is called,
 and writes back only the entities whose bodies moved, parents before children.
-`apply` rebuilds the bodies an edit touches where the document now puts them.
+`Apply` rebuilds the bodies an edit touches where the document now puts them.
 That is a teleport: a crate that is dragged mid-fall stops falling. Entities
 are named by strings and bodies by numbers, so the bridge keeps the pairing
-(`bodyOf`, `entityOf`) and never gives a number to a second entity. An entity
-with a joint component joins two bodies, [below](#joints), and `jointOf` and
-`entityOfJoint` pair joints with entities the same way. A body's `trigger`,
-`stay` and `surface`, and a zone component on an entity with a body, are read
+(`BodyOf`, `EntityOf`) and never gives a number to a second entity. An entity
+with a joint component joins two bodies, [below](#joints), and `JointOf` and
+`EntityOfJoint` pair joints with entities the same way. A body's `Trigger`,
+`Stay` and `Surface`, and a zone component on an entity with a body, are read
 the same way, [below](#questions-and-places). The world itself is
-`scene.physics`, for pushing and casting. What touched what is `scene.events`,
-gathered over every step the last `advance` took; the world's own list keeps
+`scene.Physics`, for pushing and casting. What touched what is `scene.Events`,
+gathered over every step the last `Advance` took; the world's own list keeps
 only its last step.
 
 On a screen faster than 60 Hz a body stands still on the frames that take no
-step. `ScenePhysics(document, smooth: true)` shows each body blended between
+step. `new ScenePhysics(document, smooth: true)` shows each body blended between
 its last two steps, so it moves on every frame. The document is then up to one
-step behind `scene.physics`, which still answers casts and events for where
+step behind `scene.Physics`, which still answers casts and events for where
 bodies are now. After a move made straight on the world, call
-`scene.resetSmoothing(entity)` so the body is not drawn crossing the gap. An
-edit through `apply` needs nothing.
+`scene.ResetSmoothing(entity)` so the body is not drawn crossing the gap. An
+edit through `Apply` needs nothing.
 
-It depends on `orblit_scene` over git. To work against a checkout of the engine
-beside this one:
-
-```sh
-./tool/link_local.sh     # or: ./tool/link_local.sh path/to/orblit
-```
+It depends on `Orblit.Scene`, which comes from the local feed. To work against
+a change in the engine, pack the engine again with `orblit/tool/pack_local.sh`.
 
 ### Inside
 
@@ -97,7 +96,7 @@ found once a step, and each sub-step reads where its bodies have got to from
 those. A short step has a small overlap to correct, and a small correction puts
 little energy into a stack.
 
-A contact is a spring at `contactHertz` and not a wall. The push starts at the
+A contact is a spring at `ContactHertz` and not a wall. The push starts at the
 surface, and the speed it pushes with is capped. After the sub-steps, a bounce
 turns round the bodies that met, at the speed they met at.
 
@@ -112,7 +111,7 @@ that worked last time rather than from zero.
 
 A pair that will cross the gap this step gets a contact before it touches, so
 a fast body does not tunnel through a thin wall. The margin is sized by speed
-and is zero under about 3 m/s. `PhysicsControls.continuous` adds a cast along
+and is zero under about 3 m/s. `PhysicsControls.Continuous` adds a cast along
 the body's move against fixed bodies and ground, for what the margin misses: a
 small body at a walking pace against a thin wall.
 
@@ -124,8 +123,8 @@ by its speed.
 
 ### Settings and the benchmark
 
-`subSteps` is 6, `contactHertz` is 50, `velocitySteps` is 1 for each sub-step,
-`positionSteps` is 2 for joints and `slop` is 0.02. They are tuned for 60 steps
+`SubSteps` is 6, `ContactHertz` is 50, `VelocitySteps` is 1 for each sub-step,
+`PositionSteps` is 2 for joints and `Slop` is 0.02. They are tuned for 60 steps
 a second. At 30 a second a wall of 25 by 20 boxes grows a mode and comes down to
 half its height, as it did before sub-steps. The heap sleeps whole in 6 of 8
 seeds there.
@@ -174,19 +173,18 @@ between step 278 and step 361 before, so it may sleep a little later.
 
 ### Casting
 
-`cast` fires a shape along a direction and answers the first body it meets.
+`Cast` fires a shape along a direction and answers the first body it meets.
 With no shape it fires a point, which is the ray cast everything else is named
 after and the cheap case; with one it is how a camera finds the wall behind the
 player, or a thrown thing where it will land.
 
-```dart
-final ground = physics.cast(
-  from: feet,
-  direction: const [0, -1, 0],
-  distance: 1.5,
-  shape: const Shape.sphere(0.3),
-  ignore: player,
-);
+```csharp
+var ground = physics.Cast(
+    feet,
+    [0, -1, 0],
+    1.5,
+    shape: Shape.Sphere(0.3),
+    ignore: player);
 ```
 
 It advances the shape along the line by however far it can prove is safe, over
@@ -199,15 +197,15 @@ are.
 
 ### Questions and places
 
-`castAll`, `castAny` and `overlap` join `cast`. They ask for every body along a
+`CastAll`, `CastAny` and `Overlap` join `Cast`. They ask for every body along a
 line, nearest first, whether anything is there at all, and what a shape or a
 point is inside. Each takes the same filters, `layers` and `ignore`, and a way
-to stop early: `castAny` stops at the first body it finds and the others take a
+to stop early: `CastAny` stops at the first body it finds and the others take a
 `limit`. Nothing they ask moves or wakes anything.
 
 A body added with `trigger` is a place. Nothing bounces off it, and solid casts,
-overlaps and characters do not see it. The world reports `entered` and
-`exited` for each body that comes in and goes out, and `inside` every step when
+overlaps and characters do not see it. The world reports `Entered` and
+`Exited` for each body that comes in and goes out, and `Inside` every step when
 either asked for `stay`. A trigger reads positions, not touches, so a body
 asleep inside one is still inside. It has to stay where it is, because the
 solver has to move a free body. `triggers: true` on a question asks about
@@ -215,16 +213,16 @@ triggers and nothing else.
 
 A zone is a trigger that changes the gravity and damping of the free bodies
 inside it. Each field is left to the body unless the zone sets it, and where
-zones overlap each field goes to the highest `priority`, then the lower id. A
-belt is `setSurface`: a velocity in the world that friction drags whatever
+zones overlap each field goes to the highest `Priority`, then the lower id. A
+belt is `SetSurface`: a velocity in the world that friction drags whatever
 stands on it towards, along the surface it touches and no faster.
 
-`setRule` is the contact hook. It changes the friction, restitution and move
-scales of one pair of bodies. It is data rather than a callback, because a Dart
-function called from inside the solver for every contact on every step would
-put a trip across the boundary in the hottest loop there is. A move scale says
-how much of a contact's push a body takes, so a lift carries a crate without
-the crate slowing it.
+`SetRule` is the contact hook. It changes the friction, restitution and move
+scales of one pair of bodies. It is data rather than a callback, because a C#
+delegate called from inside the solver for every contact on every step would
+put a trip across the native boundary in the hottest loop there is. A move
+scale says how much of a contact's push a body takes, so a lift carries a
+crate without the crate slowing it.
 
 ### Characters
 
@@ -233,28 +231,28 @@ its feet on every step and slide it down every slope, so it is not solved: it
 is swept through the world along what it asks for, and slides along whatever it
 meets.
 
-```dart
-physics.addCharacter(player, at: [0, 0.91, 0]);
+```csharp
+physics.AddCharacter(player, at: [0, 0.91, 0]);
 
 // Every step.
-final left = physics.footingOf(player)!.velocity;
-physics.drive(player, velocity: [walkX, left[1] - 9.81 / 60, walkZ]);
-physics.step(1 / 60);
+var left = physics.FootingOf(player)!.Velocity;
+physics.Drive(player, velocity: [walkX, left[1] - 9.81 / 60, walkZ]);
+physics.Step(1.0 / 60);
 ```
 
 It climbs anything up to `stepHeight`, stands on slopes up to `steepest` and
 slides down steeper ones, and rides what it stands on: a lift carries it up, a
-turntable turns it, and `footingOf` says by how much, apart from the walk it
+turntable turns it, and `FootingOf` says by how much, apart from the walk it
 asked for, so an animation plays the walk and not the ride. It pushes free
 bodies it walks into, no harder than `strength`, and is pushed by nothing but
 driven ones and other characters. A crate cannot shove a player off a ledge; a
 closing door can. A character that walks into another moves it out of the way
 at half the speed they close at, and never through a wall.
 
-`setStance` changes its shape in place, with the feet kept where they were: a
+`SetStance` changes its shape in place, with the feet kept where they were: a
 crouch comes down from the top. It answers whether the new shape fits, so a
 character under a beam that asks to stand gets false and stays as it was.
-`footingOf` also says whether the last walk met a `wall` or a `ceiling`, beside
+`FootingOf` also says whether the last walk met a `Wall` or a `Ceiling`, beside
 the ground it stands on.
 
 It does not fall on its own. Gravity is part of what it asks for, which is what
@@ -276,15 +274,14 @@ samples is two triangles, and everything under the surface is solid: a crate
 that has sunk in, or had the ground raised under it while it slept, is pushed
 up and out rather than through. A height that is not a number is a hole.
 
-```dart
-physics.layGround(
-  hill,
-  heights: heights, // columns * rows of them, row after row
-  columns: 65,
-  rows: 65,
-  spacing: 0.5,
-  at: [-16, 0, -16],
-);
+```csharp
+physics.LayGround(
+    hill,
+    heights, // columns * rows of them, row after row
+    columns: 65,
+    rows: 65,
+    spacing: 0.5,
+    at: [-16, 0, -16]);
 ```
 
 Laying it again under the same id replaces it and wakes whatever was over the
@@ -310,21 +307,20 @@ perhaps within a limit. The rows are solved in the same passes as the
 contacts, so a door leaning on a crate and the crate leaning on the floor are
 one problem rather than two that take turns being wrong.
 
-```dart
-physics.join(
-  1,
-  const Joint.hinge(limit: JointLimit(0, 1.6), speed: 1, strength: 50),
-  a: frame,
-  b: door,
-  at: [0.5, 1, 0],
-  rotation: upright, // the frame's x axis is the one it turns about
-);
+```csharp
+physics.Join(
+    1,
+    Joint.Hinge(limit: new JointLimit(0, 1.6), speed: 1, strength: 50),
+    a: frame,
+    at: [0.5, 1, 0],
+    b: door,
+    rotation: upright); // the frame's x axis is the one it turns about
 ```
 
-`fixed` welds, `point` is a ball and socket, `hinge` turns about x, `slider`
-slides along it, `distance` keeps two points apart — a rod, or with a range a
-rope — `cone` lets x swing within a cone and twist within a range, and
-`sixAxis` sets each of the six on its own. A hinge and a slider take a motor,
+`Fixed` welds, `Point` is a ball and socket, `Hinge` turns about x, `Slider`
+slides along it, `Distance` keeps two points apart, as a rod or, with a range, a
+rope. `Cone` lets x swing within a cone and twist within a range, and
+`SixAxis` sets each of the six on its own. A hinge and a slider take a motor,
 which drives at a speed no harder than a strength; a motor with no speed is
 friction in the joint.
 
@@ -332,10 +328,10 @@ It is made where the bodies stand, and what it holds is how they stood, so a
 hinge made with its door shut reads nought shut. Every measure is the second
 body as the first sees it, so which body is first decides the sense: with the
 world first a door's angle is the door's, and with the world second it is the
-world's as the door sees it, the other way round. `jointStateOf` reads it
+world's as the door sees it, the other way round. `JointStateOf` reads it
 back, and says how hard it held on the last step, which is the number to look
 at before choosing `breakingForce` or `breakingTorque`. Past either it breaks,
-and a `broke` event names it. Taking a body out of the world takes its joints
+and a `Broke` event names it. Taking a body out of the world takes its joints
 with it, silently, since nothing broke; laying ground again keeps them.
 
 A range solves only its nearer end, and pushes only once the joint would reach
@@ -352,103 +348,100 @@ id named in a component is one every copy, paste and prefab has to find and
 change; a parent is one they already do. The joint's point and frame are the
 entity's own, and its angles are in degrees, as a transform's are. An edit
 that rebuilds either body makes the joint again as things then stand, and one
-that has broken stays broken, in `scene.broken`, until its own entity is
+that has broken stays broken, in `scene.Broken`, until its own entity is
 edited — dragging the door does not mend the hinge it tore off.
 
 ## On terrain
 
-`orblit_physics_terrain` lays an Orblit terrain as ground, a region to a piece,
+`Orblit.Physics.Terrain` lays an Orblit terrain as ground, a region to a piece,
 and only the regions near a point.
 
-```dart
-final ground = TerrainPhysics(physics, terrain);
+```csharp
+var ground = new TerrainPhysics(physics, terrain);
 
 // Every frame, or whenever the camera moves.
-ground.sync(x: camera.x, z: camera.z, radius: 64);
+ground.Sync(camera.X, camera.Z, radius: 64);
 ```
 
-`sync` lays the regions within the radius, takes up the ones a region's width
+`Sync` lays the regions within the radius, takes up the ones a region's width
 beyond it, and lays a region again when its heights, holes or any neighbour's
 have changed. The ground it lays is the ground the renderer draws, triangle for
 triangle, holes included. An editor passes `refresh: false` while a stroke is
 being drawn and syncs normally once it is done, so a brush does not relay the
 ground under it every frame. Its bodies are numbered far below zero, out of the
 way of entity handles and of the small negative numbers a game gives its own
-bodies; `regionOf` turns one back into the region it is.
+bodies; `RegionOf` turns one back into the region it is.
 
-Like the scene bridge, it depends on the engine over git, and
-`./tool/link_local.sh` points it at a checkout instead.
+Like the scene bridge, it takes the engine packages from the local feed.
 
 ## On a rig
 
-`orblit_physics_rig` gives a skeleton from `orblit_rig` a body for each limb
+`Orblit.Physics.Rig` gives a skeleton from `Orblit.Rig` a body for each limb
 and a joint to its parent. A `RagdollSpec` says which bones get a body, how
 fat it is, and whether its joint is a hinge or a ball.
 
-```dart
-final ragdoll = Ragdoll.build(
-  physics: physics,
-  pose: pose,
-  spec: spec,
-  modelToWorld: model,
-  ignore: characterLayer,
-);
-stack.add(RagdollPose(ragdoll));
+```csharp
+var ragdoll = Ragdoll.Build(
+    physics,
+    pose,
+    spec,
+    model,
+    ignore: characterLayer);
+stack.Add("ragdoll", new RagdollPose(ragdoll));
 
 // Every frame, after the stack has run.
-physics.step(dt);
+physics.Step(dt);
 ```
 
-Each body is `animated`, `powered` or `limp`. An animated body is given the
+Each body is `Animated`, `Powered` or `Limp`. An animated body is given the
 velocity that reaches the pose in one step, so it pushes what it meets and is
 not pushed back. A powered body is held to the pose's angles by the joint's
 springs and gives under a blow. A limp body has only the joint's limits.
 
-`hit` makes the struck bone limp at once and its neighbours one joint at a time,
-`spread` seconds apart. `setFrom` makes a limb go from a bone down. An animated
+`Hit` makes the struck bone limp at once and its neighbours one joint at a time,
+`spread` seconds apart. `SetFrom` makes a limb go from a bone down. An animated
 body below a free one holds that one's far end where the pose has it, as a
 hand holds a rail, so a limb that should fall has to go limp from its top.
 
 `RagdollPose` writes the bones of free bodies back into the pose and leaves the
 rest to the animation. Only the root is moved. Every other bone is turned and
 stays on its parent, so bones keep the length the rig gave them however far a
-joint has been pulled. `recover` mixes from the last drawn fall to the animated
+joint has been pulled. `Recover` mixes from the last drawn fall to the animated
 pose over a time, so a get-up does not jump.
 
 `RagdollCharacter` hands a character between its capsule and its bodies. The
-capsule and the ragdoll sit in layers that ignore each other. `knock` takes the
-capsule out, and `standUp` finds the ground under the root, puts the capsule
+capsule and the ragdoll sit in layers that ignore each other. `Knock` takes the
+capsule out, and `StandUp` finds the ground under the root, puts the capsule
 there and makes every body animated again. The model is the game's to move.
 
-Like the scene bridge, it depends on `orblit_rig` over git, and
-`./tool/link_local.sh` points it at a checkout instead.
+Like the scene bridge, it takes `Orblit.Rig` from the local feed.
 
 ## On wheels
 
-`orblit_physics_vehicle` makes a car: a chassis body whose wheels are casts.
+`Orblit.Physics.Vehicle` makes a car: a chassis body whose wheels are casts.
 Each wheel hangs from a spring and a damper, written as a frequency and a
 damping ratio so the same numbers suit a kart and a truck.
 
-```dart
-final car = Vehicle(
-  physics: physics,
-  id: 1,
-  chassis: const Shape.box(0.9, 0.3, 2.0),
-  spec: VehicleSpec(
-    mass: 1200,
-    antiRoll: 8000,
-    wheels: [
-      for (final x in const [-0.8, 0.8])
-        for (final z in const [-1.2, 1.2])
-          WheelSpec(mount: Vector3(x, 0, z), radius: 0.35),
-    ],
-  ),
-  at: [0, 0.6, 0],
-);
+```csharp
+var car = new Vehicle(
+    physics,
+    id: 1,
+    chassis: Shape.Box(0.9, 0.3, 2.0),
+    spec: new VehicleSpec(
+        mass: 1200,
+        antiRoll: 8000,
+        wheels:
+        [
+            new WheelSpec(new Vector3(-0.8, 0, -1.2), radius: 0.35),
+            new WheelSpec(new Vector3(0.8, 0, -1.2), radius: 0.35),
+            new WheelSpec(new Vector3(-0.8, 0, 1.2), radius: 0.35),
+            new WheelSpec(new Vector3(0.8, 0, 1.2), radius: 0.35),
+        ]),
+    at: [0, 0.6, 0]);
 
 // Every step, before the step itself.
-car.update(dt);
-physics.step(dt);
+car.Update(dt);
+physics.Step(dt);
 ```
 
 Each wheel has a tyre that holds the car to the ground. A tyre bends like
@@ -459,8 +452,8 @@ outer. A brake that can hold a wheel locks it, and a locked tyre grips less
 than a rolling one. `Vehicle(surface:)` takes a function from the body under a
 wheel to its grip, so ice and tarmac can share a world.
 
-```dart
-car.setInput(VehicleInput(steer: 0.5, brake: 0.2));
+```csharp
+car.SetInput(new VehicleInput(steer: 0.5, brake: 0.2));
 ```
 
 A car with a `drive` has an engine. `EngineSpec` is a torque curve. `DriveSpec`
@@ -472,9 +465,9 @@ between axles, then between the two wheels of an axle through a differential.
 open and infinity is locked. The box shifts by itself, or holds the
 `VehicleInput(gear:)` the driver picks, with reverse as minus one.
 
-```dart
-car.setInput(VehicleInput(throttle: 1));
-print('${car.gear} ${car.rpm}');
+```csharp
+car.SetInput(new VehicleInput(throttle: 1));
+Console.WriteLine($"{car.Gear} {car.Rpm}");
 ```
 
 The clutch is solved against what each tyre will do with a torque. A wheel on
@@ -485,54 +478,54 @@ The wheels have no mass. The chassis still collides, so a car that bottoms
 out rests on its floor. A parked car never sleeps, because its springs push
 it every step.
 
-In a scene a car is a `vehicle` component on a free body, with `wheel`
-components on its direct children. Place each wheel entity where the wheel
+In a scene a car is a `VehicleComponent` on a free body, with a `WheelComponent`
+on each of its direct children. Place each wheel entity where the wheel
 sits at rest. `ScenePhysics` finds the spring from it, updates the car before
 every step and writes the springs and the roll and steer of each wheel back to
 its entity, so a model hung on the entity follows. The body must be at a scale
 of one. A document that breaks that keeps its data and the body is just a body.
 
-```dart
-scene.pilot('car', VehicleInput(throttle: 1, steer: -0.3));
-final gear = scene.vehicleOf('car')!.gear;
+```csharp
+scene.Pilot("car", new VehicleInput(throttle: 1, steer: -0.3));
+var gear = scene.VehicleOf("car")!.Gear;
 ```
 
-The scene has no input actions of its own. `pilot` is the one place a game
-hands over what a driver asks for, every step, and `pilot('car', null)` lets go
+The scene has no input actions of its own. `Pilot` is the one place a game
+hands over what a driver asks for, every step, and `Pilot("car", null)` lets go
 of the controls. A snapshot does not hold a car's tyres, so a restored car
 starts with straight bristles and the driver the game gave it.
 
 ## On cloth
 
-`orblit_physics_soft` makes cloth and rope: particles joined by links that
+`Orblit.Physics.Soft` makes cloth and rope: particles joined by links that
 hold a distance, solved as position constraints in sub-steps of 1/480 of a
 second. It is stepped beside a world and asks the world what it touches.
 
-```dart
-final flag = SoftBody.cloth(
-  columns: 20,
-  rows: 12,
-  origin: Vector3(0, 3.4, 0),
-  across: Vector3(0.08, 0, 0),
-  down: Vector3(0, -0.08, 0),
-  surface: PhysicsSurface(physics),
-  air: PhysicsWind(physics, {gustZone: Vector3(0, 0, 8)}),
-);
-for (var row = 0; row < 12; row++) {
-  flag.pin(row * 20);
+```csharp
+var flag = SoftBody.Cloth(
+    columns: 20,
+    rows: 12,
+    origin: new Vector3(0, 3.4, 0),
+    across: new Vector3(0.08, 0, 0),
+    down: new Vector3(0, -0.08, 0),
+    surface: new PhysicsSurface(physics),
+    air: new PhysicsWind(physics, new Dictionary<ulong, Vector3> { [gustZone] = new Vector3(0, 0, 8) }));
+for (var row = 0; row < 12; row++)
+{
+    flag.Pin(row * 20);
 }
 
-physics.step(dt);
-flag.step(dt);
+physics.Step(dt);
+flag.Step(dt);
 ```
 
 `PhysicsSurface` keeps the particles off the bodies of a world by casting a
 sphere, and a floor must be a box because a world cannot cast a plane.
-`attach` holds a particle to a point that moves, such as `bodyPoint` on a
+`Attach` holds a particle to a point that moves, such as `BodyPoint` on a
 body, and lets it go when the pull passes a `limit`. `PhysicsWind` blows the
 cloth from the trigger bodies of a world.
 
-The solver draws nothing. `OrblitParticleSheet` in `orblit_stage` draws a
+The solver draws nothing. `ParticleSheet` in `Orblit.Stage` draws a
 cloth of up to 256 particles as a skinned sheet with a joint for each
 particle. The gallery has a flag.
 
@@ -548,12 +541,12 @@ single machine replaying the same inputs at the same fixed step does reproduce
 itself; that is a different and much cheaper guarantee, and it is the one on
 offer.
 
-**Continuous collision between free bodies.** A body that names `continuous`
+**Continuous collision between free bodies.** A body that names `Continuous`
 is cast against fixed bodies and ground only. Two free bodies rely on the
 contacts made before they touch. A step short enough for the speeds in play is
 the answer past that.
 
-**The web.** The solver is C++ behind a build hook, so it goes where a native
+**The web.** The solver is C++ built by CMake, so it goes where a native
 toolchain goes. Whether it follows Orblit to the web later is open.
 
 **Cloth meeting cloth.** A soft body meets the world and not itself, so a cloth
@@ -570,8 +563,8 @@ engine work stays in the open.
 
 ## Compound and scaled shapes
 
-`layCompound(id, parts: [...])` keeps 1 to 64 `ShapePart` values under an id
-for `Shape.compound(id)` to name. Each part is a convex primitive or a laid
+`LayCompound(id, parts)` keeps 1 to 64 `ShapePart` values under an id
+for `Shape.Compound(id)` to name. Each part is a convex primitive or a laid
 hull, with local `at`, `rotation` in xyzw order, and positive `scale`.
 Scale is applied before turning and placement. An outer `scale` stretches the
 whole compound, including rotated parts and their offsets. One part provides
@@ -583,33 +576,33 @@ volume at uniform density, with a combined inertia tensor. Overlaps count
 mass twice. Four contact points remain the budget for each pair of bodies.
 Planes, height fields, meshes and nested compounds cannot be parts.
 
-Remove bodies before `dropCompound`. A hull retained by a compound cannot be
+Remove bodies before `DropCompound`. A hull retained by a compound cannot be
 dropped until that compound goes. Snapshots retain both assets independently.
 
-In a scene, `BodyShape.compound` reads `BodyComponent.parts`, a list of
+In a scene, `BodyShape.Compound` reads `BodyComponent.Parts`, a list of
 `BodyPart` values with local centre, quaternion rotation and scale. The
-body's `shapeScale` stretches its collision geometry independently of its
-visual transform. Compounds and explicit shapeScale use exact scaling.
-Ordinary rounded bodies with default shapeScale retain their previous
+body's `ShapeScale` stretches its collision geometry independently of its
+visual transform. Compounds and explicit `ShapeScale` use exact scaling.
+Ordinary rounded bodies with default `ShapeScale` retain their previous
 entity sizing rules. Invalid parts remain editable as an inert body.
 
 
 ## Static model surfaces
 
-`layMesh(id, vertices: [...], indices: [...])` copies indexed triangles,
+`LayMesh(id, vertices, indices)` copies indexed triangles,
 welds coincident coordinates and builds a spatial tree with seam information.
-`Shape.mesh(id)` names the result on a fixed body. Rays, convex shape casts,
+`Shape.Mesh(id)` names the result on a fixed body. Rays, convex shape casts,
 overlaps, contacts and characters meet the same two-sided surfaces. Shared
 flat edges produce no rim impulse, including duplicated exporter vertices.
 Outer and nonmanifold edges stay rims; separate assets do not share seams.
 
 A mesh has no solid interior and cannot move or be a compound part. Use a
 convex hull or convex compound for something the solver moves. Invalid inputs
-and all-degenerate meshes return false. Remove its bodies before `dropMesh`;
+and all-degenerate meshes return false. Remove its bodies before `DropMesh`;
 snapshots retain their own references.
 
-`CollisionMesh.fromGltf` in `orblit_asset` bakes an active static model scene
+`CollisionMesh.FromGltfAsync` in `Orblit.Asset` bakes an active static model scene
 into indexed triangles, or model settings `collision: true` cook a
-`collision.json` sidecar. A scene uses `BodyShape.mesh` with `meshVertices`
-and `meshIndices`; the bridge applies entity and shapeScale, forces fixed
+`collision.json` sidecar. A scene uses `BodyShape.Mesh` with `MeshVertices`
+and `MeshIndices`; the bridge applies entity and `ShapeScale`, forces fixed
 motion and owns the asset through edits, removal and snapshot restoration.

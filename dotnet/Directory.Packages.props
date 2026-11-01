@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <!-- The Orblit packages are the versions the engine had on 2026-10-31. -->
+  <ItemGroup>
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+    <PackageVersion Include="Orblit.Asset" Version="0.26.0" />
+    <PackageVersion Include="Orblit.Interop" Version="0.1.0" />
+    <PackageVersion Include="Orblit.Mesh" Version="0.6.0" />
+    <PackageVersion Include="Orblit.Motion" Version="0.10.0" />
+    <PackageVersion Include="Orblit.Rig" Version="0.3.0" />
+    <PackageVersion Include="Orblit.Scene" Version="0.24.0" />
+    <PackageVersion Include="Orblit.Terrain" Version="0.5.0" />
+    <PackageVersion Include="Orblit.VectorMath" Version="0.20.0" />
+  </ItemGroup>
+</Project>

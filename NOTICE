@@ -7,3 +7,6 @@ file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 This notice covers every file in this repository except those that
 carry their own licence notice.
+
+The .NET package under dotnet/ runs on the .NET runtime, which is MIT
+licensed. Its licence is in LICENSES/dotnet.txt.

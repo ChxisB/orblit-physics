@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.Asset" />
+    <PackageReference Include="Orblit.Mesh" />
+    <ProjectReference Include="..\Orblit.Physics.Scene\Orblit.Physics.Scene.csproj" />
+  </ItemGroup>
+</Project>

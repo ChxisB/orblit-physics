@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.4.0</Version>
+    <Description>A car for an Orblit physics world. A chassis body whose wheels are casts, with springs, tyres, an engine and a gearbox.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.VectorMath" />
+    <ProjectReference Include="..\Orblit.Physics\Orblit.Physics.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orblit.Physics.Vehicle.Tests" />
+  </ItemGroup>
+</Project>

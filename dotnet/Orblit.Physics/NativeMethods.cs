@@ -1,0 +1,156 @@
+using System.Runtime.InteropServices;
+using Orblit.Interop;
+
+namespace Orblit.Physics;
+
+/// <summary>
+/// The C ABI of <c>orblit_physics.h</c>, declared and nothing else. A world is
+/// a <see cref="nint"/>. Each part of the port declares only the calls it makes.
+/// </summary>
+internal static partial class NativeMethods
+{
+    private const string Library = "orblit_physics";
+
+    static NativeMethods() => NativeLoader.Register(typeof(NativeMethods).Assembly, Library);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_defaults")]
+    internal static partial void Defaults(out NativeSettings settings);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_create")]
+    internal static partial nint Create(in NativeSettings settings);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_destroy")]
+    internal static partial void Destroy(nint physics);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_submit")]
+    internal static unsafe partial void Submit(nint physics, NativeCommand* commands, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_step")]
+    internal static partial void Step(nint physics, float delta);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_read")]
+    internal static unsafe partial uint Read(nint physics, ulong* ids, uint count, float* output, uint stride, uint offset);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_events")]
+    internal static unsafe partial NativeEvent* Events(nint physics, out uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_count")]
+    internal static partial uint Count(nint physics);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_alive")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Alive(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_asleep")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Asleep(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_transform")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Transform(nint physics, ulong id, float* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_velocity")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Velocity(nint physics, ulong id, float* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Cast(nint physics, in NativeCast query, out NativeHit hit);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast_all")]
+    internal static unsafe partial uint CastAll(nint physics, in NativeCast query, NativeHit* hits, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_cast_any")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool CastAny(nint physics, in NativeCast query);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_overlap")]
+    internal static unsafe partial uint Overlap(nint physics, in NativeCast query, ulong* ids, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_zone")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Zone(nint physics, in NativeZone zone);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_rule")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Rule(nint physics, in NativeRule rule);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_controls")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Controls(nint physics, in NativeControls controls);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_gravity")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Gravity(nint physics, float* gravity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_ground")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Ground(nint physics, in NativeGround ground);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_footing")]
+    internal static unsafe partial uint Footing(nint physics, ulong* ids, uint count, NativeFooting* output);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_stance")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Stance(nint physics, ulong id, uint shape, float* size);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_join")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Join(nint physics, NativeJoint* joint);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_join_path")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool JoinPath(nint physics, NativeJoint* joint, float* points, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_unjoin")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool Unjoin(nint physics, ulong joint);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_joint")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool ReadJoint(nint physics, ulong joint, NativeJointState* state);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_aim")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Aim(nint physics, ulong joint, float* rest, float goal);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_snapshot")]
+    internal static partial nint Snapshot(nint physics);
+
+    // The engine answers false only for a null pointer, which is refused before the call.
+    [LibraryImport(Library, EntryPoint = "orblit_physics_restore")]
+    internal static partial void Restore(nint physics, nint snapshot);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_snapshot_destroy")]
+    internal static partial void SnapshotDestroy(nint snapshot);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_contacts")]
+    internal static unsafe partial uint Contacts(nint physics, NativeContact* output, uint capacity);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_stats")]
+    internal static partial void Stats(nint physics, out NativeStats stats);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_hull")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Hull(nint physics, ulong id, float* xyz, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_hull_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool HullDrop(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_compound")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Compound(nint physics, ulong id, NativePart* parts, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_compound_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool CompoundDrop(nint physics, ulong id);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_mesh")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static unsafe partial bool Mesh(nint physics, ulong id, float* xyz, uint vertices, uint* indices, uint count);
+
+    [LibraryImport(Library, EntryPoint = "orblit_physics_mesh_drop")]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static partial bool MeshDrop(nint physics, ulong id);
+}

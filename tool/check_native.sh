@@ -1,5 +1,5 @@
 #!/bin/bash
-# Compiles and runs the solver's own C++ checks, without Dart in the way.
+# Compiles and runs the solver's own C++ checks on their own, in a second or two.
 set -euo pipefail
 cd "$(dirname "$0")/../packages/orblit_physics"
 # Every source there is, the test file among them — it is the one with a main.

@@ -1,7 +1,7 @@
 // A standalone check of the engine through its own ABI, so a solver bug is
 // found here rather than through two language bindings. Built by
-// tool/check_native.sh, not by the package — Dart's tests cover the same
-// ground from the other side of the hook.
+// tool/check_native.sh, not by the package. The C# tests cover the same ground
+// from the other side of the binding.
 
 #include <algorithm>
 #include <array>

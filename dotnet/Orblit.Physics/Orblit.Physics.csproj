@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>0.17.0</Version>
+    <Description>Rigid body physics. A sequential impulse solver in C++, driven by a queue of commands and read back a whole world at a time.</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Orblit.Interop" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Orblit.Physics.Tests" />
+  </ItemGroup>
+  <!-- The solver, built by tool/build_native.sh. It flows to every project that references this one, and into the package. -->
+  <ItemGroup>
+    <Content Include="..\native\runtimes\**\*" Link="runtimes\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="runtimes\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
