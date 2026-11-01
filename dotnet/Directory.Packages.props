@@ -6,7 +6,7 @@
   <!-- The Orblit packages are the versions the engine had on 2026-10-31. -->
   <ItemGroup>
     <PackageVersion Include="xunit.v3" Version="4.0.2" />
-    <PackageVersion Include="Orblit.Asset" Version="0.25.0" />
+    <PackageVersion Include="Orblit.Asset" Version="0.26.0" />
     <PackageVersion Include="Orblit.Interop" Version="0.1.0" />
     <PackageVersion Include="Orblit.Mesh" Version="0.6.0" />
     <PackageVersion Include="Orblit.Motion" Version="0.10.0" />
