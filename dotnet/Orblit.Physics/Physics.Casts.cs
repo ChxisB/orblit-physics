@@ -91,6 +91,9 @@ public sealed unsafe partial class Physics
         return NativeMethods.CastAny(World, in query);
     }
 
+    /// <summary>How many bodies <see cref="Overlap"/> lists when no limit is given.</summary>
+    public const int DefaultOverlapLimit = 32;
+
     /// <summary>
     /// The bodies <paramref name="shape"/> overlaps where it stands at
     /// <paramref name="at"/>, in no order, up to <paramref name="limit"/> of
@@ -110,22 +113,32 @@ public sealed unsafe partial class Physics
         Layers? layers = null,
         ulong ignore = 0,
         bool triggers = false,
-        int limit = 32)
+        int limit = DefaultOverlapLimit)
     {
-        var found = new ulong[Math.Max(limit, 0)];
-        var written = Overlap(at, found, shape, rotation, layers, ignore, triggers);
+        if (limit <= 0)
+        {
+            Flush();
+            return [];
+        }
+
+        var found = new ulong[limit];
+        var written = OverlapInto(at, found, shape, rotation, layers, ignore, triggers);
         return found[..written];
     }
 
     /// <summary>
-    /// The same query as the list form, written into <paramref name="found"/>
-    /// instead of a new list. It answers how many ids it wrote, up to the
-    /// length of the buffer, and leaves the rest of the buffer as it was. A
-    /// query made every frame, such as wind at each point of a cloth, makes no
-    /// garbage this way.
+    /// The same query as <see cref="Overlap"/>, written into
+    /// <paramref name="found"/> instead of a new list. It answers how many ids
+    /// it wrote, up to the length of the buffer, and leaves the rest of the
+    /// buffer as it was. A query made every frame, such as wind at each point of
+    /// a cloth, makes no garbage this way.
     /// </summary>
+    /// <remarks>
+    /// Its own name, because a call that writes <c>null</c> for the shape would
+    /// otherwise not say which of the two forms it meant.
+    /// </remarks>
     // F2: seven parameters, the first two required and the rest called by name.
-    public int Overlap(
+    public int OverlapInto(
         IReadOnlyList<double> at,
         Span<ulong> found,
         Shape? shape = null,
