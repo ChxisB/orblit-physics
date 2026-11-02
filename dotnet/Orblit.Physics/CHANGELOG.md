@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.0
+
+`OverlapInto` writes the ids `Overlap` would list into a buffer the caller
+owns. It takes a `Span<ulong>` after the point and answers how many ids it
+wrote, up to the length of the buffer. The rest of the buffer is left as it
+was. `Overlap` still makes a new array on each call, and now calls this one.
+`DefaultOverlapLimit` names the 32 that `Overlap` lists when no limit is given.
+
 ## 0.17.0
 
 The solver is packed at `runtimes/<rid>/native`, where NuGet looks for it.

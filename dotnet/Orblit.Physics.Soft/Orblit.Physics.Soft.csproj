@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Description>Cloth, rope and balloons for an Orblit physics world. Particles joined by distance constraints, solved by position based dynamics in fixed sub-steps.</Description>
   </PropertyGroup>
   <ItemGroup>
