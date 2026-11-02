@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.0
+
+`Overlap` can write the ids it finds into a buffer the caller owns. It takes a
+`Span<ulong>` after the point and answers how many ids it wrote, up to the
+length of the buffer. The rest of the buffer is left as it was. The list form
+still makes a new array on each call, and now calls this one.
+
 ## 0.17.0
 
 The solver is packed at `runtimes/<rid>/native`, where NuGet looks for it.

@@ -112,18 +112,38 @@ public sealed unsafe partial class Physics
         bool triggers = false,
         int limit = 32)
     {
+        var found = new ulong[Math.Max(limit, 0)];
+        var written = Overlap(at, found, shape, rotation, layers, ignore, triggers);
+        return found[..written];
+    }
+
+    /// <summary>
+    /// The same query as the list form, written into <paramref name="found"/>
+    /// instead of a new list. It answers how many ids it wrote, up to the
+    /// length of the buffer, and leaves the rest of the buffer as it was. A
+    /// query made every frame, such as wind at each point of a cloth, makes no
+    /// garbage this way.
+    /// </summary>
+    // F2: seven parameters, the first two required and the rest called by name.
+    public int Overlap(
+        IReadOnlyList<double> at,
+        Span<ulong> found,
+        Shape? shape = null,
+        IReadOnlyList<double>? rotation = null,
+        Layers? layers = null,
+        ulong ignore = 0,
+        bool triggers = false)
+    {
         Flush();
-        if (limit <= 0)
+        if (found.IsEmpty)
         {
-            return [];
+            return 0;
         }
 
         var query = QueryOf(at, null, 0.0, shape, rotation, layers, ignore, triggers);
-        var found = new ulong[limit];
         fixed (ulong* ids = found)
         {
-            var written = (int)NativeMethods.Overlap(World, in query, ids, (uint)limit);
-            return found[..written];
+            return (int)NativeMethods.Overlap(World, in query, ids, (uint)found.Length);
         }
     }
 
