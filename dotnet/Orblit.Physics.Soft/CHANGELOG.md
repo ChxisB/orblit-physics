@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+`PhysicsWind.WindAt` reads the zones at a point into a buffer on the stack,
+so a step that asks once for each particle makes no garbage for the ids. It
+needs `Orblit.Physics` 0.18.0.
+
 ## 0.2.0
 
 The version is the one the package had when the port began.

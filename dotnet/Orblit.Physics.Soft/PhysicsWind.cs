@@ -19,7 +19,11 @@ public sealed class PhysicsWind(Physics physics, IReadOnlyDictionary<ulong, Vect
     public Vector3 WindAt(Vector3 point)
     {
         var wind = Vector3.Zero();
-        foreach (var id in Physics.Overlap([point.X, point.Y, point.Z], triggers: true))
+        // Asked once per particle every step, so the ids go on the stack. 32 is
+        // what the list form of Overlap holds by default.
+        Span<ulong> found = stackalloc ulong[32];
+        var count = Physics.Overlap([point.X, point.Y, point.Z], found, triggers: true);
+        foreach (var id in found[..count])
         {
             if (Zones.TryGetValue(id, out var zone))
             {
