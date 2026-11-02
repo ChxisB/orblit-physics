@@ -5987,15 +5987,25 @@ void speculating() {
 
 void layField(OrblitPhysics *physics) { lay(physics, 1, flat); }
 
-void layMesh(OrblitPhysics *physics) {
-  const float points[] = {-4, 0, -4, 4, 0, -4, 4, 0, 4, -4, 0, 4};
-  const uint32_t indices[] = {0, 2, 1, 0, 3, 2};
-  orblit_physics_mesh(physics, 7, points, 4, indices, 6);
+/// Lays the triangles as mesh 7 and a fixed body 1 made of it. Returns whether
+/// the mesh was cooked.
+template <size_t Points, size_t Indices>
+bool layTriangles(OrblitPhysics *physics, const float (&points)[Points],
+                  const uint32_t (&indices)[Indices]) {
+  const bool cooked =
+      orblit_physics_mesh(physics, 7, points, Points / 3, indices, Indices);
   OrblitPhysicsCommand floor = groundPlane(1);
   floor.shape = ORBLIT_PHYSICS_MESH;
   floor.hull = 7;
   floor.size[1] = 0.0f;
   submit(physics, floor);
+  return cooked;
+}
+
+void layMesh(OrblitPhysics *physics) {
+  const float points[] = {-4, 0, -4, 4, 0, -4, 4, 0, 4, -4, 0, 4};
+  const uint32_t indices[] = {0, 2, 1, 0, 3, 2};
+  layTriangles(physics, points, indices);
 }
 
 /// How much lower than `rest` the centre of body `id` gets in 1.5 s of falling
@@ -6452,6 +6462,138 @@ void standingWide() {
   orblit_physics_destroy(physics);
 }
 
+// --- corners the solver is asked about ------------------------------------ //
+
+// Each of these pushes a division or a lookup to the place it could fail. They
+// pass, and stay to keep it so.
+
+/// A gear between two wheels of very different weight, the motor on `driven`.
+/// Whichever way the pull comes, the second turns at the ratio times the
+/// first.
+void gearingUnequalWheels() {
+  for (const OrblitPhysicsId driven : {OrblitPhysicsId{2}, OrblitPhysicsId{3}}) {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    OrblitPhysicsCommand light = boxAt(2, 0.2f, 0.0f, 3.0f, 0.0f);
+    OrblitPhysicsCommand heavy = boxAt(3, 0.6f, 2.0f, 3.0f, 0.0f);
+    heavy.mass = 20.0f;
+    submit(physics, light);
+    submit(physics, heavy);
+    for (const OrblitPhysicsId wheel : {OrblitPhysicsId{2}, OrblitPhysicsId{3}}) {
+      OrblitPhysicsJoint spindle = jointOf(wheel - 1, ORBLIT_PHYSICS_JOINT_HINGE, 0,
+                                           wheel, wheel == 2 ? 0.0f : 2.0f, 3.0f, 0.0f);
+      aboutZ(spindle);
+      if (wheel == driven) {
+        spindle.speed = 2.0f;
+        spindle.strength = 500.0f;
+      }
+      join(physics, spindle);
+    }
+    OrblitPhysicsJoint gear = jointOf(3, ORBLIT_PHYSICS_JOINT_GEAR, 2, 3, 1.0f, 3.0f, 0.0f);
+    aboutZ(gear);
+    gear.ratio = -0.5f;
+    join(physics, gear);
+    run(physics, 3.0f);
+    const float first = spinOf(physics, 2, 2);
+    const float second = spinOf(physics, 3, 2);
+    check(std::fabs(first) > 1.0f && near(second, -0.5f * first, 0.05f * std::fabs(first)),
+          driven == 2 ? "a gear holds its ratio with the heavy wheel following"
+                      : "and with the heavy wheel leading");
+    orblit_physics_destroy(physics);
+  }
+}
+
+/// A continuous ball whose weight sits off the middle of its shape is stopped
+/// at the slab where the shape meets it, wherever the weight is.
+void continuingOffCentre() {
+  for (const float offset : {0.03f, -0.03f}) {
+    OrblitPhysics *physics = spaceWorld();
+    submit(physics, slabAt(1, 0.005f, 2.0f, 2.0f, 0.0f, 0.0f, 0.0f));
+    submit(physics, sphereAt(2, 0.01f, 0.035f, 0.0f, 0.0f));
+    OrblitPhysicsControls controls = controlsOf(2);
+    controls.continuous = true;
+    controls.centre[0] = offset;
+    control(physics, controls);
+    drive(physics, 2, -2.9f, 0.0f, 0.0f, 0.0f);
+    step(physics);
+    check(near(xOf(physics, 2), 0.0145f, 0.0005f),
+          offset > 0.0f ? "a continuous ball with its weight ahead of its middle stops at the slab"
+                        : "and with its weight behind its middle");
+    float lowest = 1.0f;
+    for (int i = 0; i < 20; ++i) {
+      step(physics);
+      lowest = std::fmin(lowest, xOf(physics, 2));
+    }
+    check(lowest > 0.0135f, "and does not get through after");
+    orblit_physics_destroy(physics);
+  }
+}
+
+/// A mesh with triangles that have no area: three points on a line, a point
+/// three times over, and one edge doubled. Only the floor is solid.
+void meshingWithDegenerates() {
+  const float points[] = {-4, 0, -4, 4, 0, -4, 4, 0, 4, -4, 0, 4,
+                          -1, 1, 0,  0, 1, 0,  1, 1, 0, 2,  1, 2};
+  const uint32_t indices[] = {0, 2, 1, 0, 3, 2, 4, 5, 6, 7, 7, 7, 4, 4, 5};
+  OrblitPhysics *physics = orblit_physics_create(nullptr);
+  check(layTriangles(physics, points, indices),
+        "a mesh with triangles of no area is cooked when it has others");
+
+  OrblitPhysicsHit hit{};
+  OrblitPhysicsCast ray = rayFrom(0.0f, 5.0f, 0.0f, 0.0f, -1.0f, 0.0f, 20.0f);
+  check(orblit_physics_cast(physics, &ray, &hit) && near(hit.distance, 5.0f, 0.01f) &&
+            near(hit.normal[1], 1.0f, 0.01f),
+        "a ray down through the line of a triangle of no area meets the floor");
+  OrblitPhysicsCast ball = rayFrom(0.0f, 5.0f, 0.0f, 0.0f, -1.0f, 0.0f, 20.0f);
+  ball.shape = ORBLIT_PHYSICS_SPHERE;
+  ball.size[0] = 0.2f;
+  check(orblit_physics_cast(physics, &ball, &hit) && near(hit.distance, 4.8f, 0.01f) &&
+            near(hit.normal[1], 1.0f, 0.01f),
+        "and so does a ball, at the floor and not at the line");
+
+  OrblitPhysicsId found[4] = {0};
+  OrblitPhysicsCast resting = rayFrom(0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
+  resting.shape = ORBLIT_PHYSICS_SPHERE;
+  resting.size[0] = 0.2f;
+  check(orblit_physics_overlap(physics, &resting, found, 4) == 0,
+        "a ball on the line, clear of the floor, overlaps nothing");
+  resting.from[0] = 2.0f;
+  resting.from[2] = 2.0f;
+  check(orblit_physics_overlap(physics, &resting, found, 4) == 0,
+        "nor does one on the lone point");
+
+  submit(physics, boxAt(2, 0.25f, 0.0f, 1.25f, 0.0f));
+  run(physics, 1.5f);
+  check(near(heightOf(physics, 2), 0.25f, 0.02f),
+        "a box dropped through the line comes to rest on the floor");
+  orblit_physics_destroy(physics);
+
+  const float bare[] = {0, 0, 0, 1, 0, 0, 2, 0, 0};
+  const uint32_t line[] = {0, 1, 2};
+  physics = orblit_physics_create(nullptr);
+  check(!layTriangles(physics, bare, line), "a mesh of nothing but a line is refused");
+  orblit_physics_destroy(physics);
+}
+
+/// A character walking into a wall that is straight up, or a hair past it. Its
+/// slope has no flat part to divide by.
+void walkingIntoWalls() {
+  for (const float angle : {1.5707963f, 1.5807963f, 1.7f}) {
+    OrblitPhysics *physics = orblit_physics_create(nullptr);
+    submit(physics, groundPlane(1));
+    submit(physics, rampFrom(2, 3.0f, angle));
+    addCharacter(physics, 3, 0.0f, 0.0f, 0.0f);
+    walk(physics, 3, 2.0f, 0.0f, 3.0f);
+    const float x = coordinateOf(physics, 3, 0);
+    const float y = heightOf(physics, 3);
+    const float z = coordinateOf(physics, 3, 2);
+    check(std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && x > 2.0f &&
+              x < 2.75f && near(y, 0.91f, 0.01f) && near(z, 0.0f, 0.05f),
+          angle < 1.57080f ? "a character walks up to a wall that is straight up and stops"
+                           : "and to one leaning over it");
+    orblit_physics_destroy(physics);
+  }
+}
+
 int main() {
   compoundChecks();
   meshChecks();
@@ -6575,6 +6717,10 @@ int main() {
   standingTall();
   steppingSlowly();
   standingWide();
+  gearingUnequalWheels();
+  continuingOffCentre();
+  meshingWithDegenerates();
+  walkingIntoWalls();
 
   std::printf(failures == 0 ? "\nALL PASSED\n" : "\n%d FAILED\n", failures);
   return failures == 0 ? 0 : 1;
